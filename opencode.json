@@ -18,5 +18,15 @@
       "url": "http://localhost:8001/mcp",
       "oauth": false
     },
+    "computer-control": {
+      "enabled": true,
+      "type": "local",
+      "command": [
+        "uvx",
+        "--python",
+        "3.13",
+        "computer-control-mcp@latest"
+      ]
+    }
   }
 }
