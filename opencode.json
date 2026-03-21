@@ -1,0 +1,22 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "github-copilot/gpt-5-mini",
+  "small_model": "github-copilot/gpt-5-mini",
+  "mcp": {
+    "chrome-devtools": {
+      "enabled": true,
+      "type": "local",
+      "command": [
+        "npx",
+        "chrome-devtools-mcp@latest",
+        "--browser-url=http://127.0.0.1:9222"
+      ],
+    },
+    "brave-search": {
+      "enabled": true,
+      "type": "remote",
+      "url": "http://localhost:8001/mcp",
+      "oauth": false
+    },
+  }
+}
