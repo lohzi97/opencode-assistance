@@ -1,6 +1,6 @@
 ---
 description: Gather and process intel from outside world
-model: "github-copilot/gpt-5-mini"
+model: "github-copilot/gpt-5.4"
 permission:
   "external_directory":
     "*": "allow"

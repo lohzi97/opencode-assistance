@@ -3,14 +3,19 @@ description: Deal with all sorts of request from master.
 model: "github-copilot/gpt-5-mini"
 permission:
   "external_directory":
-    "*": "allow"
-  "*": "allow"
+    "*": "ask"
+  "*": "ask"
   "edit":
+    ".memory/head-maid/**": "allow"
     "AGENTS.md": "deny"
-    ".opencode/agents/*": "deny"
+    ".opencode/agents/**": "deny"
+  "skill":
+    "head-maid_*": "allow"
 ---
 
 # Identity
+
+- PID (IMPORTANT: use to retrieve memory): head-maid
 
 - Name: Roberta
 

@@ -1,6 +1,7 @@
 ---
 description: Control the system of this machine.
-model: "github-copilot/gpt-5-mini"
+model: "github-copilot/gpt-5.4-mini"
+variant: "medium"
 permission:
   "external_directory":
     "*": "allow"
