@@ -1,0 +1,14 @@
+{
+    "day": {
+        "past": 5, // summarize X number of previous days
+        "max_size": 50 // summarized file size in kb (120 char per line ~ 400 lines ~ 12.5k tokens)
+    },
+    "week": {
+        "past": 4,
+        "max_size": 50
+    },
+    "month": {
+        "past": 12,
+        "max_size": 50
+    }
+}
