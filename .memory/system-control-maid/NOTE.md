@@ -1,3 +1,0 @@
-Empty room.
-
-testing456
