@@ -1,0 +1,21 @@
+{
+  // Set to false to disable automatic exports.
+  "enabled": true,
+
+  // Export when the session becomes idle (optional, defaults to true)
+  "export_when_idle": true,
+
+  // Export when the session is compacted (optional, defaults to true)
+  "export_when_compact": false,
+
+  // Relative paths are resolved from the project root.
+  "export_dir": "journals/session",
+
+  // Milliseconds to wait before exporting an idle session.
+  "idle_wait_ms": 900000,
+
+  // Match the built-in transcript export options.
+  "thinking": true,
+  "tool_details": false,
+  "assistant_metadata": true
+}

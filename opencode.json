@@ -5,6 +5,11 @@
   "plugin": [
     "opencode-pty"
   ],
+  "permission": {
+    "edit": {
+      "AGENTS.md": "deny"
+    }
+  },
   "mcp": {
     "chrome-devtools": {
       "enabled": true,
@@ -18,7 +23,7 @@
     "brave-search": {
       "enabled": true,
       "type": "remote",
-      "url": "http://localhost:8001/mcp",
+      "url": "http://localhost:9999/mcp",
       "oauth": false
     },
     "computer-control": {
