@@ -5,6 +5,8 @@
 
 # install node version manager (nvm)
 
+# install bun
+
 # install uv
 
 # install docker engine
