@@ -1,0 +1,7 @@
+node_modules
+package.json
+bun.lock
+
+# plugins
+telegram-ping.jsonc
+server/state/*.json
