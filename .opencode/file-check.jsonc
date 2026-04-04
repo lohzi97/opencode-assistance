@@ -1,0 +1,26 @@
+{
+  // Set to false to disable the plugin without removing it.
+  "enabled": true,
+
+  // Each matching rule runs: bun <script> <absolute-file-path>
+  // Exit 0: check passed
+  // Exit 1: check failed and script output is appended to OpenCode tool output
+  "rules": [
+    {
+      "glob": "journals/daily/*.md",
+      "script": ".opencode/scripts/check-max-size.ts"
+    },
+    {
+      "glob": "journals/weekly/*.md",
+      "script": ".opencode/scripts/check-max-size.ts"
+    },
+    {
+      "glob": "journals/monthly/*.md",
+      "script": ".opencode/scripts/check-max-size.ts"
+    },
+    {
+      "glob": ".memory/*.md",
+      "script": ".opencode/scripts/check-max-size.ts"
+    }
+  ]
+}
