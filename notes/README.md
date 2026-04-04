@@ -1,1 +1,1 @@
-nothing yet
+Empty note
