@@ -151,8 +151,15 @@ async function runJob(job: Job, state: State, tz?: string) {
   await save(state);
 
   try {
-    const prompt = `${job.prompt}\n\nTriggered at ${label(new Date(), tz)} by cron job \`${job.id}\`.`;
-    await promptAsync(session.id, job, prompt);
+    const trimmedPrompt = job.prompt.trim();
+    const isSlashCommand = trimmedPrompt.startsWith("/");
+    
+    if (isSlashCommand) {
+      await sendCommand(session.id, job, trimmedPrompt);
+    } else {
+      const prompt = `${job.prompt}\n\nTriggered at ${label(new Date(), tz)} by cron job \`${job.id}\`.`;
+      await promptAsync(session.id, job, prompt);
+    }
   } catch (err) {
     delete state.active[job.id];
     run.delete(session.id);
@@ -177,6 +184,22 @@ async function promptAsync(sessionID: string, job: Job, prompt: string) {
       parts: [{ type: "text", text: prompt }],
     }),
     expect: 204,
+  });
+}
+
+async function sendCommand(sessionID: string, job: Job, commandText: string) {
+  const [head, ...tail] = commandText.split(" ");
+  const commandName = head?.startsWith("/") ? head.slice(1) : commandText;
+  const arguments_ = tail.join(" ");
+  
+  await req(`/session/${sessionID}/command`, {
+    method: "POST",
+    body: JSON.stringify({
+      agent: job.agent,
+      model: job.model,
+      command: commandName,
+      arguments: arguments_,
+    }),
   });
 }
 

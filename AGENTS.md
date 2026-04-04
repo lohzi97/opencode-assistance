@@ -27,10 +27,10 @@ All your interaction with master is written down in [journals](/journals/) autom
 ```bash
 .
 ├── journals
-│   ├── dialy
+│   ├── daily
+│   ├── weekly
 │   ├── monthly
-│   ├── session
-│   └── weekly
+│   └── session
 ```
 
 # Notes

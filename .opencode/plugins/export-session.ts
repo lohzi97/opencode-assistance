@@ -45,7 +45,8 @@
  * - When session goes idle: Arms a timer (idle_wait_ms) then exports the session if export_when_idle is enabled
  * - When session compacted: Immediately exports the session if export_when_compact is enabled
  * - When session deleted: Cancels any pending export timer for that session
- * - File naming: Based on timestamp (YYYYMMDDHHMMSS.md) in format()
+ * - On startup: Exports sessions whose current updated state has not been exported yet
+ * - File naming: Based on timestamp plus session ID (YYYYMMDDHHMMSSmmm-session-id.md)
  *
  * Field Descriptions:
  * - enabled (boolean, optional): Enable or disable the plugin (defaults to true)
@@ -129,7 +130,12 @@ type Msg = {
 
 type ExportReason = "idle" | "compacting";
 
+type State = {
+  sessions: Record<string, number>;
+};
+
 const DEFAULT_IDLE_WAIT_MS = 30 * 60 * 1000;
+const STATE_FILE = "export-session-state.json";
 
 function strip(text: string) {
   let out = "";
@@ -266,6 +272,7 @@ function stamp(time = new Date()) {
     pad(time.getHours()),
     pad(time.getMinutes()),
     pad(time.getSeconds()),
+    time.getMilliseconds().toString().padStart(3, "0"),
   ].join("");
 }
 
@@ -346,6 +353,10 @@ function format(session: Session, msgs: Msg[], opts: Opts, why: string) {
   return out;
 }
 
+function filename(session: Session, time = new Date()) {
+  return `${stamp(time)}-${session.id}.md`;
+}
+
 export const ExportSessionPlugin: Plugin = async ({ client, directory }) => {
   const jobs = new Map<string, ReturnType<typeof setTimeout>>();
   const file = path.join(directory, ".opencode", "export-session.jsonc");
@@ -405,19 +416,55 @@ export const ExportSessionPlugin: Plugin = async ({ client, directory }) => {
     return data.export_when_compact !== false;
   };
 
+  const paths = (data: Cfg) => {
+    const exportDir = path.isAbsolute(data.export_dir!)
+      ? data.export_dir!
+      : path.resolve(directory, data.export_dir!);
+    return {
+      dir: exportDir,
+      state: path.join(exportDir, STATE_FILE),
+    };
+  };
+
+  const readState = async (stateFile: string) => {
+    try {
+      const text = await readFile(stateFile, "utf8");
+      const parsed = JSON.parse(text) as Partial<State>;
+      return {
+        sessions: parsed.sessions ?? {},
+      } satisfies State;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        return { sessions: {} } satisfies State;
+      }
+      throw err;
+    }
+  };
+
+  const writeState = async (stateFile: string, state: State) => {
+    await writeFile(stateFile, JSON.stringify(state, null, 2), "utf8");
+  };
+
+  const exported = (state: State, session: Session) => {
+    return state.sessions[session.id] === session.time.updated;
+  };
+
+  const markExported = (state: State, session: Session) => {
+    state.sessions[session.id] = session.time.updated;
+  };
+
   const save = async (sessionID: string, why: ExportReason) => {
     const data = await cfg();
     if (!data || !shouldExport(data, why) || !data.export_dir) return;
 
     try {
-      const exportDir = data.export_dir;
-      const dir = path.isAbsolute(exportDir)
-        ? exportDir
-        : path.resolve(directory, exportDir);
+      const { dir, state: stateFile } = paths(data);
       await mkdir(dir, { recursive: true });
       const session = await client.session
         .get({ path: { id: sessionID }, throwOnError: true })
         .then((res) => res.data!);
+      const state = await readState(stateFile);
+      if (exported(state, session)) return;
       const msgs = await client.session
         .messages({ path: { id: sessionID }, throwOnError: true })
         .then((res) => res.data ?? []);
@@ -426,8 +473,10 @@ export const ExportSessionPlugin: Plugin = async ({ client, directory }) => {
         tool_details: data.tool_details !== false,
         assistant_metadata: data.assistant_metadata !== false,
       };
-      const dest = path.join(dir, `${stamp()}.md`);
+      const dest = path.join(dir, filename(session));
       await writeFile(dest, format(session, msgs, opts, why), "utf8");
+      markExported(state, session);
+      await writeState(stateFile, state);
       await log("info", `exported ${sessionID} to ${dest}`);
     } catch (err) {
       await log(
@@ -461,6 +510,32 @@ export const ExportSessionPlugin: Plugin = async ({ client, directory }) => {
       }, wait),
     );
   };
+
+  const startup = async () => {
+    const data = await cfg();
+    if (!data || data.enabled === false || !data.export_dir) return;
+
+    try {
+      const { dir, state: stateFile } = paths(data);
+      await mkdir(dir, { recursive: true });
+      const state = await readState(stateFile);
+      const sessions = await client.session
+        .list({ throwOnError: true })
+        .then((res) => res.data ?? []);
+
+      for (const session of sessions) {
+        if (exported(state, session)) continue;
+        await save(session.id, "idle");
+      }
+    } catch (err) {
+      await log(
+        "error",
+        `failed startup export sweep: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
+
+  void startup();
 
   return {
     event: async ({ event }) => {
