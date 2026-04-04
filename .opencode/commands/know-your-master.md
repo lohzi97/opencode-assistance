@@ -1,5 +1,6 @@
 ---
 description: Introduce Sebastian, recall known preferences, interview the user, and record the results in MASTER.md
+agent: sebastian
 ---
 
 1. Introduce yourself first based on your given personality.

@@ -9,7 +9,7 @@ description: Create an OpenCode custom command from completed work by summarizin
 
 Use this skill when the user says something like: "Based on what you have done, create a xxx custom command for it."
 
-## Workflow
+## Instruction
 
 1. Summarize what you have done into concise but detailed steps.
 2. Read the OpenCode custom command documentation before writing anything.
