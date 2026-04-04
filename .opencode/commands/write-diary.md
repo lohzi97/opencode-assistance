@@ -4,7 +4,7 @@ description: Generate a daily journal diary from session conversation history
 
 Create a daily journal diary for date $1 (format: YYYYMMDD). If no date provided, use today's date.
 
-Follow this workflow:
+Instruction:
 
 1. Locate session files
    - Find all files in `journals/session/` matching the date pattern `$1*`.

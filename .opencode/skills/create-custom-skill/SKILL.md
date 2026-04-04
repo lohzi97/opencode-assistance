@@ -9,7 +9,7 @@ description: Create an OpenCode skill from completed work by summarizing the wor
 
 Use this skill when the user says something like: "Based on what you have done, create a xxx skill for it."
 
-## Workflow
+## Instruction
 
 1. Summarize what you have done into concise but detailed steps.
 2. Read the OpenCode skills documentation before writing anything.
