@@ -1,5 +1,9 @@
 ---
 model: "github-copilot/gpt-5-mini"
+permission:
+  "external_directory":
+    "*": "allow"
+  "*": "allow"
 ---
 
 ## Who You Are
