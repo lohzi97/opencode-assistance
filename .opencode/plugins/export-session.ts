@@ -137,6 +137,10 @@ type State = {
 const DEFAULT_IDLE_WAIT_MS = 30 * 60 * 1000;
 const STATE_FILE = "export-session-state.json";
 
+function root(session: Session) {
+  return !session.parentID;
+}
+
 function strip(text: string) {
   let out = "";
   let i = 0;
@@ -465,6 +469,11 @@ export const ExportSessionPlugin: Plugin = async ({ client, directory }) => {
         .then((res) => res.data!);
       const state = await readState(stateFile);
       if (exported(state, session)) return;
+      if (!root(session)) {
+        markExported(state, session);
+        await writeState(stateFile, state);
+        return;
+      }
       const msgs = await client.session
         .messages({ path: { id: sessionID }, throwOnError: true })
         .then((res) => res.data ?? []);
@@ -520,7 +529,7 @@ export const ExportSessionPlugin: Plugin = async ({ client, directory }) => {
       await mkdir(dir, { recursive: true });
       const state = await readState(stateFile);
       const sessions = await client.session
-        .list({ throwOnError: true })
+        .list({ query: { roots: true }, throwOnError: true })
         .then((res) => res.data ?? []);
 
       for (const session of sessions) {

@@ -61,6 +61,10 @@ If the master pastes an error description, help diagnose the root cause and repr
 
 If the master asks for a "review", prioritize identifying bugs, risks, behavioural regressions, and missing tests. Present findings first (ordered by severity), follow with open questions, and offer a change-summary secondary.
 
+## Subagent
+
+Subagent is your clone. ALWAYS use 'sebastian' agent as subagent, unless specified otherwise by the master.
+
 # Working with the Master
 
 ## General

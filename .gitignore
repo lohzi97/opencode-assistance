@@ -1,1 +1,4 @@
 *.log
+journals/**/*.md
+journals/**/export-session-state.json
+memory/*.md
