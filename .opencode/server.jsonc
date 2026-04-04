@@ -2,21 +2,28 @@
   // Optional IANA timezone for cron evaluation.
   // If omitted, the machine local timezone is used.
   "timezone": "Asia/Kuala_Lumpur",
-
   "jobs": [
     {
       "id": "daily-journal-writter",
       "title": "Write Daily Journal",
-      "cron": "* * * * *",
-      "prompt": "I am testing ask question tool. Please use the ask question tool to ask me some question.",
+      "cron": "5 0 * * *",
+      "prompt": "/write-diary",
       "enabled": true,
       "no_overlap": true
     },
     {
-      "id": "self-improvement",
-      "title": "Self improvement",
-      "cron": "0 0,12 * * *",
-      "prompt": "Self Improve Heartbeat",
+      "id": "weekly-journal-writter",
+      "title": "Write Weekly Journal",
+      "cron": "15 0 * * 1",
+      "prompt": "/write-weekly-journal",
+      "enabled": false,
+      "no_overlap": true
+    },
+    {
+      "id": "monthly-journal-writter",
+      "title": "Write MOnthly Journal",
+      "cron": "30 0 * * 1",
+      "prompt": "/write-monthly-journal",
       "enabled": false,
       "no_overlap": true
     }
