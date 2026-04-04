@@ -1,3 +1,78 @@
+/**
+ * File Check Plugin
+ * 
+ * Runs validation scripts on files after they are modified by OpenCode tools, including:
+ * - File edits (edit)
+ * - File writes (write)
+ * - Patch applications (apply_patch)
+ * 
+ * Setup Instructions:
+ * 1. Create a configuration file at `.opencode/file-check.jsonc` in your project root
+ * 2. Define rules with glob patterns to match files and scripts to validate them
+ * 3. Scripts will be executed with Bun and receive the file path as the first argument
+ * 
+ * Configuration File Location:
+ * `.opencode/file-check.jsonc` in your project root
+ * 
+ * Example Configuration:
+ * ```jsonc
+ * {
+ *   // Enable/disable the plugin (optional, defaults to true)
+ *   "enabled": true,
+ *   // Array of validation rules
+ *   "rules": [
+ *     {
+ *       // Glob pattern to match files (relative to project root)
+ *       "glob": "*.ts",
+ *       // Script to run (relative or absolute path)
+ *       "script": "./scripts/check-typescript.js"
+ *     },
+ *     {
+ *       "glob": "*.json",
+ *       "script": "./scripts/validate-json.js"
+ *     }
+ *   ]
+ * }
+ * ```
+ * 
+ * Example Validation Script (check-typescript.js):
+ * ```javascript
+ * const file = process.argv[2]; // File path passed as argument
+ * const content = await Bun.file(file).text();
+ * 
+ * // Your validation logic here
+ * if (content.includes("TODO")) {
+ *   console.error("File contains TODO comments");
+ *   process.exit(1); // Exit 1 = validation failed
+ * }
+ * 
+ * process.exit(0); // Exit 0 = validation passed
+ * ```
+ * 
+ * Expected Behavior:
+ * - If config file is missing: Logs error message "file-check.jsonc not found. Plugin disabled." and disables plugin
+ * - If config is invalid JSON: Logs error message with syntax details and disables plugin (silent failure, doesn't crash OpenCode)
+ * - If rules array is missing or empty: Logs error message "missing rules array. Plugin disabled." and disables plugin
+ * - If enabled is set to false: Logs info message "file-check disabled: enabled is set to false in file-check.jsonc" and disables plugin
+ * - If script file not found: Logs error message and appends warning to tool output, continues checking other files
+ * - If script exits with code 0: Validation passed, continues to next rule
+ * - If script exits with code 1: Validation failed, appends failure message to tool output
+ * - If script exits with other codes: Script crashed, logs error message and appends to tool output
+ * 
+ * Field Descriptions:
+ * - enabled (boolean, optional): Enable or disable the plugin (defaults to true)
+ * - rules (array, required): Array of validation rules
+ *   - glob (string, required): Glob pattern to match files (e.g., "*.ts", "src/*.{js,ts}")
+ *   - script (string, required): Path to validation script (relative to project root or absolute)
+ * 
+ * Script Interface:
+ * - Script is executed with: `bun <script> <file_path>`
+ * - Exit code 0: Validation passed
+ * - Exit code 1: Validation failed (output shown to user)
+ * - Exit code other: Script crashed (logged as error)
+ * - stdout and stderr are captured and displayed on failure
+ */
+
 import type { Plugin } from "@opencode-ai/plugin";
 import path from "node:path";
 
