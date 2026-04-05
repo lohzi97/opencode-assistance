@@ -12,19 +12,11 @@
       "no_overlap": true
     },
     {
-      "id": "weekly-journal-writter",
-      "title": "Write Weekly Journal",
-      "cron": "15 0 * * 1",
-      "prompt": "/write-weekly-journal",
-      "enabled": false,
-      "no_overlap": true
-    },
-    {
-      "id": "monthly-journal-writter",
-      "title": "Write MOnthly Journal",
-      "cron": "30 0 * * 1",
-      "prompt": "/write-monthly-journal",
-      "enabled": false,
+      "id": "memory-updater-today",
+      "title": "Update today memory",
+      "cron": "0 * * * *",
+      "prompt": "/update-today-memory",
+      "enabled": true,
       "no_overlap": true
     }
   ]
