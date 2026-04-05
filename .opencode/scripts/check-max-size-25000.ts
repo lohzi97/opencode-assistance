@@ -41,7 +41,7 @@
 
 async function main() {
   const file = process.argv[2];
-  const max = Number(50000); // bytes
+  const max = Number(25000); // bytes
 
   if (!file) {
     console.error("Missing file path argument");
