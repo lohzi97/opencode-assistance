@@ -9,44 +9,55 @@ Create a daily journal diary for date $1 (format: YYYYMMDD). If no date provided
 1. Locate session files
    - Find all files in `journals/session/` matching the date pattern `$1*`.
 
-2. For each of the sessions markdown file, start a subagent to:
+2. Create task tracking list
+   - Use the `todowrite` tool to create a task list with one task per session file.
+   - Each task should have:
+     - content: "Process <filename>" (where <filename> is the session filename)
+     - priority: "medium"
+     - status: "pending"
+   - This tracking ensures progress visibility even with 100+ sessions.
 
-   1. Read sessions
-      - Read each session file in full, including frontmatter metadata (session-id, created, updated, exported) and the conversation body.
+3. For each session file, process sequentially:
 
-   2. Verification
-      - For the actual result that yield from the conversation session, perform a simple verification on it to ensure that the result is still valid.
-        - Example:
-          - Conversation mentioned that xxx file has been created > verify that the file exist
-          - Conversation mentioned that it added a git commit > verify that the git commit exist
-          - Conversation mentioned that it generated a git commit message but has not committed it > no verification need as it is a chat respond
-          - Conversation mentioned that it created an backend app > verify that the created backend app exist and is runable.
-          - Conversation mentioned that it did research on yyy topic > no verification needed as it is also chat respond without actual result
-   
-   3. Summarize session
-      - Extract the following data points from the session markdown:
-        - Metadata: Start time (from created) and end time (from updated).
-        - Core Narrative: Identify the "Original Request" and the "Actions Taken" by the assistant.
-        - Tooling: List any tools or MCPs invoked (e.g., bash, computer-control, git).
-        - Outcome: Summarize the final state of the conversation (e.g., "File created," "Information provided," or "Error encountered").
-      - Self-Reflection (Critique): Analyze the assistant's performance. Identify if the assistant did anything:
-        - Wrongly: Incorrect logic, hallucinated files, or misunderstood instructions.
-        - Inefficiently: Took 5 steps for a 2-step task, or redundant tool calls.
-        - Badly/Lazily: Provided a "to-do" list instead of doing the work, or failed to follow formatting rules.
-        - Missed Opportunities: Failed to suggest a better tool or ignored a clear instruction.
-      - Categorize all claims into "Accomplishments" (Infrastructure, Workflow, Tools, etc.).
-      - Cross-reference with the Verification step (Step 2.2) to tag each accomplishment as:
-         - verified: Evidence exists on the filesystem/git history.
-         - suggestion only: Claim exists only in chat text/code blocks.
-         - partially verified: Some artifacts exist but discrepancies were found.
-      - Note any Discrepancies: Explicitly call out the discrepancies if a session claimed the accomplishment but it can't be verified or failed in verificaiton.
+   3.1. Mark task as in_progress
+       - Update the todo list to set the current session task status to "in_progress".
 
-4. Write the journal
-   - complie all the subagent returned result.
-   - Write the journal to `journals/daily/$1.md`.
-   - If the file exists, overwrite it.
+   3.2. Start a subagent to:
+       - Read the session file in full, including frontmatter metadata (session-id, created, updated, exported) and the full conversation body.
+       - Perform verification on actual results from the session:
+         - Example checks:
+           - Conversation mentioned xxx file created > verify file exists
+           - Conversation mentioned git commit added > verify commit exists
+           - Conversation mentioned commit message generated but not committed > no verification needed (chat only)
+           - Conversation mentioned backend app created > verify app exists and is runnable
+           - Conversation mentioned research on yyy topic > no verification needed (chat only)
+       - Summarize the session by extracting:
+         - Metadata: Start time (from created) and end time (from updated)
+         - Core Narrative: Original Request and Actions Taken
+         - Tooling: Tools or MCPs invoked (e.g., bash, computer-control, git)
+         - Outcome: Final state (e.g., "File created," "Information provided," "Error encountered")
+         - Self-Reflection (Critique): Analyze if the assistant did anything:
+           - Wrongly: Incorrect logic, hallucinated files, misunderstood instructions
+           - Inefficiently: Redundant steps or unnecessary tool calls
+           - Badly/Lazily: Provided to-do list instead of doing work, failed formatting rules
+           - Missed Opportunities: Failed to suggest better tool or ignored clear instruction
+         - Categorize claims into "Accomplishments" (Infrastructure, Workflow, Tools, etc.)
+         - Tag each accomplishment with verification status:
+           - verified: Evidence exists on filesystem/git history
+           - suggestion only: Claim exists only in chat text/code blocks
+           - partially verified: Some artifacts exist but discrepancies found
+         - Note any Discrepancies: Explicitly call out if claimed accomplishment can't be verified
 
-5. Journal-specific details
+   3.3. Integrate result into journal
+       - Compile the subagent result into `journals/daily/$1.md`.
+       - This is a growing journal. 
+         - Create it, if it does not exists. 
+         - Update it to include the result into the journal, if it exists.
+
+   3.4. Mark task as completed
+       - Update the todo list to set the current session task status to "completed".
+
+4. Journal-specific details
    - Journal type title: `Daily Journal`
    - Session subheadings should use times derived from session `created` and `updated` metadata
    - Ensure the `Generated:` line is included at the end of the journal
