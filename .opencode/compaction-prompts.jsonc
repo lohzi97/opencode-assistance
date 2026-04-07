@@ -1,0 +1,26 @@
+{
+  // Set to false to disable custom compaction prompts.
+  "enabled": true,
+
+  // Used when the user triggers compaction manually.
+  // "manual": {
+  //   "mode": "replace",
+  //   "file": ".opencode/compaction-prompts/manual.md"
+  // },
+
+  "auto": {
+    // Fallback for auto compaction when no command-specific prompt is defined.
+    // "general": {
+    //   "mode": "append",
+    //   "file": ".opencode/compaction-prompts/auto-general.md"
+    // },
+
+    // Keys are slash command names without the leading '/'.
+    "commands": {
+      "write-diary": {
+        "mode": "append",
+        "file": ".opencode/compaction-prompts/auto-write-diary.md"
+      }
+    }
+  }
+}

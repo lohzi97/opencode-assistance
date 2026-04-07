@@ -357,8 +357,13 @@ function format(session: Session, msgs: Msg[], opts: Opts, why: string) {
   return out;
 }
 
-function filename(session: Session, time = new Date()) {
-  return `${stamp(time)}-${session.id}.md`;
+function filename(session: Session) {
+  // Use the session's updated timestamp to produce a deterministic filename
+  // for a given session version. This reduces duplicate exports across
+  // multiple processes by ensuring they target the same path for the same
+  // session update.
+  const updated = new Date(session.time.updated);
+  return `${stamp(updated)}-${session.id}.md`;
 }
 
 export const ExportSessionPlugin: Plugin = async ({ client, directory }) => {

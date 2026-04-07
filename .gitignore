@@ -2,3 +2,4 @@
 journals/**/*.md
 journals/**/export-session-state.json
 memory/*.md
+.opencode/compaction-prompts-state.json
