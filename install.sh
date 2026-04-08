@@ -1,4 +1,39 @@
 #!/usr/bin/env bash
+
+
+# Requirement information from user:
+# - mcps:
+#   - brave-search: brave-search API key
+# - plugins:
+#   - telegram-ping: telegram bot token + chat id 
+
+# Setup to run this opencode assistance in ubuntu
+# 1. Intall bun 
+#    - required to install opencode and file-check plugin
+# 2. Install opencode with `bun add -g opencode-ai`
+# 3. Grant opencode root level permission so that it can access the whole machine
+# 4. Install node version manager (nvm)
+# 5. Install latest node LTS version with nvm
+#    - required for chrome-devtools mcp
+# 6. Install google chrome
+#    - required for chrome-devtools mcp
+# 7. Install docker engine 
+#    - https://docs.docker.com/engine/install/ubuntu/
+#    - required for brave-search mcp
+# 8. Run brave-search-mcp docker container
+#      docker run -d \
+#        --name brave-search-mcp \
+#        --restart unless-stopped \
+#        -p 9999:8080 \
+#        -e BRAVE_API_KEY="api-key" \
+#        -e BRAVE_MCP_TRANSPORT="http" \
+#        -e BRAVE_MCP_ENABLED_TOOLS="brave_web_search" \
+#        -e BRAVE_MCP_LOG_LEVEL="debug" \
+#        mcp/brave-search:latest
+# 9. install tmux
+#    - required for ./start.sh and ./stop.sh script
+
+
 set -euo pipefail
 
 # Idempotent installer for Linux Mint / Ubuntu (apt-based)
