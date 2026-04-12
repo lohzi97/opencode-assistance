@@ -16,6 +16,6 @@
 
   // Match the built-in transcript export options.
   "thinking": true,
-  "tool_details": true,
+  "tool_details": false,
   "assistant_metadata": true
 }

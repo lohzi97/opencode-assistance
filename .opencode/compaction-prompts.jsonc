@@ -18,7 +18,7 @@
     // Keys are slash command names without the leading '/'.
     "commands": {
       "write-diary": {
-        "mode": "append",
+        "mode": "replace",
         "file": ".opencode/compaction-prompts/auto-write-diary.md"
       }
     }
