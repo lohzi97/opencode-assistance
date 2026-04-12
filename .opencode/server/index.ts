@@ -21,15 +21,16 @@
  * - `timezone`: optional IANA timezone like `Asia/Kuala_Lumpur`
  * - `jobs`: array of job definitions
  * - `id`: stable unique id for the job
- * - `title`: title for the new session created on each run
+ * - `title`: title for the new session created on each prompt-based run
  * - `cron`: 5-field cron expression (`minute hour day month weekday`)
  * - `prompt`: prompt text sent to the new background session
+ * - `exec`: argv array for a local command that should run without OpenCode
  * - `enabled`: optional boolean, defaults to `true`
- * - `no_overlap`: optional boolean, skip a run if the previous session for the same job is still busy
+ * - `no_overlap`: optional boolean, skip a run if the previous run for the same job is still busy
  * - `agent`: optional agent name
  * - `model`: optional `{ providerID, modelID }`
  * 
- * Each trigger creates a brand new root session.
+ * Prompt-based triggers create a brand new root session. `exec` jobs run as local child processes.
  * 
  * ## tmux
  * 
@@ -45,6 +46,7 @@
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import process from "node:process";
 import path from "node:path";
 
 type Model = {
@@ -54,11 +56,12 @@ type Model = {
 
 type Job = {
   id: string;
-  title: string;
   cron: string;
-  prompt: string;
   enabled?: boolean;
   no_overlap?: boolean;
+  title?: string;
+  prompt?: string;
+  exec?: string[];
   agent?: string;
   model?: Model;
 };
@@ -70,8 +73,18 @@ type Cfg = {
 
 type State = {
   runs: Record<string, number>;
-  active: Record<string, string>;
+  active: Record<string, ActiveRun>;
 };
+
+type ActiveRun =
+  | {
+      kind: "session";
+      id: string;
+    }
+  | {
+      kind: "exec";
+      pid: number;
+    };
 
 type Session = {
   id: string;
@@ -125,7 +138,7 @@ async function tick() {
   const cfg = parse(await readFile(file, "utf8"));
   const jobs = (cfg.jobs ?? []).filter((x) => x.enabled !== false);
   const state = await load();
-  await sync(state);
+  await sync(state, jobs);
   const now = new Date();
 
   for (const job of jobs) {
@@ -145,19 +158,32 @@ async function tick() {
 
 async function runJob(job: Job, state: State, tz?: string) {
   console.log(`[run] ${job.id}`);
-  const session = await create(job.title);
-  state.active[job.id] = session.id;
+  if (job.exec) {
+    await runExecJob(job, state, tz);
+    return;
+  }
+
+  await runSessionJob(job, state, tz);
+}
+
+async function runSessionJob(job: Job, state: State, tz?: string) {
+  const title = job.title;
+  const promptText = job.prompt;
+  if (!title || !promptText) throw new Error(`job ${job.id} is missing title/prompt`);
+
+  const session = await create(title);
+  state.active[job.id] = { kind: "session", id: session.id };
   run.set(session.id, job.id);
   await save(state);
 
   try {
-    const trimmedPrompt = job.prompt.trim();
+    const trimmedPrompt = promptText.trim();
     const isSlashCommand = trimmedPrompt.startsWith("/");
-    
+
     if (isSlashCommand) {
       await sendCommand(session.id, job, trimmedPrompt);
     } else {
-      const prompt = `${job.prompt}\n\nTriggered at ${label(new Date(), tz)} by cron job \`${job.id}\`.`;
+      const prompt = `${promptText}\n\nTriggered at ${label(new Date(), tz)} by cron job \`${job.id}\`.`;
       await promptAsync(session.id, job, prompt);
     }
   } catch (err) {
@@ -166,6 +192,44 @@ async function runJob(job: Job, state: State, tz?: string) {
     await save(state);
     throw err;
   }
+}
+
+async function runExecJob(job: Job, state: State, tz?: string) {
+  const [command, ...args] = job.exec ?? [];
+  if (!command) throw new Error(`job ${job.id} has empty exec command`);
+
+  const child = Bun.spawn({
+    cmd: [command, ...args],
+    cwd: root,
+    env: {
+      ...process.env,
+      OPENCODE_CRON_JOB_ID: job.id,
+      OPENCODE_CRON_TRIGGERED_AT: label(new Date(), tz),
+    },
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+
+  if (child.pid === undefined) {
+    throw new Error(`job ${job.id} failed to start exec process`);
+  }
+
+  const pid = child.pid;
+
+  state.active[job.id] = { kind: "exec", pid };
+  await save(state);
+
+  void child.exited
+    .then(async (code: number) => {
+      if (code !== 0) {
+        console.error(`[exec] ${job.id} exited with code ${code}`);
+      }
+      await release(job.id, { kind: "exec", pid });
+    })
+    .catch(async (err: unknown) => {
+      console.error(`[exec] ${job.id} failed`, err);
+      await release(job.id, { kind: "exec", pid });
+    });
 }
 
 async function create(title: string) {
@@ -264,7 +328,7 @@ function handle(raw: string) {
   if (evt.status?.type === "busy") return;
 
   run.delete(evt.sessionID);
-  release(job, evt.sessionID).catch((err) => {
+  release(job, { kind: "session", id: evt.sessionID }).catch((err) => {
     console.error("release failed", err);
   });
 }
@@ -283,9 +347,10 @@ async function load(): Promise<State> {
         ),
       ),
       active: Object.fromEntries(
-        Object.entries(data.active).filter(
-          (x): x is [string, string] => typeof x[1] === "string",
-        ),
+        Object.entries(data.active).flatMap((x) => {
+          const active = activeRun(x[1]);
+          return active ? [[x[0], active]] : [];
+        }),
       ),
     };
   } catch {
@@ -297,25 +362,35 @@ async function save(state: State) {
   await writeFile(stateFile, JSON.stringify(state, null, 2) + "\n");
 }
 
-async function sync(state: State) {
-  const status =
-    await req<Record<string, { type?: string }>>("/session/status");
+async function sync(state: State, jobs: Job[]) {
+  const sessionJobs = jobs.some((x) => !x.exec);
+  const status = sessionJobs
+    ? await req<Record<string, { type?: string }>>("/session/status")
+    : {};
   let dirty = false;
 
-  for (const [job, sessionID] of Object.entries(state.active)) {
-    run.set(sessionID, job);
-    if (status[sessionID]?.type === "busy") continue;
+  for (const [job, active] of Object.entries(state.active)) {
+    if (active.kind === "session") {
+      run.set(active.id, job);
+      if (status[active.id]?.type === "busy") continue;
+      delete state.active[job];
+      run.delete(active.id);
+      dirty = true;
+      continue;
+    }
+
+    if (alive(active.pid)) continue;
     delete state.active[job];
-    run.delete(sessionID);
     dirty = true;
   }
 
   if (dirty) await save(state);
 }
 
-async function release(job: string, sessionID: string) {
+async function release(job: string, active: ActiveRun) {
   const state = await load();
-  if (state.active[job] !== sessionID) return;
+  const current = state.active[job];
+  if (!same(current, active)) return;
   delete state.active[job];
   await save(state);
 }
@@ -358,12 +433,20 @@ function parse(text: string): Cfg {
 function valid(x: unknown): x is Job {
   if (!record(x)) return false;
   if (typeof x.id !== "string") return false;
-  if (typeof x.title !== "string") return false;
   if (typeof x.cron !== "string") return false;
-  if (typeof x.prompt !== "string") return false;
   if (x.enabled !== undefined && typeof x.enabled !== "boolean") return false;
   if (x.no_overlap !== undefined && typeof x.no_overlap !== "boolean")
     return false;
+  const hasPrompt = typeof x.prompt === "string";
+  let hasExec = false;
+  if (Array.isArray(x.exec)) {
+    if (!x.exec.every((part) => typeof part === "string")) return false;
+    if (x.exec.length === 0) return false;
+    hasExec = true;
+  }
+  if (hasPrompt === hasExec) return false;
+  if (hasPrompt && typeof x.title !== "string") return false;
+  if (x.title !== undefined && typeof x.title !== "string") return false;
   if (x.agent !== undefined && typeof x.agent !== "string") return false;
   if (x.model !== undefined) {
     if (!record(x.model)) return false;
@@ -579,6 +662,37 @@ function label(now: Date, tz?: string) {
 
 function pad(n: number) {
   return String(n).padStart(2, "0");
+}
+
+function activeRun(x: unknown): ActiveRun | undefined {
+  if (typeof x === "string") {
+    return { kind: "session", id: x };
+  }
+  if (!record(x) || typeof x.kind !== "string") return undefined;
+  if (x.kind === "session" && typeof x.id === "string") {
+    return { kind: "session", id: x.id };
+  }
+  if (x.kind === "exec" && typeof x.pid === "number") {
+    return { kind: "exec", pid: x.pid };
+  }
+  return undefined;
+}
+
+function same(a: ActiveRun | undefined, b: ActiveRun) {
+  if (!a || a.kind !== b.kind) return false;
+  if (a.kind === "session") {
+    return a.id === b.id;
+  }
+  return a.pid === b.pid;
+}
+
+function alive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function record(x: unknown): x is Record<string, unknown> {
