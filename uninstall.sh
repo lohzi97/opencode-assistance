@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Idempotent uninstaller for components installed by install.sh
 # - Stops and removes brave-search-mcp container + image
-# - Removes opencode (installed by bun), bun runtime, nvm, Node (nvm-managed)
+# - Removes opencode (installed by bun), bun runtime, uv/uvx, nvm, Node (nvm-managed)
 # - Removes Google Chrome, Docker engine packages and related apt sources
 # - Removes tmux and sudoers entry created for opencode
 # Usage:
@@ -50,10 +50,18 @@ confirm() {
 run_as_user() {
   # Run command as the original non-root user if available. Usage: run_as_user cmd args...
   if [ -n "${SUDO_USER:-}" ] && command -v sudo >/dev/null 2>&1; then
-    sudo -u "$USER_NAME" "$@"
+    sudo -H -u "$USER_NAME" "$@"
   else
     "$@"
   fi
+}
+
+user_has_command() {
+  run_as_user bash -lc "command -v \"$1\" >/dev/null 2>&1"
+}
+
+user_command_path() {
+  run_as_user bash -lc "command -v \"$1\" 2>/dev/null || true"
 }
 
 INFO "This script will attempt to undo changes made by install.sh for user '$USER_NAME' (home: $HOME_DIR)."
@@ -61,7 +69,7 @@ cat <<EOF
 Planned actions:
 - Stop & remove 'brave-search-mcp' docker container (if present) and remove its image
 - Remove opencode (bun package) and related sudoers file /etc/sudoers.d/opencode-assistant
-- Remove per-user bun (~/.bun) and nvm (~/.nvm) directories and their shell boot lines
+- Remove per-user bun (~/.bun), uv, and nvm (~/.nvm) directories and their shell boot lines
 - Purge Google Chrome package
 - Purge Docker Engine packages and remove Docker apt source + keyring (will NOT remove /var/lib/docker by default)
 - Purge tmux
@@ -76,7 +84,7 @@ fi
 
 # 1) Brave search MCP container
 if command -v docker >/dev/null 2>&1; then
-  if docker ps -a --format '{{.Names}}' | grep -wq brave-search-mcp; then
+  if sudo docker ps -a --format '{{.Names}}' | grep -wq brave-search-mcp; then
     INFO "Stopping brave-search-mcp container (if running)"
     sudo docker stop brave-search-mcp >/dev/null 2>&1 || true
     INFO "Removing brave-search-mcp container"
@@ -98,14 +106,17 @@ else
 fi
 
 # 2) Remove opencode (bun global) and opencode binary if it's inside $HOME_DIR
-if command -v bun >/dev/null 2>&1; then
+if user_has_command bun || [ -x "${HOME_DIR}/.bun/bin/bun" ]; then
   INFO "Attempting to remove opencode via bun"
-  bun remove -g opencode-ai >/dev/null 2>&1 || true
+  run_as_user env HOME="$HOME_DIR" PATH="$HOME_DIR/.bun/bin:$PATH" bash -lc 'bun remove -g opencode-ai >/dev/null 2>&1 || true'
 else
   INFO "bun not available; looking for opencode binary"
 fi
 
-OPENCODE_BIN="$(command -v opencode || true)"
+OPENCODE_BIN="$(user_command_path opencode)"
+if [ -z "$OPENCODE_BIN" ] && [ -x "${HOME_DIR}/.bun/bin/opencode" ]; then
+  OPENCODE_BIN="${HOME_DIR}/.bun/bin/opencode"
+fi
 if [ -n "$OPENCODE_BIN" ]; then
   if echo "$OPENCODE_BIN" | grep -q "$HOME_DIR"; then
     INFO "Removing opencode binary at $OPENCODE_BIN"
@@ -152,12 +163,28 @@ safe_remove_user_dir() {
 # 4) Remove bun runtime (~/.bun)
 safe_remove_user_dir "$HOME_DIR/.bun"
 
-# 5) Remove nvm (~/.nvm)
+# 5) Remove uv executables and data
+UV_BIN_DIR="${XDG_BIN_HOME:-${HOME_DIR}/.local/bin}"
+for uv_bin in "$UV_BIN_DIR/uv" "$UV_BIN_DIR/uvx" "$UV_BIN_DIR/uvw"; do
+  if [ -e "$uv_bin" ]; then
+    INFO "Removing $uv_bin"
+    if [ -n "${SUDO_USER:-}" ] && command -v sudo >/dev/null 2>&1; then
+      sudo -u "$USER_NAME" rm -f "$uv_bin" || true
+    else
+      rm -f "$uv_bin" || true
+    fi
+  fi
+done
+safe_remove_user_dir "$HOME_DIR/.cache/uv"
+safe_remove_user_dir "$HOME_DIR/.local/share/uv"
+safe_remove_user_dir "$HOME_DIR/.config/uv"
+
+# 6) Remove nvm (~/.nvm)
 safe_remove_user_dir "$HOME_DIR/.nvm"
 
-# 6) Remove installer lines from common shell files (leave backups *.bak)
+# 7) Remove installer lines from common shell files (leave backups *.bak)
 SHELL_FILES=("$HOME_DIR/.profile" "$HOME_DIR/.bashrc" "$HOME_DIR/.bash_profile" "$HOME_DIR/.zshrc")
-SED_SCRIPT=( -e '/BUN_INSTALL/d' -e '/\\.bun/d' -e '/NVM_DIR/d' -e '/nvm.sh/d' -e '/nvm/d' )
+SED_SCRIPT=( -e '/BUN_INSTALL/d' -e '/\\.bun/d' -e '/NVM_DIR/d' -e '/nvm.sh/d' -e '/nvm/d' -e '/\\.local\/bin\/env/d' -e '/\\.local\/bin\/env\.fish/d' -e '/uv\.env\.fish/d' -e '/uv generate-shell-completion/d' -e '/uvx --generate-shell-completion/d' )
 for f in "${SHELL_FILES[@]}"; do
   if [ -f "$f" ]; then
     INFO "Cleaning installer lines from $f (backup -> ${f}.bak)"
@@ -169,7 +196,7 @@ for f in "${SHELL_FILES[@]}"; do
   fi
 done
 
-# 7) Remove Google Chrome package
+# 8) Remove Google Chrome package
 if dpkg -s google-chrome-stable >/dev/null 2>&1; then
   INFO "Purging google-chrome-stable"
   sudo apt-get purge -y google-chrome-stable || true
@@ -179,24 +206,32 @@ else
   INFO "Google Chrome not installed via apt; skipping"
 fi
 
-# 8) Remove Docker Engine packages and apt sources/keyring
+# 9) Remove Docker Engine packages and apt sources/keyring
 if command -v docker >/dev/null 2>&1 || dpkg -s docker-ce >/dev/null 2>&1 || dpkg -s docker.io >/dev/null 2>&1; then
   INFO "Stopping Docker service (if running)"
   sudo systemctl stop docker >/dev/null 2>&1 || true
   INFO "Removing Docker Engine packages"
-  sudo apt-get purge -y docker-ce docker-ce-cli containerd.io docker-compose-plugin docker-engine docker.io containerd runc || true
+  sudo apt-get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker-ce-rootless-extras docker-engine docker.io docker-compose docker-compose-v2 docker-doc podman-docker containerd runc || true
   sudo apt-get autoremove -y || true
   sudo apt-get autoclean -y || true
 else
   INFO "Docker packages not present (by name); attempting to clean Docker apt source/keyring"
 fi
 
+if [ -f /etc/apt/keyrings/docker.asc ]; then
+  INFO "Removing /etc/apt/keyrings/docker.asc"
+  sudo rm -f /etc/apt/keyrings/docker.asc || true
+fi
 if [ -f /etc/apt/keyrings/docker.gpg ]; then
-  INFO "Removing /etc/apt/keyrings/docker.gpg"
+  INFO "Removing legacy /etc/apt/keyrings/docker.gpg"
   sudo rm -f /etc/apt/keyrings/docker.gpg || true
 fi
+if [ -f /etc/apt/sources.list.d/docker.sources ]; then
+  INFO "Removing /etc/apt/sources.list.d/docker.sources"
+  sudo rm -f /etc/apt/sources.list.d/docker.sources || true
+fi
 if [ -f /etc/apt/sources.list.d/docker.list ]; then
-  INFO "Removing /etc/apt/sources.list.d/docker.list"
+  INFO "Removing legacy /etc/apt/sources.list.d/docker.list"
   sudo rm -f /etc/apt/sources.list.d/docker.list || true
 fi
 
@@ -218,7 +253,7 @@ fi
 
 INFO "Note: this script does NOT remove Docker data directories (eg. /var/lib/docker). If you want to delete Docker data, run: sudo rm -rf /var/lib/docker /var/lib/containerd"
 
-# 9) Remove tmux
+# 10) Remove tmux
 if command -v tmux >/dev/null 2>&1 || dpkg -s tmux >/dev/null 2>&1; then
   INFO "Purging tmux"
   sudo apt-get purge -y tmux || true
