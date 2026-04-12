@@ -30,3 +30,9 @@ Return a structured continuation prompt with:
 ## Verification notes
 ## Relevant files
 ## Immediate next action
+
+**!IMPORTANT!** 
+
+After the continuation prompt, add the below instruction as the last paragraph of you reply for next agent to re-read the workflow instruction:
+
+> Re-read '.opencode/commands/write-diary.md' to understand what you should do.
