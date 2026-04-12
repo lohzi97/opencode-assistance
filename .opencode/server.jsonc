@@ -14,7 +14,7 @@
     {
       "id": "memory-updater-today",
       "title": "Update today memory",
-      "cron": "0 */2 * * *", // once per two hour at 0th min
+      "cron": "15 */2 * * *", // once per two hour at 15th min
       "prompt": "/update-today-memory",
       "enabled": true,
       "no_overlap": true
@@ -27,12 +27,25 @@
       "enabled": true,
       "no_overlap": true
     },
+    // {
+    //   "id": "cron-worker-heartbeat",
+    //   "cron": "*/2 * * * *", // every 2 minutes
+    //   // exec will provide OPENCODE_CRON_TRIGGERED_AT and OPENCODE_CRON_JOB_ID as process env
+    //   "exec": [
+    //     "bash",
+    //     "-lc",
+    //     "printf '%s %s\n' \"$OPENCODE_CRON_TRIGGERED_AT\" \"$OPENCODE_CRON_JOB_ID\" >> .opencode/server/state/exec-heartbeat.log"
+    //   ],
+    //   "enabled": false,
+    //   "no_overlap": true
+    // }
     {
-      "id": "note-taking",
-      "title": "Note taking",
-      "cron": "55 */2 * * *", // once per two hour at 55th min
-      "prompt": "/update-last-7-days-memory",
-      "enabled": false,
+      "id": "qmd-refresh",
+      "cron": "0 */2 * * *", // once per two hour at 0th min
+      "exec": [
+        ".opencode/scripts/qmd-refresh.sh"
+      ],
+      "enabled": true,
       "no_overlap": true
     }
   ]
