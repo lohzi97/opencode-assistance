@@ -12,24 +12,16 @@
 #    - required to install opencode and file-check plugin
 # 2. Install opencode with `bun add -g opencode-ai`
 # 3. Grant opencode root level permission so that it can access the whole machine
-# 4. Install node version manager (nvm)
-# 5. Install latest node LTS version with nvm
+# 4. Install uv / uvx
+#    - required for computer-control mcp
+# 5. Install node version manager (nvm)
+# 6. Install latest node LTS version with nvm
 #    - required for chrome-devtools mcp
-# 6. Install google chrome
+# 7. Install google chrome
 #    - required for chrome-devtools mcp
-# 7. Install docker engine 
+# 8. Install docker engine 
 #    - https://docs.docker.com/engine/install/ubuntu/
 #    - required for brave-search mcp
-# 8. Run brave-search-mcp docker container
-#      docker run -d \
-#        --name brave-search-mcp \
-#        --restart unless-stopped \
-#        -p 9999:8080 \
-#        -e BRAVE_API_KEY="api-key" \
-#        -e BRAVE_MCP_TRANSPORT="http" \
-#        -e BRAVE_MCP_ENABLED_TOOLS="brave_web_search" \
-#        -e BRAVE_MCP_LOG_LEVEL="debug" \
-#        mcp/brave-search:latest
 # 9. install tmux
 #    - required for ./start.sh and ./stop.sh script
 
@@ -37,12 +29,10 @@
 set -euo pipefail
 
 # Idempotent installer for Linux Mint / Ubuntu (apt-based)
-# - Installs bun, opencode (global), nvm + Node LTS, Google Chrome, Docker engine
-# - Runs brave-search MCP Docker container (if BRAVE_API_KEY provided)
+# - Installs bun, opencode (global), uv/uvx, nvm + Node LTS, Google Chrome, Docker engine
 # - Creates sudoers entry to allow running opencode with NOPASSWD
 # Usage:
-#   BRAVE_API_KEY=your_key ./install.sh
-#   or run interactively and you'll be prompted for missing values
+#   ./install.sh
 
 INFO() { printf "==> %s\n" "$*"; }
 WARN() { printf "!! %s\n" "$*" >&2; }
@@ -57,7 +47,28 @@ if ! command -v apt-get >/dev/null 2>&1; then
 fi
 
 USER_NAME="${SUDO_USER:-$(whoami)}"
-HOME_DIR="${HOME:-/home/${USER_NAME}}"
+if [ -n "${SUDO_USER:-}" ]; then
+  HOME_DIR="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+else
+  HOME_DIR="${HOME:-/home/${USER_NAME}}"
+fi
+HOME_DIR="${HOME_DIR:-/home/${USER_NAME}}"
+
+run_as_user() {
+  if [ -n "${SUDO_USER:-}" ] && command -v sudo >/dev/null 2>&1; then
+    sudo -H -u "$USER_NAME" "$@"
+  else
+    "$@"
+  fi
+}
+
+user_has_command() {
+  run_as_user bash -lc "command -v \"$1\" >/dev/null 2>&1"
+}
+
+user_command_path() {
+  run_as_user bash -lc "command -v \"$1\" 2>/dev/null || true"
+}
 
 APT_UPDATED=0
 apt_update_if_needed() {
@@ -66,6 +77,9 @@ apt_update_if_needed() {
     sudo apt-get update -y
     APT_UPDATED=1
   fi
+}
+apt_mark_stale() {
+  APT_UPDATED=0
 }
 apt_install() {
   apt_update_if_needed
@@ -80,12 +94,12 @@ ensure_sudo() {
 }
 
 install_prereqs() {
-  apt_install curl wget ca-certificates gnupg lsb-release software-properties-common
+  apt_install curl wget unzip ca-certificates gnupg lsb-release software-properties-common
 }
 
 install_bun() {
-  if command -v bun >/dev/null 2>&1; then
-    INFO "bun already in PATH: $(command -v bun)"
+  if user_has_command bun; then
+    INFO "bun already in PATH: $(user_command_path bun)"
     return
   fi
   if [ -x "${HOME_DIR}/.bun/bin/bun" ]; then
@@ -95,26 +109,48 @@ install_bun() {
   fi
   INFO "Installing bun for current user"
   # bun installer installs to $HOME/.bun by default
-  curl -fsSL https://bun.sh/install | bash
+  run_as_user env HOME="$HOME_DIR" bash -lc 'curl -fsSL https://bun.sh/install | bash'
   export BUN_INSTALL="${HOME_DIR}/.bun"
   export PATH="${BUN_INSTALL}/bin:${PATH}"
   INFO "bun installed to ${BUN_INSTALL}"
 }
 
 install_opencode() {
-  if command -v opencode >/dev/null 2>&1; then
-    INFO "opencode already installed at $(command -v opencode)"
+  if user_has_command opencode; then
+    INFO "opencode already installed at $(user_command_path opencode)"
     return
   fi
-  if ! command -v bun >/dev/null 2>&1; then
+  if ! user_has_command bun && [ ! -x "${HOME_DIR}/.bun/bin/bun" ]; then
     ERR "bun is required to install opencode. Run the script again after bun is installed."
   fi
   INFO "Installing opencode (global) with bun"
-  bun add -g opencode-ai
-  if command -v opencode >/dev/null 2>&1; then
-    INFO "opencode installed at $(command -v opencode)"
+  run_as_user env HOME="$HOME_DIR" PATH="${HOME_DIR}/.bun/bin:${PATH}" bash -lc 'bun add -g opencode-ai'
+  if user_has_command opencode; then
+    INFO "opencode installed at $(user_command_path opencode)"
   else
     WARN "opencode installation finished but binary not found in PATH. It may be at ${HOME_DIR}/.bun/bin/opencode"
+  fi
+}
+
+install_uv() {
+  if user_has_command uv && user_has_command uvx; then
+    INFO "uv already in PATH: $(user_command_path uv)"
+    INFO "uvx already in PATH: $(user_command_path uvx)"
+    return
+  fi
+  if [ -x "${HOME_DIR}/.local/bin/uv" ] && [ -x "${HOME_DIR}/.local/bin/uvx" ]; then
+    INFO "Found uv and uvx in ${HOME_DIR}/.local/bin; adding to PATH for this run"
+    export PATH="${HOME_DIR}/.local/bin:${PATH}"
+    return
+  fi
+  INFO "Installing uv for current user"
+  run_as_user env HOME="$HOME_DIR" bash -lc 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+  export PATH="${HOME_DIR}/.local/bin:${PATH}"
+  if user_has_command uv && user_has_command uvx; then
+    INFO "uv installed at $(user_command_path uv)"
+    INFO "uvx installed at $(user_command_path uvx)"
+  else
+    WARN "uv installation finished but uv/uvx were not found in PATH. They may be at ${HOME_DIR}/.local/bin/uv and ${HOME_DIR}/.local/bin/uvx"
   fi
 }
 
@@ -124,7 +160,7 @@ setup_sudoers_for_opencode() {
     INFO "Sudoers file $SUDOERS_FILE already exists, skipping"
     return
   fi
-  OPENCODE_PATH="$(command -v opencode || true)"
+  OPENCODE_PATH="$(user_command_path opencode)"
   if [ -z "$OPENCODE_PATH" ]; then
     OPENCODE_PATH="${HOME_DIR}/.bun/bin/opencode"
   fi
@@ -143,20 +179,16 @@ install_nvm_and_node() {
     INFO "nvm already installed"
   else
     INFO "Installing nvm"
-    curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.6/install.sh | bash
+    run_as_user env HOME="$HOME_DIR" bash -lc 'curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.4/install.sh | bash'
   fi
-  export NVM_DIR="${HOME_DIR}/.nvm"
-  # shellcheck source=/dev/null
-  [ -s "${NVM_DIR}/nvm.sh" ] && . "${NVM_DIR}/nvm.sh"
-  if ! command -v nvm >/dev/null 2>&1; then
+  if ! run_as_user env HOME="$HOME_DIR" bash -lc 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; command -v nvm >/dev/null 2>&1'; then
     WARN "nvm not available in this shell; you may need to restart the shell to use nvm"
   else
-    if nvm ls --no-colors | grep -q "lts/"; then
+    if run_as_user env HOME="$HOME_DIR" bash -lc 'export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"; nvm ls --no-colors | grep -q "lts/"'; then
       INFO "Node LTS already installed under nvm"
     else
       INFO "Installing latest Node LTS with nvm"
-      nvm install --lts
-      nvm alias default lts/*
+      run_as_user env HOME="$HOME_DIR" bash -lc 'export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"; nvm install --lts && nvm alias default lts/*'
     fi
   fi
 }
@@ -184,15 +216,24 @@ install_docker_engine() {
     INFO "Docker already installed, skipping"
   else
     INFO "Installing Docker Engine"
-    sudo apt-get remove -y docker docker-engine docker.io containerd runc || true
+    sudo apt-get remove -y docker.io docker-compose docker-compose-v2 docker-doc podman-docker containerd runc || true
     apt_install ca-certificates curl gnupg lsb-release
-    sudo install -m0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmour -o /etc/apt/keyrings/docker.gpg
+    sudo install -m 0755 -d /etc/apt/keyrings
+    sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+    sudo chmod a+r /etc/apt/keyrings/docker.asc
     ARCH="$(dpkg --print-architecture)"
-    UBUNTU_CODENAME="$(. /etc/os-release && echo "${UBUNTU_CODENAME}")"
-    echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${UBUNTU_CODENAME} stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+    UBUNTU_CODENAME="$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")"
+    cat <<EOF | sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: ${UBUNTU_CODENAME}
+Components: stable
+Architectures: ${ARCH}
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+    apt_mark_stale
     apt_update_if_needed
-    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
   fi
   # Ensure the user is in the docker group
   if groups "$USER_NAME" | grep -qw docker; then
@@ -203,42 +244,6 @@ install_docker_engine() {
     sudo usermod -aG docker "$USER_NAME"
     WARN "User $USER_NAME was added to the docker group. Log out and log back in for the change to take effect."
   fi
-}
-
-run_brave_search_mcp_container() {
-  if ! command -v docker >/dev/null 2>&1; then
-    WARN "docker not found; skipping brave-search-mcp container"
-    return
-  fi
-  if docker ps -a --format '{{.Names}}' | grep -wq brave-search-mcp; then
-    if docker ps --format '{{.Names}}' | grep -wq brave-search-mcp; then
-      INFO "brave-search-mcp container already running"
-      return
-    else
-      INFO "Starting existing brave-search-mcp container"
-      sudo docker start brave-search-mcp
-      return
-    fi
-  fi
-  # Get API key from env or prompt
-  if [ -z "${BRAVE_API_KEY:-}" ]; then
-    read -r -p "Brave Search API key (leave empty to skip container creation): " BRAVE_API_KEY
-  fi
-  if [ -z "${BRAVE_API_KEY:-}" ]; then
-    INFO "No BRAVE_API_KEY provided; not creating brave-search-mcp container"
-    return
-  fi
-  INFO "Running brave-search-mcp Docker container (image: mcp/brave-search:latest)"
-  sudo docker run -d \
-    --name brave-search-mcp \
-    --restart unless-stopped \
-    -p 9999:8080 \
-    -e BRAVE_API_KEY="${BRAVE_API_KEY}" \
-    -e BRAVE_MCP_TRANSPORT="http" \
-    -e BRAVE_MCP_ENABLED_TOOLS="brave_web_search" \
-    -e BRAVE_MCP_LOG_LEVEL="debug" \
-    mcp/brave-search:latest
-  INFO "brave-search-mcp container started (port 9999)"
 }
 
 install_tmux() {
@@ -255,12 +260,12 @@ main() {
   install_bun
   install_opencode
   setup_sudoers_for_opencode
+  install_uv
   install_nvm_and_node
   install_google_chrome
   install_docker_engine
-  run_brave_search_mcp_container
   install_tmux
-  INFO "All done. Some changes (docker group) may require you to re-login."
+  INFO "All done. Please log out and log back in before using Docker without sudo."
 }
 
 main "$@"
