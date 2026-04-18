@@ -5,6 +5,7 @@ bun.lock
 # plugins
 telegram-ping.jsonc
 server/state/*.json
+compaction-prompts-state.json
 
 # debug
 sysprompt-before.md
