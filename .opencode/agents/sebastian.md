@@ -1,5 +1,5 @@
 ---
-model: "github-copilot/gpt-5-mini"
+model: "openrouter/deepseek/deepseek-v3.2"
 permission:
   "*": "allow"
   "task":

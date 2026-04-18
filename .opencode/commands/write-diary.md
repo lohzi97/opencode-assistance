@@ -6,67 +6,82 @@ Create a daily journal diary for date $1 (format: YYYYMMDD). If no date provided
 
 # Instruction:
 
-1. Locate session files
-   - Find all files in `journals/session/` matching the date pattern `$1*`.
+1. Find all session markdown files in `journals/session/` matching the date pattern `$1*`.
 
-2. Create task tracking list
-   - Use the `todowrite` tool to create a task list with one task per session file.
-   - Each task should have:
-     - content: "Process <filename>" (where <filename> is the session filename)
-     - priority: "medium"
-     - status: "pending"
-   - This tracking ensures progress visibility even with 100+ sessions.
+2. For each session file:
 
-3. For each session file, process sequentially:
+   1. Read the session file page by page
 
-   3.1. Mark task as in_progress
-       - Update the todo list to set the current session task status to "in_progress".
+      1. Read the session file page by page with `bun .opencode/scripts/read-session-file.js path/to/session-file.md --lines 2000 --page N`. Start from page 0.
+   
+      2. After reading each page, write down your findings about the page into `journals/session-summary/$1_sessionId.md` (e.g `journals/session-summary/$1_ses_292d83f87ffeYVB9lN1k42pPUe.md`).
+      
+         - It should be factual, descriptive and chronological. 
+         - Update the file if it already exist.
+         - IMMEDIATELY write your findings down about the page BEFORE reading the next page. DO NOT read all of the pages then only write your findings.
+   
+      3. Read the session file until all page has finished (when it reach last page, the script will return empty result).
+   
+   2. Go through `journals/session-summary/$1_sessionId.md` files created in step 1 one by one, perform verification on actual results from the session:
+   
+      - Example checks:
+        - Conversation mentioned xxx file created > verify file exists
+        - Conversation mentioned git commit added > verify commit exists
+        - Conversation mentioned commit message generated but not committed > no verification needed (chat only)
+        - Conversation mentioned backend app created > verify app exists and is runnable
+        - Conversation mentioned research on yyy topic > no verification needed (chat only)
+        - etc.
 
-   3.2. Start a subagent to:
-       - Read the session file in full, including frontmatter metadata (session-id, created, updated, exported) and the full conversation body.
-       - Perform verification on actual results from the session:
-         - Example checks:
-           - Conversation mentioned xxx file created > verify file exists
-           - Conversation mentioned git commit added > verify commit exists
-           - Conversation mentioned commit message generated but not committed > no verification needed (chat only)
-           - Conversation mentioned backend app created > verify app exists and is runnable
-           - Conversation mentioned research on yyy topic > no verification needed (chat only)
-       - Summarize the session by extracting:
-         - Metadata: Start time (from created) and end time (from updated)
-         - Core Narrative: Original Request and Actions Taken
-         - Tooling: Tools or MCPs invoked (e.g., bash, computer-control, git)
-         - Outcome: Final state (e.g., "File created," "Information provided," "Error encountered")
-         - Self-Reflection (Critique): Analyze if the assistant did anything:
-           - Wrongly: Incorrect logic, hallucinated files, misunderstood instructions
-           - Inefficiently: Redundant steps or unnecessary tool calls
-           - Badly/Lazily: Provided to-do list instead of doing work, failed formatting rules
-           - Missed Opportunities: Failed to suggest better tool or ignored clear instruction
-         - Categorize claims into "Accomplishments" (Infrastructure, Workflow, Tools, etc.)
-         - Tag each accomplishment with verification status:
-           - verified: Evidence exists on filesystem/git history
-           - suggestion only: Claim exists only in chat text/code blocks
-           - partially verified: Some artifacts exist but discrepancies found
-         - Note any Discrepancies: Explicitly call out if claimed accomplishment can't be verified
+      After each verification, IMMEDIATELY write down the result back to the session summary file, `journals/session-summary/$1_sessionId.md` BEFORE doing the next verification.
+   
+   3. After finished verifications, re-read each of the session summary files one by one, and then summarize the session by extracting:
+   
+      - Metadata: Start time (from created) and end time (from updated)
+      - Core Narrative: Original Request and Actions Taken
+      - Tooling: Tools or MCPs invoked (e.g., bash, computer-control, git)
+      - Outcome: Final state (e.g., "File created," "Information provided," "Error encountered")
+      - Self-Reflection (Critique): Analyze if the assistant did anything:
+        - Wrongly: Incorrect logic, hallucinated files, misunderstood instructions
+        - Inefficiently: Redundant steps or unnecessary tool calls
+        - Badly/Lazily: Provided to-do list instead of doing work, failed formatting rules
+        - Missed Opportunities: Failed to suggest better tool or ignored clear instruction
+      - Categorize claims into "Accomplishments" (Infrastructure, Workflow, Tools, etc.)
+      - Tag each accomplishment with verification status:
+        - verified: Evidence exists on filesystem/git history
+        - suggestion only: Claim exists only in chat text/code blocks
+        - partially verified: Some artifacts exist but discrepancies found
+      - Note any Discrepancies: Explicitly call out if claimed accomplishment can't be verified
 
-   3.3. Integrate result into journal
-       - Compile the subagent result into `journals/daily/$1.md`.
-       - This is a growing journal. 
-         - Create it, if it does not exists. 
-         - Update it to include the result into the journal, if it exists.
+      Immediately integrate your extracted result into daily journal before reading the next session summary file.
 
-   3.4. Mark task as completed
-       - Update the todo list to set the current session task status to "completed".
+      - Include the summarized session content into `journals/daily/$1.md`
+        - This is a growing journal. 
+          - Create it, if it does not exists. 
+          - Update it to include the result into the journal, if it exists.
 
-4. Journal-specific details
-   - Journal type title: `Daily Journal`
-   - Session subheadings should use times derived from session `created` and `updated` metadata
-   - Ensure the `Generated:` line is included at the end of the journal
+3. Loop until all session markdown files' summary has been written into daily journal
+
+4. Re-read the daily journal to verify that
+
+   - it follows the expected structure
+   - the content in it is accurate and correct
+
+Journal-specific details
+- Journal type title: `Daily Journal`
+- Session subheadings should use times derived from session `created` and `updated` metadata
+- Ensure the `Generated:` line is included at the end of the journal
+
+# Do and Don't
+
+- DO NOT use subagent! This is to avoid concurrent write to the same file and cause file to be messed up or corrupted.
+- DO NOT perform multiple reads then only write your findings. ALWAYS IMMEDIATELY write down your finidngs! This is important your findings to survive session auto-compaction. 
+- Follow the instruction RELIGIOUSLY! Do not skips steps or combine multiple steps together for efficiency. The instruction is designed to process LARGE amount of session file that LLM never have enough context length to process at once.
 
 Example invocation: `/write-diary YYYYMMDD`
 
 ---
 
-# Required Journal Structure
+# Required Daily Journal Structure
 
 Title: `# <Journal Type> - <Journal Start Date>`
 
@@ -262,4 +277,38 @@ Each item above indicates verification status: "verified" for checks that were o
 - Conservative actions taken during verification: No terminals were closed. Where files were missing, the assistant did not attempt recovery or destructive changes.
 
 Generated: 2026-04-04 18:28:06
+</example>
+
+# Sample Session Summary
+
+<example>
+# Session Summary - sessionId
+
+## Metadata
+- Start: 
+- End:
+
+## Core Narrative
+core-narative
+
+## Actions Taken
+1. action-1
+2. action-2
+3. action-3
+
+## Tools Used
+- tool-1
+- tool-2
+
+## Outcome
+- outcome-1
+- outcome-2
+
+## Claims to Verify
+- item-1 (verified)
+- item-2 (discrepancy found)
+- item-3 (verified)
+
+## Discrepancies
+- item-2-descrepancy
 </example>
