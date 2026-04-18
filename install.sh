@@ -25,6 +25,8 @@
 # 9. install tmux
 #    - required for ./start.sh and ./stop.sh script
 
+# 10. Install qmd (new)
+
 
 set -euo pipefail
 
