@@ -59,6 +59,7 @@ type SessionState = {
   command: string;
   arguments: string;
   updated_at: number;
+  source: "session-start";
 };
 
 type State = {
@@ -284,8 +285,24 @@ export const CompactionPromptsPlugin: Plugin = async ({ client, directory }) => 
     try {
       const text = await readFile(statePath, "utf8");
       const parsed = JSON.parse(text) as Partial<State>;
+      const sessions: Record<string, SessionState> = {};
+
+      if (isObject(parsed.sessions)) {
+        for (const [sessionID, value] of Object.entries(parsed.sessions)) {
+          if (!isObject(value) || value.source !== "session-start") continue;
+          const command = typeof value.command === "string" ? value.command.trim() : "";
+          if (!command) continue;
+          sessions[sessionID] = {
+            command,
+            arguments: typeof value.arguments === "string" ? value.arguments : "",
+            updated_at: typeof value.updated_at === "number" ? value.updated_at : Date.now(),
+            source: "session-start",
+          };
+        }
+      }
+
       return {
-        sessions: parsed.sessions ?? {},
+        sessions,
       } satisfies State;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
@@ -429,6 +446,7 @@ export const CompactionPromptsPlugin: Plugin = async ({ client, directory }) => 
       command,
       arguments: args,
       updated_at: Date.now(),
+      source: "session-start",
     };
     await writeStateSafe(state);
   };
@@ -461,6 +479,26 @@ export const CompactionPromptsPlugin: Plugin = async ({ client, directory }) => 
     }
 
     return "auto";
+  };
+
+  const shouldRememberCommand = async (sessionID: string, command: string, cfg: Cfg) => {
+    if (state.sessions[sessionID]) return false;
+    if (!cfg.auto.commands[command]) return false;
+
+    try {
+      const msgs = await client.session
+        .messages({ path: { id: sessionID }, throwOnError: true })
+        .then((res) => res.data ?? []);
+
+      // Bind command-specific auto prompts only when the command opens the session.
+      return msgs.length === 0;
+    } catch (err) {
+      await log(
+        "error",
+        `failed to inspect session start state for ${sessionID}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return false;
+    }
   };
 
   const resolvePrompt = async (prompt: PromptRef | undefined, ctx: PromptContext) => {
@@ -514,6 +552,7 @@ export const CompactionPromptsPlugin: Plugin = async ({ client, directory }) => 
       const cfg = await loadCfg();
       if (!cfg) return;
       pendingCommandMessages.add(input.sessionID);
+      if (!(await shouldRememberCommand(input.sessionID, input.command, cfg))) return;
       await rememberCommand(input.sessionID, input.command, input.arguments);
     },
     "chat.message": async (input) => {
@@ -521,9 +560,7 @@ export const CompactionPromptsPlugin: Plugin = async ({ client, directory }) => 
       if (!cfg) return;
       if (pendingCommandMessages.has(input.sessionID)) {
         pendingCommandMessages.delete(input.sessionID);
-        return;
       }
-      await forgetCommand(input.sessionID);
     },
     event: async ({ event }) => {
       if (event.type !== "session.deleted") return;
