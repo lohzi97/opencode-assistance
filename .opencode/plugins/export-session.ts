@@ -46,7 +46,9 @@
  * - When session compacted: Immediately exports the session if export_when_compact is enabled
  * - When session deleted: Cancels any pending export timer for that session
  * - On startup: Exports sessions whose current updated state has not been exported yet
- * - File naming: Based on timestamp plus session ID (YYYYMMDDHHMMSSmmm-session-id.md)
+ * - File naming: Based on updated timestamp plus session ID (YYYYMMDDHHMMSSmmm-session-id.md)
+ * - Same-day re-exports: Replace the prior exported file for that session on the same day
+ * - Cross-day re-exports: Keep prior-day exported files and write a new file for the new day
  *
  * Field Descriptions:
  * - enabled (boolean, optional): Enable or disable the plugin (defaults to true)
@@ -103,7 +105,7 @@ import type {
   Session,
   UserMessage,
 } from "@opencode-ai/sdk";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 type Cfg = {
@@ -287,6 +289,14 @@ function dateTime(time: Date) {
   ].join(" ");
 }
 
+function dayStamp(time: Date) {
+  return [
+    time.getFullYear().toString(),
+    pad(time.getMonth() + 1),
+    pad(time.getDate()),
+  ].join("");
+}
+
 function yaml(text: string) {
   return JSON.stringify(text);
 }
@@ -364,6 +374,14 @@ function filename(session: Session) {
   // session update.
   const updated = new Date(session.time.updated);
   return `${stamp(updated)}-${session.id}.md`;
+}
+
+function filenameFor(time: number, sessionID: string) {
+  return `${stamp(new Date(time))}-${sessionID}.md`;
+}
+
+function sameDay(left: number, right: number) {
+  return dayStamp(new Date(left)) === dayStamp(new Date(right));
 }
 
 export const ExportSessionPlugin: Plugin = async ({ client, directory }) => {
@@ -462,6 +480,10 @@ export const ExportSessionPlugin: Plugin = async ({ client, directory }) => {
     state.sessions[session.id] = session.time.updated;
   };
 
+  const priorExport = (state: State, sessionID: string) => {
+    return state.sessions[sessionID];
+  };
+
   const save = async (sessionID: string, why: ExportReason) => {
     const data = await cfg();
     if (!data || !shouldExport(data, why) || !data.export_dir) return;
@@ -487,8 +509,20 @@ export const ExportSessionPlugin: Plugin = async ({ client, directory }) => {
         tool_details: data.tool_details !== false,
         assistant_metadata: data.assistant_metadata !== false,
       };
+      const prev = priorExport(state, session.id);
       const dest = path.join(dir, filename(session));
       await writeFile(dest, format(session, msgs, opts, why), "utf8");
+      // Same-day overwrite rule:
+      // If the session was previously exported earlier on the same calendar day,
+      // remove that earlier file so only the most recent same-day export remains.
+      if (
+        prev !== undefined &&
+        prev !== session.time.updated &&
+        sameDay(prev, session.time.updated)
+      ) {
+        const prior = path.join(dir, filenameFor(prev, session.id));
+        await rm(prior, { force: true });
+      }
       markExported(state, session);
       await writeState(stateFile, state);
       await log("info", `exported ${sessionID} to ${dest}`);
