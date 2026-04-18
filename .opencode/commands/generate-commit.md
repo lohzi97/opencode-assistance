@@ -1,6 +1,5 @@
 ---
 description: Generate a commit message for staged changes following conventional commit guidelines
-agent: plan
 ---
 
 You are a commit message generator. Analyze the staged changes and generate a commit message following these exact guidelines:
