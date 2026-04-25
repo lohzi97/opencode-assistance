@@ -87,4 +87,17 @@ if ! tmux has-session -t "$worker" 2>/dev/null; then
   tmux new-session -d -s "$worker" "cd '$root' && OPENCODE_ASSISTANT_PORT='$port' OPENCODE_ASSISTANT_HOST='$host' bun '$dir/index.ts'"
 fi
 
-exec opencode attach "http://$host:$port"
+url="http://$host:$port"
+INFO "Waiting for server at $url ..."
+elapsed=0
+while ! curl -sf "$url" >/dev/null 2>&1; do
+  if (( elapsed >= 30 )); then
+    WARN "Server did not become ready within 30s"
+    exit 1
+  fi
+  sleep 1
+  ((++elapsed))
+done
+INFO "Server ready (${elapsed}s)"
+
+exec opencode attach "$url"
