@@ -8,13 +8,15 @@
  *   and print a requested page to stdout.
  *
  * Usage:
- *   node .opencode/scripts/read-session-file.js <file_path> --lines <number> --page <index>
+ *   node .opencode/scripts/read-session-file.js <file_path> --lines <number> --page <index> [--frontmatter]
  *
  * Arguments:
  * - file_path (required): path to the session file to read (absolute or relative)
  * - --lines <number> (required, >0): maximum number of "lines" per page. The script
  *   preserves exact newlines and counts array entries produced by the split as lines.
  * - --page <index> (required, >=0): zero-based page index to output.
+ * - --frontmatter (optional): prepend YAML front matter with pagination metadata
+ *   before printing the requested page content.
  *
  * Behavior:
  * - Reads the file as UTF-8 and preserves exact newline characters using
@@ -33,9 +35,13 @@
  * - Writes the requested page's actions to stdout. Actions are concatenated
  *   preserving original newlines (useful for downstream tools expecting exact
  *   formatting).
+ * - When --frontmatter is provided, writes a YAML front matter block first with
+ *   `page`, `last_page`, `total_pages`, and `has_page`, followed by the page
+ *   content. Default output remains content-only for backward compatibility.
  *
  * Examples:
  *   node .opencode/scripts/read-session-file.js journals/session/20260402-xxx.md --lines 200 --page 0
+ *   node .opencode/scripts/read-session-file.js journals/session/20260402-xxx.md --lines 200 --page 0 --frontmatter
  *
  * Exit codes:
  * - 0: success (page printed or nothing printed if page index out of range)
@@ -56,6 +62,7 @@ function main() {
     let filePath = '';
     let linesLimit = 0;
     let pageIndex = 0;
+    let useFrontmatter = false;
 
     // Parse arguments
     for (let i = 0; i < args.length; i++) {
@@ -63,6 +70,8 @@ function main() {
             linesLimit = parseInt(args[++i], 10);
         } else if (args[i] === '--page' && i + 1 < args.length) {
             pageIndex = parseInt(args[++i], 10);
+        } else if (args[i] === '--frontmatter') {
+            useFrontmatter = true;
         } else if (!args[i].startsWith('--')) {
             filePath = args[i];
         }
@@ -171,12 +180,24 @@ function main() {
         pages.push(currentPage);
     }
 
+    const totalPages = pages.length;
+    const lastPage = totalPages > 0 ? totalPages - 1 : -1;
+    const hasPage = pageIndex < totalPages;
+    const pageContent = hasPage
+        ? pages[pageIndex].map((action) => action.join('')).join('')
+        : '';
+
     // 4. Output the requested page
-    if (pageIndex < pages.length) {
-        for (const action of pages[pageIndex]) {
-            process.stdout.write(action.join(''));
-        }
+    if (useFrontmatter) {
+        process.stdout.write('---\n');
+        process.stdout.write(`page: ${pageIndex}\n`);
+        process.stdout.write(`last_page: ${lastPage}\n`);
+        process.stdout.write(`total_pages: ${totalPages}\n`);
+        process.stdout.write(`has_page: ${hasPage}\n`);
+        process.stdout.write('---\n');
     }
+
+    process.stdout.write(pageContent);
 }
 
 main();

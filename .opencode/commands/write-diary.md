@@ -12,7 +12,7 @@ Create a daily journal diary for date $1 (format: YYYYMMDD). If no date provided
 
    1. Read the session file page by page
 
-      1. Read the session file page by page with `bun .opencode/scripts/read-session-file.js path/to/session-file.md --lines 2000 --page N`. Start from page 0.
+      1. Read the session file page by page with `bun .opencode/scripts/read-session-file.js path/to/session-file.md --frontmatter --lines 2000 --page N`. Start from page 0.
    
       2. After reading each page, write down your findings about the page into `journals/session-summary/$1_sessionId.md` (e.g `journals/session-summary/$1_ses_292d83f87ffeYVB9lN1k42pPUe.md`).
       
@@ -76,6 +76,7 @@ Journal-specific details
 - DO NOT use subagent! This is to avoid concurrent write to the same file and cause file to be messed up or corrupted.
 - DO NOT perform multiple reads then only write your findings. ALWAYS IMMEDIATELY write down your finidngs! This is important your findings to survive session auto-compaction. 
 - Follow the instruction RELIGIOUSLY! Do not skips steps or combine multiple steps together for efficiency. The instruction is designed to process LARGE amount of session file that LLM never have enough context length to process at once.
+- Don't worry about your context limit, auto compaction will be carried out to ensure that you always have sufficient context to finish the task. 
 
 Example invocation: `/write-diary YYYYMMDD`
 
