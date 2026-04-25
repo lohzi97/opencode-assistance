@@ -14,6 +14,10 @@
   // Milliseconds to wait before exporting an idle session.
   "idle_wait_ms": 900000,
 
+  // Skip export when the session title contains any of these substrings.
+  // Matching is case-insensitive.
+  "exclude_if_title_contains": ["Daily Journal", "Update today memory", "Update last 7 days memory", ],
+
   // Match the built-in transcript export options.
   "thinking": true,
   "tool_details": true,

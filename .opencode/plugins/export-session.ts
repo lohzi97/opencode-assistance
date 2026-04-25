@@ -28,6 +28,9 @@
  *   "export_dir": "sessions",
  *   // Time to wait (ms) after session goes idle before exporting (optional, defaults to 30 minutes)
  *   "idle_wait_ms": 1800000,
+ *   // Skip export when the session title contains any of these substrings (optional)
+ *   // Matching is case-insensitive.
+ *   "exclude_if_title_contains": ["Write Daily Journal"],
  *   // Include assistant thinking/reasoning blocks (optional, defaults to true)
  *   "thinking": true,
  *   // Include detailed tool input/output (optional, defaults to true)
@@ -44,8 +47,9 @@
  * - If enabled is set to false: Plugin is disabled, no sessions will be exported
  * - When session goes idle: Arms a timer (idle_wait_ms) then exports the session if export_when_idle is enabled
  * - When session compacted: Immediately exports the session if export_when_compact is enabled
+ * - If exclude_if_title_contains matches the session title: Skips exporting that session version
  * - When session deleted: Cancels any pending export timer for that session
- * - On startup: Exports sessions whose current updated state has not been exported yet
+ * - On startup: Processes sessions whose current updated state has not been handled yet
  * - File naming: Based on updated timestamp plus session ID (YYYYMMDDHHMMSSmmm-session-id.md)
  * - Same-day re-exports: Replace the prior exported file for that session on the same day
  * - Cross-day re-exports: Keep prior-day exported files and write a new file for the new day
@@ -56,6 +60,7 @@
  * - export_when_compact (boolean, optional): Export when a session is compacted (defaults to true)
  * - export_dir (string, required): Directory path for exported markdown files (relative or absolute)
  * - idle_wait_ms (number, optional): Milliseconds to wait after idle before exporting (defaults to 30 minutes)
+ * - exclude_if_title_contains (string[], optional): Skip export when the session title contains any listed substring (case-insensitive)
  * - thinking (boolean, optional): Include assistant thinking/reasoning blocks (defaults to true)
  * - tool_details (boolean, optional): Include tool input, output, and error details (defaults to true)
  * - assistant_metadata (boolean, optional): Include provider, model, and duration info (defaults to true)
@@ -114,6 +119,7 @@ type Cfg = {
   export_when_compact?: boolean;
   export_dir?: string;
   idle_wait_ms?: number;
+  exclude_if_title_contains?: string[];
   thinking?: boolean;
   tool_details?: boolean;
   assistant_metadata?: boolean;
@@ -134,6 +140,7 @@ type ExportReason = "idle" | "compacting";
 
 type State = {
   sessions: Record<string, number>;
+  skipped: Record<string, number>;
 };
 
 const DEFAULT_IDLE_WAIT_MS = 30 * 60 * 1000;
@@ -301,6 +308,19 @@ function yaml(text: string) {
   return JSON.stringify(text);
 }
 
+function titleFilters(data: Cfg) {
+  return (data.exclude_if_title_contains ?? [])
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function skipTitle(data: Cfg, session: Session) {
+  const filters = titleFilters(data);
+  if (filters.length === 0) return false;
+  const title = session.title.toLowerCase();
+  return filters.some((item) => title.includes(item.toLowerCase()));
+}
+
 function assistant(msg: AssistantMessage, full: boolean) {
   if (!full) return "## Assistant\n\n";
   const dur = msg.time.completed
@@ -423,6 +443,14 @@ export const ExportSessionPlugin: Plugin = async ({ client, directory }) => {
         await log("error", `invalid idle_wait_ms in ${file}`);
         return;
       }
+      if (
+        data.exclude_if_title_contains !== undefined &&
+        (!Array.isArray(data.exclude_if_title_contains) ||
+          data.exclude_if_title_contains.some((item) => typeof item !== "string"))
+      ) {
+        await log("error", `invalid exclude_if_title_contains in ${file}`);
+        return;
+      }
       return data;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
@@ -459,10 +487,11 @@ export const ExportSessionPlugin: Plugin = async ({ client, directory }) => {
       const parsed = JSON.parse(text) as Partial<State>;
       return {
         sessions: parsed.sessions ?? {},
+        skipped: parsed.skipped ?? {},
       } satisfies State;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-        return { sessions: {} } satisfies State;
+        return { sessions: {}, skipped: {} } satisfies State;
       }
       throw err;
     }
@@ -472,12 +501,20 @@ export const ExportSessionPlugin: Plugin = async ({ client, directory }) => {
     await writeFile(stateFile, JSON.stringify(state, null, 2), "utf8");
   };
 
-  const exported = (state: State, session: Session) => {
-    return state.sessions[session.id] === session.time.updated;
+  const handled = (state: State, session: Session) => {
+    return (
+      state.sessions[session.id] === session.time.updated ||
+      state.skipped[session.id] === session.time.updated
+    );
   };
 
   const markExported = (state: State, session: Session) => {
     state.sessions[session.id] = session.time.updated;
+    delete state.skipped[session.id];
+  };
+
+  const markSkipped = (state: State, session: Session) => {
+    state.skipped[session.id] = session.time.updated;
   };
 
   const priorExport = (state: State, sessionID: string) => {
@@ -495,9 +532,14 @@ export const ExportSessionPlugin: Plugin = async ({ client, directory }) => {
         .get({ path: { id: sessionID }, throwOnError: true })
         .then((res) => res.data!);
       const state = await readState(stateFile);
-      if (exported(state, session)) return;
+      if (handled(state, session)) return;
       if (!root(session)) {
-        markExported(state, session);
+        markSkipped(state, session);
+        await writeState(stateFile, state);
+        return;
+      }
+      if (skipTitle(data, session)) {
+        markSkipped(state, session);
         await writeState(stateFile, state);
         return;
       }
@@ -572,7 +614,7 @@ export const ExportSessionPlugin: Plugin = async ({ client, directory }) => {
         .then((res) => res.data ?? []);
 
       for (const session of sessions) {
-        if (exported(state, session)) continue;
+        if (handled(state, session)) continue;
         await save(session.id, "idle");
       }
     } catch (err) {
