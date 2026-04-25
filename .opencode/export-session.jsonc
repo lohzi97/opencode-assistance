@@ -4,20 +4,25 @@
 
   // Export when the session becomes idle (optional, defaults to true)
   "export_when_idle": true,
-
+  
   // Export when the session is compacted (optional, defaults to true)
   "export_when_compact": false,
-
+  
   // Relative paths are resolved from the project root.
   "export_dir": "journals/session",
-
+  
   // Milliseconds to wait before exporting an idle session.
   "idle_wait_ms": 900000,
-
+  
   // Skip export when the session title contains any of these substrings.
   // Matching is case-insensitive.
-  "exclude_if_title_contains": ["Daily Journal", "Update today memory", "Update last 7 days memory", ],
-
+  "exclude_if_title_contains": [
+    "Daily Journal",
+    "Update today memory",
+    "Update last 7 days memory",
+    "Temp Summary"
+  ],
+  
   // Match the built-in transcript export options.
   "thinking": true,
   "tool_details": true,

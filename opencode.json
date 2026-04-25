@@ -2,7 +2,10 @@
   "$schema": "https://opencode.ai/config.json",
   "model": "zai-coding-plan/glm-5.1",
   "small_model": "github-copilot/gpt-5-mini",
-    "provider": {
+  "compaction": {
+    "auto": false
+  },
+  "provider": {
     "openrouter": {
       "models": {
         "deepseek/deepseek-v3.2": {

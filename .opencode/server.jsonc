@@ -1,52 +1,95 @@
 {
-  // Optional IANA timezone for cron evaluation.
-  // If omitted, the machine local timezone is used.
-  "timezone": "Asia/Kuala_Lumpur",
-  "jobs": [
-    {
-      "id": "daily-journal-writter",
-      "title": "Write Daily Journal",
-      "cron": "55 23 * * *", // every day 23:55
-      "prompt": "/write-diary",
-      "enabled": true,
-      "no_overlap": true
+  "cron": {
+    // Optional IANA timezone for cron evaluation.
+    // If omitted, the machine local timezone is used.
+    "timezone": "Asia/Kuala_Lumpur",
+    "jobs": [
+      {
+        "id": "daily-journal-writter",
+        "title": "Write Daily Journal",
+        "cron": "55 23 * * *", // every day 23:55
+        "prompt": "/write-diary",
+        "enabled": false,
+        "no_overlap": true
+      },
+      {
+        "id": "memory-updater-today",
+        "title": "Update today memory",
+        "cron": "15 */2 * * *", // once per two hour at 15th min
+        "prompt": "/update-today-memory",
+        "enabled": false,
+        "no_overlap": true
+      },
+      {
+        "id": "memory-updater-last-7-days",
+        "title": "Update last 7 days memory",
+        "cron": "15 0 * * *", // every day 12:15 AM
+        "prompt": "/update-last-7-days-memory",
+        "enabled": false,
+        "no_overlap": true
+      },
+      // {
+      //   "id": "cron-worker-heartbeat",
+      //   "cron": "*/2 * * * *", // every 2 minutes
+      //   // exec will provide OPENCODE_CRON_TRIGGERED_AT and OPENCODE_CRON_JOB_ID as process env
+      //   "exec": [
+      //     "bash",
+      //     "-lc",
+      //     "printf '%s %s\n' \"$OPENCODE_CRON_TRIGGERED_AT\" \"$OPENCODE_CRON_JOB_ID\" >> .opencode/server/state/exec-heartbeat.log"
+      //   ],
+      //   "enabled": false,
+      //   "no_overlap": true
+      // }
+      {
+        "id": "qmd-refresh",
+        "cron": "0 */2 * * *", // once per two hour at 0th min
+        "exec": [
+          ".opencode/scripts/qmd-refresh.sh"
+        ],
+        "enabled": false,
+        "no_overlap": true
+      }
+    ]
+  },
+
+  "compaction": {
+    // Abort once usage_ratio = tokens_total / model.limit.context reaches this.
+    "enabled": true,
+    "default_threshold": 0.80,
+
+    // Optional per-model overrides keyed by provider/model.
+    "models": {
+      "github-copilot/gpt-5-mini": {
+        "threshold": 0.50
+      },
+      "openrouter/deepseek/deepseek-v3.2": {
+        "threshold": 0.60
+      }
     },
-    {
-      "id": "memory-updater-today",
-      "title": "Update today memory",
-      "cron": "15 */2 * * *", // once per two hour at 15th min
-      "prompt": "/update-today-memory",
-      "enabled": true,
-      "no_overlap": true
+
+    "carryover": {
+      "max_recent_assistant_messages": 3,
+      "max_recent_tool_parts": 6,
+      "max_recent_text_chars": 12000
     },
-    {
-      "id": "memory-updater-last-7-days",
-      "title": "Update last 7 days memory",
-      "cron": "15 0 * * *", // every day 12:15 AM
-      "prompt": "/update-last-7-days-memory",
-      "enabled": true,
-      "no_overlap": true
+
+    // Temp summarization sessions reuse the normal OpenCode model stack.
+    "summarizer": {
+      "providerID": "deepseek",
+      "modelID": "deepseek-v4-flash"
     },
-    // {
-    //   "id": "cron-worker-heartbeat",
-    //   "cron": "*/2 * * * *", // every 2 minutes
-    //   // exec will provide OPENCODE_CRON_TRIGGERED_AT and OPENCODE_CRON_JOB_ID as process env
-    //   "exec": [
-    //     "bash",
-    //     "-lc",
-    //     "printf '%s %s\n' \"$OPENCODE_CRON_TRIGGERED_AT\" \"$OPENCODE_CRON_JOB_ID\" >> .opencode/server/state/exec-heartbeat.log"
-    //   ],
-    //   "enabled": false,
-    //   "no_overlap": true
-    // }
-    {
-      "id": "qmd-refresh",
-      "cron": "0 */2 * * *", // once per two hour at 0th min
-      "exec": [
-        ".opencode/scripts/qmd-refresh.sh"
-      ],
-      "enabled": true,
-      "no_overlap": true
-    }
-  ]
+
+    // Rename the source session into `[base] [ctx-ab12] #1` after handoff.
+    "rename_original": true,
+    "rename_delay_ms": 500,
+
+    // Keep early runs inspectable by archiving temp sessions instead of deleting.
+    "temp_session_cleanup": "archive",
+
+    // Operational safety knobs.
+    "prevent_builtin_compaction": true,
+    "abort_wait_ms": 15000,
+    "history_retry_count": 3,
+    "provider_refresh_ms": 300000
+  }
 }
