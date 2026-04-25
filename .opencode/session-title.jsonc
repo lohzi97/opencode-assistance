@@ -1,0 +1,12 @@
+{
+  // Enable or disable the plugin behavior.
+  "enabled": true,
+
+  // Keys are slash command names without the leading "/".
+  // Supported placeholders:
+  // - {{TIMESTAMP}} : local time in YYYYMMDDHHmmss
+  "commands": {
+    "generate-commit": "Generate commit {{TIMESTAMP}}",
+    "summarize-session": "Summarize session {{TIMESTAMP}}"
+  }
+}

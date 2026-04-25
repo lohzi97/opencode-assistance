@@ -20,7 +20,9 @@
     "Daily Journal",
     "Update today memory",
     "Update last 7 days memory",
-    "Temp Summary"
+    "Temp Summary",
+    "Summarize session",
+    "Generate commit"
   ],
   
   // Match the built-in transcript export options.
