@@ -1,5 +1,6 @@
 ---
 description: Generate a commit message for staged changes following conventional commit guidelines
+model: github-copilot/gpt-5-mini
 ---
 
 You are a commit message generator. Analyze the staged changes and generate a commit message following these exact guidelines:
