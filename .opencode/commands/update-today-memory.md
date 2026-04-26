@@ -1,6 +1,7 @@
 ---
 description: Create a concise memory brief of today's interactions for context retention
 agent: sebastian
+model: github-copilot/gpt-5-mini
 ---
 Update `memory/today.md` with a concise brief of today's interactions. 
 

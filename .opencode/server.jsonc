@@ -4,22 +4,15 @@
     // If omitted, the machine local timezone is used.
     "timezone": "Asia/Kuala_Lumpur",
     "jobs": [
-      {
-        "id": "memory-updater-today",
-        "title": "Update today memory",
-        "cron": "15 */2 * * *", // once per two hour at 15th min
-        "prompt": "/update-today-memory",
-        "enabled": false,
-        "no_overlap": true
-      },
-      {
-        "id": "memory-updater-last-7-days",
-        "title": "Update last 7 days memory",
-        "cron": "15 0 * * *", // every day 12:15 AM
-        "prompt": "/update-last-7-days-memory",
-        "enabled": false,
-        "no_overlap": true
-      },
+      // Example:
+      // {
+      //   "id": "memory-updater-last-7-days",
+      //   "title": "Update last 7 days memory",
+      //   "cron": "0 5 * * *", // every day 5:00 AM
+      //   "prompt": "/update-last-7-days-memory",
+      //   "enabled": false,
+      //   "no_overlap": true
+      // },
       // {
       //   "id": "cron-worker-heartbeat",
       //   "cron": "*/2 * * * *", // every 2 minutes
@@ -34,7 +27,7 @@
       // }
       {
         "id": "daily-diary",
-        "cron": "5 0 * * *", // every day 12:05 AM
+        "cron": "0 3 * * *", // every day 3:00 AM
         "exec": [
           "bun",
           ".opencode/scripts/daily-diary-workflow.ts"
@@ -44,7 +37,7 @@
       },
       {
         "id": "qmd-refresh",
-        "cron": "0 */2 * * *", // once per two hour at 0th min
+        "cron": "0 4 * * *", // every day 4:00 AM
         "exec": [
           ".opencode/scripts/qmd-refresh.sh"
         ],
