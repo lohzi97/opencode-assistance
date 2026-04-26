@@ -5,14 +5,6 @@
     "timezone": "Asia/Kuala_Lumpur",
     "jobs": [
       {
-        "id": "daily-journal-writter",
-        "title": "Write Daily Journal",
-        "cron": "55 23 * * *", // every day 23:55
-        "prompt": "/write-diary",
-        "enabled": false,
-        "no_overlap": true
-      },
-      {
         "id": "memory-updater-today",
         "title": "Update today memory",
         "cron": "15 */2 * * *", // once per two hour at 15th min
@@ -41,12 +33,22 @@
       //   "no_overlap": true
       // }
       {
+        "id": "daily-diary",
+        "cron": "5 0 * * *", // every day 12:05 AM
+        "exec": [
+          "bun",
+          ".opencode/scripts/daily-diary-workflow.ts"
+        ],
+        "enabled": true,
+        "no_overlap": true
+      },
+      {
         "id": "qmd-refresh",
         "cron": "0 */2 * * *", // once per two hour at 0th min
         "exec": [
           ".opencode/scripts/qmd-refresh.sh"
         ],
-        "enabled": false,
+        "enabled": true,
         "no_overlap": true
       }
     ]

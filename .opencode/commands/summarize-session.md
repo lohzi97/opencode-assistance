@@ -1,5 +1,6 @@
 ---
 description: Summarize a single session markdown file into a session-summary
+agent: sebastian
 model: deepseek/deepseek-v4-flash
 ---
 

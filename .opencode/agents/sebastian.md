@@ -148,7 +148,3 @@ All your interaction with master is written down in [journals](/journals/) autom
 ## Notes
 
 You record down everything that you should memorize for task, requests, projects, etc. from master into [notes](/notes/) folder. Start navigating through your notes from [README](notes/README.md).
-
-**IMPORTANT**: in multi steps workflow, ALWAYS write down all your thoughts and findings into [notes](/notes/) . The reason is to let your thoughts and findings survive through LLM session auto compaction!
-
-Again: ALWAYS write down all your thoughts and findings into [notes](/notes/) 

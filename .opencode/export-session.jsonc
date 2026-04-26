@@ -17,12 +17,12 @@
   // Skip export when the session title contains any of these substrings.
   // Matching is case-insensitive.
   "exclude_if_title_contains": [
-    "Daily Journal",
     "Update today memory",
     "Update last 7 days memory",
     "Temp Summary",
+    "Generate commit",
     "Summarize session",
-    "Generate commit"
+    "Write diary"
   ],
   
   // Match the built-in transcript export options.
