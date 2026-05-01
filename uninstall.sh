@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Idempotent uninstaller for components installed by install.sh
 # - Stops and removes brave-search-mcp container + image
-# - Removes opencode (installed by bun), bun runtime, uv/uvx, nvm, Node (nvm-managed)
+# - Removes opencode and qmd (installed by bun), bun runtime, uv/uvx, nvm, Node (nvm-managed)
 # - Removes Google Chrome, Docker engine packages and related apt sources
 # - Removes tmux and sudoers entry created for opencode
 # Usage:
@@ -69,6 +69,7 @@ cat <<EOF
 Planned actions:
 - Stop & remove 'brave-search-mcp' docker container (if present) and remove its image
 - Remove opencode (bun package) and related sudoers file /etc/sudoers.d/opencode-assistant
+- Remove qmd (bun package) and qmd cache/config data under ~/.cache/qmd and ~/.config/qmd
 - Remove per-user bun (~/.bun), uv, and nvm (~/.nvm) directories and their shell boot lines
 - Purge Google Chrome package
 - Purge Docker Engine packages and remove Docker apt source + keyring (will NOT remove /var/lib/docker by default)
@@ -138,6 +139,30 @@ else
   INFO "Sudoers entry not present; skipping"
 fi
 
+# 4) Remove qmd (bun global) and qmd binary if it's inside $HOME_DIR
+if user_has_command bun || [ -x "${HOME_DIR}/.bun/bin/bun" ]; then
+  INFO "Attempting to remove qmd via bun"
+  run_as_user env HOME="$HOME_DIR" PATH="$HOME_DIR/.bun/bin:$PATH" bash -lc 'bun remove -g @tobilu/qmd >/dev/null 2>&1 || true'
+else
+  INFO "bun not available; looking for qmd binary"
+fi
+
+QMD_BIN="$(user_command_path qmd)"
+if [ -z "$QMD_BIN" ] && [ -x "${HOME_DIR}/.bun/bin/qmd" ]; then
+  QMD_BIN="${HOME_DIR}/.bun/bin/qmd"
+fi
+if [ -n "$QMD_BIN" ]; then
+  if echo "$QMD_BIN" | grep -q "$HOME_DIR"; then
+    INFO "Removing qmd binary at $QMD_BIN"
+    sudo rm -f "$QMD_BIN" || true
+  else
+    WARN "Found qmd at $QMD_BIN which is outside $HOME_DIR; leaving it untouched."
+    INFO "If you want it removed, run: sudo rm -f $QMD_BIN"
+  fi
+else
+  INFO "No qmd binary found in PATH"
+fi
+
 # Helper: safely remove a directory only if it exists and is owned by the target user
 safe_remove_user_dir() {
   local dir="$1"
@@ -160,10 +185,14 @@ safe_remove_user_dir() {
   fi
 }
 
-# 4) Remove bun runtime (~/.bun)
+# 5) Remove qmd cache and config
+safe_remove_user_dir "$HOME_DIR/.cache/qmd"
+safe_remove_user_dir "$HOME_DIR/.config/qmd"
+
+# 6) Remove bun runtime (~/.bun)
 safe_remove_user_dir "$HOME_DIR/.bun"
 
-# 5) Remove uv executables and data
+# 7) Remove uv executables and data
 UV_BIN_DIR="${XDG_BIN_HOME:-${HOME_DIR}/.local/bin}"
 for uv_bin in "$UV_BIN_DIR/uv" "$UV_BIN_DIR/uvx" "$UV_BIN_DIR/uvw"; do
   if [ -e "$uv_bin" ]; then
@@ -179,10 +208,10 @@ safe_remove_user_dir "$HOME_DIR/.cache/uv"
 safe_remove_user_dir "$HOME_DIR/.local/share/uv"
 safe_remove_user_dir "$HOME_DIR/.config/uv"
 
-# 6) Remove nvm (~/.nvm)
+# 8) Remove nvm (~/.nvm)
 safe_remove_user_dir "$HOME_DIR/.nvm"
 
-# 7) Remove installer lines from common shell files (leave backups *.bak)
+# 9) Remove installer lines from common shell files (leave backups *.bak)
 SHELL_FILES=("$HOME_DIR/.profile" "$HOME_DIR/.bashrc" "$HOME_DIR/.bash_profile" "$HOME_DIR/.zshrc")
 SED_SCRIPT=( -e '/BUN_INSTALL/d' -e '/\\.bun/d' -e '/NVM_DIR/d' -e '/nvm.sh/d' -e '/nvm/d' -e '/\\.local\/bin\/env/d' -e '/\\.local\/bin\/env\.fish/d' -e '/uv\.env\.fish/d' -e '/uv generate-shell-completion/d' -e '/uvx --generate-shell-completion/d' )
 for f in "${SHELL_FILES[@]}"; do
@@ -196,7 +225,7 @@ for f in "${SHELL_FILES[@]}"; do
   fi
 done
 
-# 8) Remove Google Chrome package
+# 10) Remove Google Chrome package
 if dpkg -s google-chrome-stable >/dev/null 2>&1; then
   INFO "Purging google-chrome-stable"
   sudo apt-get purge -y google-chrome-stable || true
@@ -206,7 +235,7 @@ else
   INFO "Google Chrome not installed via apt; skipping"
 fi
 
-# 9) Remove Docker Engine packages and apt sources/keyring
+# 11) Remove Docker Engine packages and apt sources/keyring
 if command -v docker >/dev/null 2>&1 || dpkg -s docker-ce >/dev/null 2>&1 || dpkg -s docker.io >/dev/null 2>&1; then
   INFO "Stopping Docker service (if running)"
   sudo systemctl stop docker >/dev/null 2>&1 || true
@@ -253,7 +282,7 @@ fi
 
 INFO "Note: this script does NOT remove Docker data directories (eg. /var/lib/docker). If you want to delete Docker data, run: sudo rm -rf /var/lib/docker /var/lib/containerd"
 
-# 10) Remove tmux
+# 12) Remove tmux
 if command -v tmux >/dev/null 2>&1 || dpkg -s tmux >/dev/null 2>&1; then
   INFO "Purging tmux"
   sudo apt-get purge -y tmux || true
@@ -272,7 +301,7 @@ cat <<EOF
 - If you removed Docker but want to free disk space, consider removing /var/lib/docker and /var/lib/containerd (destructive):
   sudo rm -rf /var/lib/docker /var/lib/containerd
 - Review shell startup files (${SHELL_FILES[*]}) for any remaining customizations and remove backups (*.bak) when satisfied.
-- If an opencode binary remained outside your home directory, you may remove it manually (shown in the warnings above).
+- If an opencode or qmd binary remained outside your home directory, you may remove it manually (shown in the warnings above).
 - Log out and back in if you changed group membership (docker) to apply changes.
 EOF
 

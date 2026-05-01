@@ -31,7 +31,7 @@
 set -euo pipefail
 
 # Idempotent installer for Linux Mint / Ubuntu (apt-based)
-# - Installs bun, opencode (global), uv/uvx, nvm + Node LTS, Google Chrome, Docker engine
+# - Installs bun, opencode (global), qmd (global), uv/uvx, nvm + Node LTS, Google Chrome, Docker engine
 # - Creates sudoers entry to allow running opencode with NOPASSWD
 # Usage:
 #   ./install.sh
@@ -55,6 +55,7 @@ else
   HOME_DIR="${HOME:-/home/${USER_NAME}}"
 fi
 HOME_DIR="${HOME_DIR:-/home/${USER_NAME}}"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 run_as_user() {
   if [ -n "${SUDO_USER:-}" ] && command -v sudo >/dev/null 2>&1; then
@@ -132,6 +133,37 @@ install_opencode() {
   else
     WARN "opencode installation finished but binary not found in PATH. It may be at ${HOME_DIR}/.bun/bin/opencode"
   fi
+}
+
+install_qmd() {
+  if [ -x "${HOME_DIR}/.bun/bin/qmd" ]; then
+    INFO "qmd already installed via bun at ${HOME_DIR}/.bun/bin/qmd"
+    return
+  fi
+  if ! user_has_command bun && [ ! -x "${HOME_DIR}/.bun/bin/bun" ]; then
+    ERR "bun is required to install qmd. Run the script again after bun is installed."
+  fi
+  if user_has_command qmd; then
+    WARN "qmd already exists at $(user_command_path qmd); installing a bun-managed copy as well."
+  fi
+  INFO "Installing qmd (global) with bun"
+  run_as_user env HOME="$HOME_DIR" PATH="${HOME_DIR}/.bun/bin:${PATH}" bash -lc 'bun add -g @tobilu/qmd'
+  if [ -x "${HOME_DIR}/.bun/bin/qmd" ]; then
+    INFO "qmd installed at ${HOME_DIR}/.bun/bin/qmd"
+  else
+    WARN "qmd installation finished but bun-managed binary not found at ${HOME_DIR}/.bun/bin/qmd"
+  fi
+}
+
+setup_qmd() {
+  local setup_script="${PROJECT_ROOT}/.opencode/scripts/qmd-setup.sh"
+
+  if [ ! -f "$setup_script" ]; then
+    ERR "Expected qmd setup script at '$setup_script' but it was not found."
+  fi
+
+  INFO "Configuring qmd index for this repository"
+  run_as_user env HOME="$HOME_DIR" PATH="${HOME_DIR}/.bun/bin:${PATH}" bash "$setup_script"
 }
 
 install_uv() {
@@ -267,6 +299,8 @@ main() {
   install_google_chrome
   install_docker_engine
   install_tmux
+  install_qmd
+  setup_qmd
   INFO "All done. Please log out and log back in before using Docker without sudo."
 }
 
