@@ -37,7 +37,7 @@
       },
       {
         "id": "qmd-refresh",
-        "cron": "0 4 * * *", // every day 4:00 AM
+        "cron": "0 5 * * *", // every day 5:00 AM
         "exec": [
           ".opencode/scripts/qmd-refresh.sh"
         ],

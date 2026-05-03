@@ -1,6 +1,7 @@
 *.log
 journals/**/*.md
 journals/**/export-session-state.json
-memory/*.md
+memory/*
+!memory/.gitkeep
 notes/*
 !notes/.gitkeep
