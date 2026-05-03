@@ -1,10 +1,8 @@
 *.log
 journals/**/*.md
 journals/**/export-session-state.json
-memory/*
-!memory/candidates/.gitkeep
-!memory/canonical/.gitkeep
-!memory/private/.gitkeep
-!memory/private-candidates/.gitkeep
+memory/**
+!memory/**/
+!memory/**/.gitkeep
 notes/*
 !notes/.gitkeep

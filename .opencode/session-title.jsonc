@@ -8,6 +8,7 @@
   "commands": {
     "generate-commit": "Generate commit {{TIMESTAMP}}",
     "summarize-session": "Summarize session {{TIMESTAMP}}",
-    "write-diary": "Write diary {{TIMESTAMP}}"
+    "write-diary": "Write diary {{TIMESTAMP}}",
+    "identify-memorizable-info": "Identify memorizable info {{TIMESTAMP}}"
   }
 }

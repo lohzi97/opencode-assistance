@@ -11,8 +11,12 @@
       "script": ".opencode/scripts/check-max-size-25000.ts"
     },
     {
-      "glob": ".memory/*.md",
-      "script": ".opencode/scripts/check-max-size-5000.ts"
+      "glob": "memory/canonical/*.md",
+      "script": ".opencode/scripts/validate-memory-file.ts"
+    },
+    {
+      "glob": "memory/private/*.md",
+      "script": ".opencode/scripts/validate-memory-file.ts"
     }
   ]
 }

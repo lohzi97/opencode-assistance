@@ -22,7 +22,8 @@
     "Temp Summary",
     "Generate commit",
     "Summarize session",
-    "Write diary"
+    "Write diary",
+    "Identify memorizable info"
   ],
   
   // Match the built-in transcript export options.
