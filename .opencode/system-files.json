@@ -1,5 +1,9 @@
 [
-    "ME.md",
-    "MASTER.md",
-    "notes/README.md"
+  ".opencode/runtime-session-info.md",
+  "ME.md",
+  "memory/canonical/master.md",
+  "memory/canonical/working-preferences.md",
+  "memory/canonical/environment.md",
+  "memory/canonical/projects.md",
+  "notes/README.md"
 ]

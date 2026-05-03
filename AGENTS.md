@@ -1,3 +1,4 @@
+<content>
 ## Technical Preferences
 
 - Use `uv` to run all python related commands
@@ -11,3 +12,8 @@
 
 - located at `../opencode`
 - refer to it when needed (e.g. your task is to create/modify a OpenCode plugin or wrapper server for OpenCode)
+</content>
+
+---
+
+# Skills
