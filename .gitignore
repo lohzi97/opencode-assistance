@@ -5,4 +5,4 @@ memory/**
 !memory/**/
 !memory/**/.gitkeep
 notes/*
-!notes/.gitkeep
+!notes/.gitkeep 

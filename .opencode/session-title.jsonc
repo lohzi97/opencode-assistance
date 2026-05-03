@@ -9,6 +9,7 @@
     "generate-commit": "Generate commit {{TIMESTAMP}}",
     "summarize-session": "Summarize session {{TIMESTAMP}}",
     "write-diary": "Write diary {{TIMESTAMP}}",
-    "identify-memorizable-info": "Identify memorizable info {{TIMESTAMP}}"
+    "identify-memorizable-info": "Identify memorizable info {{TIMESTAMP}}",
+    "update-memory": "Update memory {{TIMESTAMP}}"
   }
 }
