@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 
 /**
- * Run yesterday's session summarization sequentially, then invoke /write-diary.
+ * Run yesterday's session summarization sequentially, then invoke /write-diary,
+ * /identify-memorizable-info, and /update-memory.
  *
  * Usage:
  *   bun .opencode/scripts/daily-diary-workflow.ts
@@ -72,10 +73,12 @@ type CompactionResolution = {
 };
 
 const DEFAULT_POLL_MS = 1_000;
-const DEFAULT_TIMEOUT_MS = 6 * 60 * 60 * 1_000;
+const DEFAULT_TIMEOUT_MS = 12 * 60 * 60 * 1_000;
 const REQUIRED_STABLE_IDLE_POLLS = 2;
 const COMMAND_SUMMARIZE = "summarize-session";
 const COMMAND_DIARY = "write-diary";
+const COMMAND_IDENTIFY_MEMORIZABLE = "identify-memorizable-info";
+const COMMAND_UPDATE_MEMORY = "update-memory";
 const compactionStateFile = path.join(stateDir, "compaction-state.json");
 
 if (import.meta.main) {
@@ -109,13 +112,22 @@ async function main() {
   }
 
   if (options.dryRun) {
-    console.log(`[workflow] dry-run only; final command would be /${COMMAND_DIARY} ${targetDate}`);
+    const diaryPath = dailyJournalPath(targetDate);
+    console.log(`[workflow] dry-run only; planned commands:`);
+    console.log(`[workflow]   /${COMMAND_DIARY} ${targetDate}`);
+    console.log(`[workflow]   /${COMMAND_IDENTIFY_MEMORIZABLE} ${diaryPath}`);
+    console.log(`[workflow]   /${COMMAND_UPDATE_MEMORY} ${candidateFileNameForSource(diaryPath)}`);
     return;
   }
 
   const client = new OpenCodeClient();
   await client.health();
-  await assertCommands(client, [COMMAND_SUMMARIZE, COMMAND_DIARY]);
+  await assertCommands(client, [
+    COMMAND_SUMMARIZE,
+    COMMAND_DIARY,
+    COMMAND_IDENTIFY_MEMORIZABLE,
+    COMMAND_UPDATE_MEMORY,
+  ]);
 
   for (const [index, task] of tasks.entries()) {
     console.log(
@@ -142,6 +154,38 @@ async function main() {
     timeoutMs: options.timeoutMs,
   });
   console.log(`[workflow] diary complete (root ${diary.rootSessionID}, final ${diary.finalSessionID})`);
+
+  const diaryPath = dailyJournalPath(targetDate);
+  const diaryFile = Bun.file(path.join(root, diaryPath));
+  if (!(await diaryFile.exists())) {
+    console.log(`[workflow] diary file missing; skip memory workflow ${diaryPath}`);
+    return;
+  }
+
+  console.log(`[workflow] start memory identify /${COMMAND_IDENTIFY_MEMORIZABLE} ${diaryPath}`);
+  const identify = await runCommand(client, {
+    title: `Identify memorizable info ${targetDate}`,
+    command: COMMAND_IDENTIFY_MEMORIZABLE,
+    arguments: diaryPath,
+    pollMs: options.pollMs,
+    timeoutMs: options.timeoutMs,
+  });
+  console.log(
+    `[workflow] memory identify complete ${diaryPath} (root ${identify.rootSessionID}, final ${identify.finalSessionID})`,
+  );
+
+  const candidateFilter = candidateFileNameForSource(diaryPath);
+  console.log(`[workflow] start memory update /${COMMAND_UPDATE_MEMORY} ${candidateFilter}`);
+  const memory = await runCommand(client, {
+    title: `Update memory ${targetDate}`,
+    command: COMMAND_UPDATE_MEMORY,
+    arguments: candidateFilter,
+    pollMs: options.pollMs,
+    timeoutMs: options.timeoutMs,
+  });
+  console.log(
+    `[workflow] memory update complete ${candidateFilter} (root ${memory.rootSessionID}, final ${memory.finalSessionID})`,
+  );
 }
 
 function printUsage() {
@@ -158,6 +202,15 @@ Options:
   --timeout-ms N      Per-command timeout in milliseconds. Default: ${DEFAULT_TIMEOUT_MS}.
   --help, -h          Show this help.
 `);
+}
+
+function dailyJournalPath(date: string) {
+  return path.posix.join("journals", "daily", `${date}.md`);
+}
+
+function candidateFileNameForSource(sourcePath: string) {
+  const stem = sourcePath.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return `${stem || "source"}.md`;
 }
 
 function parseArgs(args: string[]): Options {

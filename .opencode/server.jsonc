@@ -26,20 +26,12 @@
       //   "no_overlap": true
       // }
       {
-        "id": "daily-diary",
-        "cron": "0 3 * * *", // every day 3:00 AM
-        "exec": [
-          "bun",
-          ".opencode/scripts/daily-diary-workflow.ts"
-        ],
-        "enabled": true,
-        "no_overlap": true
-      },
-      {
-        "id": "qmd-refresh",
+        "id": "daily-diary-with-refresh",
         "cron": "0 5 * * *", // every day 5:00 AM
         "exec": [
-          ".opencode/scripts/qmd-refresh.sh"
+          "sh",
+          "-c",
+          "bun .opencode/scripts/daily-diary-workflow.ts && .opencode/scripts/qmd-refresh.sh"
         ],
         "enabled": true,
         "no_overlap": true

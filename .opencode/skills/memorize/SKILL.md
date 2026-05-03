@@ -15,7 +15,7 @@ Use this skill when the Master makes an explicit direct memory request, such as 
 
 ## Core Rules
 
-- Ask one short clarification question if the requested remembered or forgotten statement is ambiguous.
+- Ask clarification question (with `question` tool) if the requested remembered or forgotten statement is ambiguous.
 - Treat pending candidates as pending review only, not approved runtime truth.
 - Use one candidate file per direct request.
 - Use `YYYYMMDDHHmmss` for `captured-at` and `YYYYMMDD` for `last-confirmed`.

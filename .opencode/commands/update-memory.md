@@ -51,7 +51,7 @@ For each candidate entry:
 - Candidates are pending artifacts, not runtime truth.
 - Prefer distilled statements, not copied prose.
 - Keep project-specific operating rules out of canonical memory and route them to `notes/projects/<slug>.md`.
-- If a candidate conflicts with existing memory or is ambiguous, batch the clarifications and ask before proposing promotion.
+- If a candidate conflicts with existing memory or is ambiguous, batch the clarifications and ask with the `question` tool before proposing promotion.
 - Do not mine journals or notes automatically in v1 beyond directly referenced note paths already named in candidates.
 
 ## Present Review Output
@@ -66,6 +66,8 @@ Before any write, show the Master:
 6. Note-routing decisions.
 7. A patch-style diff for each target file.
 8. Any clarification items.
+
+If clarification is needed, ask it with the `question` tool and then continue the review in the same conversation with the answers applied.
 
 ## Approval Gate
 
