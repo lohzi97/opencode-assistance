@@ -40,6 +40,30 @@ INFO() { printf "==> %s\n" "$*"; }
 WARN() { printf "!! %s\n" "$*" >&2; }
 ERR() { printf "ERROR: %s\n" "$*" >&2; exit 1; }
 
+INSTALL_WARNINGS=()
+record_warning() {
+  local message="$1"
+  local existing
+  for existing in "${INSTALL_WARNINGS[@]}"; do
+    if [ "$existing" = "$message" ]; then
+      return
+    fi
+  done
+  INSTALL_WARNINGS+=("$message")
+  WARN "$message"
+}
+
+print_warning_summary() {
+  local message
+  if [ "${#INSTALL_WARNINGS[@]}" -eq 0 ]; then
+    return
+  fi
+  WARN "Installer completed with ${#INSTALL_WARNINGS[@]} warning(s):"
+  for message in "${INSTALL_WARNINGS[@]}"; do
+    WARN "- ${message}"
+  done
+}
+
 if [ "$(uname -s)" != "Linux" ]; then
   ERR "This script targets Debian/Ubuntu based Linux (Linux Mint). Aborting."
 fi
@@ -74,10 +98,24 @@ user_command_path() {
 }
 
 APT_UPDATED=0
+APT_LAST_UPDATE_PARTIAL=0
 apt_update_if_needed() {
+  local log_file
   if [ "$APT_UPDATED" -eq 0 ]; then
     INFO "Running apt-get update"
-    sudo apt-get update -y
+    log_file="$(mktemp)"
+    if sudo apt-get update -y 2>&1 | tee "$log_file"; then
+      :
+    else
+      rm -f "$log_file"
+      ERR "apt-get update failed. Fix repository connectivity and rerun the installer."
+    fi
+    APT_LAST_UPDATE_PARTIAL=0
+    if grep -Eq 'Failed to fetch|Some index files failed to download' "$log_file"; then
+      APT_LAST_UPDATE_PARTIAL=1
+      record_warning "apt-get update completed with repository fetch warnings. Some package metadata may be stale until mirror or network issues are fixed."
+    fi
+    rm -f "$log_file"
     APT_UPDATED=1
   fi
 }
@@ -87,7 +125,13 @@ apt_mark_stale() {
 apt_install() {
   apt_update_if_needed
   INFO "Installing: $*"
-  sudo apt-get install -y "$@"
+  if sudo apt-get install -y "$@"; then
+    return
+  fi
+  if [ "$APT_LAST_UPDATE_PARTIAL" -eq 1 ]; then
+    ERR "apt-get install failed after a partial apt-get update. Fix the repository connectivity issues above and rerun the installer."
+  fi
+  ERR "apt-get install failed while installing: $*"
 }
 
 ensure_sudo() {
@@ -157,13 +201,24 @@ install_qmd() {
 
 setup_qmd() {
   local setup_script="${PROJECT_ROOT}/.opencode/scripts/qmd-setup.sh"
+  local log_file
 
   if [ ! -f "$setup_script" ]; then
     ERR "Expected qmd setup script at '$setup_script' but it was not found."
   fi
 
   INFO "Configuring qmd index for this repository"
-  run_as_user env HOME="$HOME_DIR" PATH="${HOME_DIR}/.bun/bin:${PATH}" bash "$setup_script"
+  log_file="$(mktemp)"
+  if run_as_user env HOME="$HOME_DIR" PATH="${HOME_DIR}/.bun/bin:${PATH}" bash "$setup_script" 2>&1 | tee "$log_file"; then
+    :
+  else
+    rm -f "$log_file"
+    ERR "qmd setup failed. Review the output above and rerun once the issue is fixed."
+  fi
+  if grep -Eq 'QMD Warning: no GPU acceleration|falling back to no GPU|Failed to build llama.cpp with Vulkan support' "$log_file"; then
+    record_warning "qmd setup completed without GPU acceleration. This is non-fatal; qmd will run on CPU and may be slower."
+  fi
+  rm -f "$log_file"
 }
 
 install_uv() {
@@ -274,7 +329,9 @@ EOF
     INFO "User $USER_NAME is already in the docker group"
   else
     INFO "Adding $USER_NAME to docker group"
-    sudo groupadd docker || true
+    if ! getent group docker >/dev/null 2>&1; then
+      sudo groupadd docker
+    fi
     sudo usermod -aG docker "$USER_NAME"
     WARN "User $USER_NAME was added to the docker group. Log out and log back in for the change to take effect."
   fi
@@ -301,6 +358,7 @@ main() {
   install_tmux
   install_qmd
   setup_qmd
+  print_warning_summary
   INFO "All done. Please log out and log back in before using Docker without sudo."
 }
 

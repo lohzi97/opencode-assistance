@@ -5,4 +5,7 @@ memory/**
 !memory/**/
 !memory/**/.gitkeep
 notes/*
-!notes/.gitkeep 
+!notes/.gitkeep
+input/**
+!input/**/
+!input/**/.gitkeep

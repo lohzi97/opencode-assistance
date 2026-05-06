@@ -32,22 +32,118 @@ Use this skill when you need information from `notes/`, including durable instru
 Work through the stages in order. Do not skip ahead.
 
 1. Extract likely exact terms first: project names, commands, file names, headings, dates in `YYYYMMDD`, identifiers, and durable phrasing.
-2. Run keyword search first, up to 5 attempts, refining the query each time:
+2. Run keyword search first, up to 5 attempts, refining the query each time.
+Use `search` for exact anchors only: commands, filenames, headings, dates, IDs, product names, or a very small exact phrase.
+Do not stuff multiple loose keywords into one `search` query; if several anchors seem relevant, try them one by one or in very small precise combinations:
 
 ```sh
 qmd --index sebastian search "<query>" -c notes --json -n 10
 ```
 
-3. If the keyword results are not good enough, run semantic search, up to 3 attempts, using paraphrases or concept-focused phrases:
+3. If there is no keyword result or the keyword results are not good enough, run semantic search, up to 3 attempts, using paraphrases, concept-focused phrases, or wording that captures intent when the exact text is uncertain.
+Use `vsearch` for semantic retrieval, not exact-token hunting:
 
 ```sh
 qmd --index sebastian vsearch "<query>" -c notes --json -n 10
 ```
 
-4. If semantic search is still not good enough, run hybrid search, up to 2 attempts:
+4. If semantic search is still empty or not good enough, run hybrid search, up to 2 attempts.
+Use `query` for the highest-quality pass when the request is broad, ambiguous, loosely phrased, or when retrieval quality matters more than runtime. Treat it as the most expensive search mode and not the default:
 
 ```sh
 qmd --index sebastian query "<query>" -c notes --json -n 10 --min-score 0.3
+```
+
+## Examples
+
+### `qmd search` examples
+
+Use `search` with one exact anchor or a very small exact phrase:
+
+```sh
+qmd --index sebastian search "qmd" -c notes --json -n 10
+qmd --index sebastian search "vulkan" -c notes --json -n 10
+qmd --index sebastian search "node-llama-cpp" -c notes --json -n 10
+qmd --index sebastian search "20260502" -c notes --json -n 10
+```
+
+Good uses:
+
+- a command name like `qmd`
+- a product or library name like `vulkan`
+- a file-like or package-like token such as `node-llama-cpp`
+- an exact date such as `20260502`
+
+Avoid this style for `search`:
+
+```sh
+qmd --index sebastian search "install script qmd node-llama-cpp vulkan" -c notes --json -n 10
+```
+
+That kind of loose keyword bundle is usually a poor BM25 query. Split it into separate searches or very small precise combinations instead.
+
+### `qmd vsearch` examples
+
+Use `vsearch` when you know the concept but not the exact wording:
+
+```sh
+qmd --index sebastian vsearch "qmd in this repository" -c notes --json -n 10
+qmd --index sebastian vsearch "gpu backend issues for local models" -c notes --json -n 10
+qmd --index sebastian vsearch "sebastian memory architecture" -c notes --json -n 10
+```
+
+Good uses:
+
+- paraphrases of likely note content
+- concept-focused descriptions
+- intent phrasing when the exact title, heading, or keyword is unknown
+
+### `qmd query` examples
+
+Use `query` when the request is broad, ambiguous, or requires the best retrieval quality:
+
+```sh
+qmd --index sebastian query "What note explains how Sebastian should use qmd to search notes?" -c notes --json -n 10 --min-score 0.3
+qmd --index sebastian query "Which note discusses Vulkan or local model setup problems and what was concluded?" -c notes --json -n 10 --min-score 0.3
+qmd --index sebastian query "Find the most relevant prior guidance about Sebastian memory architecture and retrieval order" -c notes --json -n 10 --min-score 0.3
+```
+
+Good uses:
+
+- natural-language questions
+- broad requests with multiple possible phrasings
+- cases where `search` and `vsearch` did not produce a clear answer
+
+### Full search flow example
+
+Example goal: find notes related to `qmd`, local model setup, and `vulkan`.
+
+1. Start with exact anchors using `search`:
+
+```sh
+qmd --index sebastian search "qmd" -c notes --json -n 10
+qmd --index sebastian search "vulkan" -c notes --json -n 10
+qmd --index sebastian search "node-llama-cpp" -c notes --json -n 10
+```
+
+2. If exact search has no result or is not good enough, try semantic phrasing with `vsearch`:
+
+```sh
+qmd --index sebastian vsearch "notes about qmd setup and usage" -c notes --json -n 10
+qmd --index sebastian vsearch "notes about local model runtime or gpu backend issues" -c notes --json -n 10
+```
+
+3. If semantic search still has no result or not good enough, use `query` for the highest-quality pass:
+
+```sh
+qmd --index sebastian query "Find the note that explains qmd usage and any related local model or Vulkan setup issues" -c notes --json -n 10 --min-score 0.3
+```
+
+4. After discovery, verify the most likely matches with `qmd get`:
+
+```sh
+qmd --index sebastian get "notes/qmd-usage.md"
+qmd --index sebastian get "notes/qmd.md"
 ```
 
 ## What "Not Good Enough" Means
