@@ -78,5 +78,339 @@
     "abort_wait_ms": 15000,
     "history_retry_count": 3,
     "provider_refresh_ms": 300000
+  },
+
+  "proactive": {
+    // Master switch for the entire proactive service.
+    // When false, the scheduler, dispatcher, and event listener are inactive.
+    // Queue-management tools will also refuse operations.
+    // Set to true to enable proactive behavior.
+    "enabled": true,
+
+    // IANA timezone used for cron evaluation and quiet-hours windows.
+    // If omitted, falls back to cron.timezone, then the machine local timezone.
+    "timezone": "Asia/Kuala_Lumpur",
+
+    "dispatcher": {
+      // How often (in ms) the dispatcher polls the queue for work to dispatch.
+      // Also the scheduler polling interval for checking whether configured tasks are due.
+      // Default: 60000 (60 seconds).
+      "poll_interval_ms": 60000,
+
+      // Maximum number of proactive isolated-session runs that may execute concurrently.
+      // The anchor lane has its own dedicated single-run slot and does NOT consume this capacity.
+      // exec runs are serialized in v1 and also do not consume this capacity.
+      // Default: 1.
+      "max_concurrent_runs": 1
+    },
+
+    "anchor": {
+      // Display title for the persistent anchor session in OpenCode.
+      "title": "Anchor",
+
+      // Default agent used when sending prompts into the anchor session.
+      // Per-task overrides may replace this for specific tasks.
+      // The anchor lane allows only one run at a time.
+      "agent": "sebastian",
+
+      // Optional. Appended after the main instruction.
+      // If not configured, nothing is added.
+      "light_context": "",
+
+      // Optional default model override for the anchor session.
+      // If omitted, the anchor uses the normal OpenCode model stack.
+      // Example:
+      // "model": {
+      //   "providerID": "deepseek",
+      //   "modelID": "deepseek-v4-flash"
+      // }
+    },
+
+    // Default policy values applied to every task that does not override them.
+    // Individual tasks may define their own "policy" block to override these.
+    "defaults": {
+      // If true, do not dispatch a new run for the same task while a previous run
+      // is still active. Later due occurrences are dropped, not queued as duplicates.
+      "no_overlap": true,
+
+      // If true, it is acceptable for a task to produce no user-facing effect
+      // when nothing meaningful is required (e.g., anchor responds SEBASTIAN_IDLE).
+      "silence_ok": true,
+
+      // Minimum delay (in ms) between two runs of the same task.
+      // A new eligible run will not be dispatched until this cooldown has elapsed
+      // since the previous run started.
+      // Default: 300000 (5 minutes).
+      "cooldown_ms": 300000,
+
+      // How long (in ms) a queued run request may wait in the queue before it
+      // expires and is dropped. Expired items are logged as suppressed.
+      // Default: 1800000 (30 minutes).
+      "ttl_ms": 1800000,
+
+      "retry": {
+        // Maximum number of retry attempts for runtime/transport failures only.
+        // Semantic dissatisfaction with assistant output is NOT a retry trigger.
+        "max_attempts": 2,
+
+        // Fixed delay (in ms) between retry attempts.
+        // Default: 60000 (1 minute).
+        "delay_ms": 60000
+      }
+    },
+
+    "delivery": {
+      // Quiet hours suppress user-facing delivery (e.g., Telegram pings),
+      // NOT background proactive execution. Runs still happen; notifications are held.
+      "quiet_hours": {
+        // Start time of the quiet window (HH:MM in the timezone above).
+        "start": "23:00",
+
+        // End time of the quiet window (HH:MM in the timezone above).
+        "end": "08:00",
+
+        // Timezone for interpreting start/end times.
+        "timezone": "Asia/Kuala_Lumpur",
+
+        // Delivery channels to suppress during quiet hours.
+        // Extensible: add future channel names here when new delivery plugins are added.
+        "channels": ["telegram"]
+      }
+    },
+
+    // Registry of proactive tasks. Each task defines when to wake (trigger),
+    // how to execute (mode), what to do (instructions), and runtime policy.
+    //
+    // Supported trigger kinds: "cron", "every", "at", "event".
+    // Supported execution modes: "anchor-session", "isolated-session", "exec".
+    //
+    // Example 1: most basic setup
+    // {
+    //   "id": "morning-awareness",
+    //   "name": "Morning Awareness Sweep",
+    //   "enabled": true,
+    //   "purpose": "Review whether maintenance or follow-up is needed.",
+    //   "trigger": { "kind": "cron", "expr": "0 8 * * *" },
+    //   "mode": "anchor-session",
+    //   "instructions": "Review context. If nothing needed, respond SEBASTIAN_IDLE.",
+    //   "priority": 0,
+    //   "policy": { "no_overlap": true, "silence_ok": true }
+    // }
+    // 
+    // Example 2: anchor-session + cron trigger.
+    // Use this for lightweight awareness-style checks that should reuse the
+    // persistent anchor session instead of opening a fresh isolated run.
+    // {
+    //   "id": "morning-awareness-example",
+    //   "name": "Morning Awareness Sweep Example",
+    //   "enabled": false,
+    //   "purpose": "Review maintenance context each morning and stay silent when nothing meaningful is needed.",
+    //   "trigger": {
+    //     "kind": "cron",
+    //     "expr": "0 8 * * *"
+    //   },
+    //   "mode": "anchor-session",
+    //   "instructions": "Review current maintenance context. If nothing meaningful is required, respond exactly with SEBASTIAN_IDLE. If heavy follow-up work is needed, queue an isolated task instead of doing it here.",
+    //   "priority": 0,
+    //   "policy": {
+    //     "no_overlap": true,
+    //     "silence_ok": true,
+    //     "cooldown_ms": 300000,
+    //     "ttl_ms": 1800000
+    //   }
+    // },
+    // 
+    // Example 3: isolated-session + every trigger + model/agent override + precheck.
+    // Use this for heavier self-contained work that deserves a fresh session.
+    // {
+    //   "id": "notes-refresh-review-example",
+    //   "name": "Notes Refresh Review Example",
+    //   "enabled": false,
+    //   "purpose": "Refresh the notes index and investigate only when the precheck indicates something is wrong.",
+    //   "trigger": {
+    //     "kind": "every",
+    //     "minutes": 180
+    //   },
+    //   "mode": "isolated-session",
+    //   "instructions": "Inspect the precheck result. If issues are present, diagnose and summarize them. If everything looks healthy, remain silent.",
+    //   "agent": "sebastian",
+    //   "model": {
+    //     "providerID": "deepseek",
+    //     "modelID": "deepseek-v4-flash"
+    //   },
+    //   "priority": 2,
+    //   "precheck": {
+    //     "kind": "exec",
+    //     "cmd": ["bash", ".opencode/scripts/qmd-refresh.sh"]
+    //   },
+    //   "policy": {
+    //     "no_overlap": true,
+    //     "max_runtime_ms": 900000,
+    //     "silence_ok": true,
+    //     "cooldown_ms": 600000,
+    //     "ttl_ms": 1800000,
+    //     "retry": {
+    //       "max_attempts": 2,
+    //       "delay_ms": 60000
+    //     },
+    //     "budget": {
+    //       "window_ms": 86400000,
+    //       "max_runs": 8,
+    //       "max_isolated_llm_runs": 4
+    //     }
+    //   }
+    // },
+    // 
+    // Example 4: exec mode + one-shot at trigger.
+    // Use this for operational commands that do not need an LLM session.
+    // {
+    //   "id": "one-shot-exec-example",
+    //   "name": "One-Shot Exec Example",
+    //   "enabled": false,
+    //   "purpose": "Run a one-time local maintenance command at a specific timestamp.",
+    //   "trigger": {
+    //     "kind": "at",
+    //     "timestamp": "2026-05-10T09:00:00+08:00"
+    //   },
+    //   "mode": "exec",
+    //   "instructions": "Record a one-shot maintenance heartbeat.",
+    //   "command": [
+    //     "bash",
+    //     "-lc",
+    //     "printf '%s one-shot-exec-example\n' \"$(date -Is)\" >> .opencode/server/state/proactive-exec-example.log"
+    //   ],
+    //   "priority": 1,
+    //   "policy": {
+    //     "no_overlap": true,
+    //     "max_runtime_ms": 60000,
+    //     "silence_ok": true,
+    //     "ttl_ms": 300000,
+    //     "retry": {
+    //       "max_attempts": 2,
+    //       "delay_ms": 30000
+    //     }
+    //   }
+    // },
+    //
+    // Example 5: event trigger with dot-path matching, debounce, and per-task quiet hours.
+    // Use this when a raw OpenCode event should enqueue awareness work immediately.
+    // {
+    //   "id": "watch-user-session-idle-example",
+    //   "name": "Watch User Session Idle Example",
+    //   "enabled": false,
+    //   "purpose": "React when an allowed user session goes idle and decide whether follow-up is warranted.",
+    //   "trigger": {
+    //     "kind": "event",
+    //     "name": "session.status",
+    //     "include_user_sessions": true,
+    //     "match": {
+    //       "properties.status.type": "idle"
+    //     },
+    //     "debounce_ms": 10000,
+    //     "max_queue_per_window": 2,
+    //     "window_ms": 60000
+    //   },
+    //   "mode": "anchor-session",
+    //   "instructions": "Review the idle session context. If nothing useful should happen, respond exactly with SEBASTIAN_IDLE. If self-contained follow-up is needed, queue an isolated task.",
+    //   "priority": 5,
+    //   "policy": {
+    //     "no_overlap": true,
+    //     "silence_ok": true,
+    //     "cooldown_ms": 120000,
+    //     "ttl_ms": 300000,
+    //     "quiet_hours": {
+    //       "start": "23:30",
+    //       "end": "07:30",
+    //       "timezone": "Asia/Kuala_Lumpur",
+    //       "channels": ["telegram"]
+    //     }
+    //   }
+    // },
+    //
+    // Example 6: isolated-session + internal precheck.
+    // Use this when you want cheap worker-side gating without spawning a shell command.
+    // {
+    //   "id": "internal-precheck-example",
+    //   "name": "Internal Precheck Example",
+    //   "enabled": false,
+    //   "purpose": "Demonstrate the internal precheck shape and an isolated-session task override.",
+    //   "trigger": {
+    //     "kind": "every",
+    //     "minutes": 60
+    //   },
+    //   "mode": "isolated-session",
+    //   "instructions": "If dispatched, summarize the current state relevant to this test task.",
+    //   "priority": 0,
+    //   "precheck": {
+    //     "kind": "internal",
+    //     "name": "alwaysProceed"
+    //   },
+    //   "policy": {
+    //     "no_overlap": false,
+    //     "silence_ok": true,
+    //     "ttl_ms": 900000
+    //   }
+    // }
+    "tasks": [
+      {
+        "id": "hello-testing",
+        "name": "Proactive Feature Smoke Test",
+        "enabled": true,
+        "purpose": "Comprehensive smoke test exercising isolated-session, model override, exec precheck, budget, retry, quiet_hours, cooldown, ttl, and max_runtime policy.",
+        "trigger": {
+          "kind": "every",
+          "minutes": 10
+        },
+        "mode": "isolated-session",
+        "instructions": "You are a proactive smoke test run. Produce a structured diagnostic report with these sections: (1) Current date/time in Asia/Kuala_Lumpur, (2) Disk usage summary (df -h /), (3) Last 5 lines of the cron worker heartbeat log if it exists, (4) A one-sentence health verdict. Keep the report concise.",
+        "agent": "sebastian",
+        "model": {
+          "providerID": "deepseek",
+          "modelID": "deepseek-v4-flash"
+        },
+        "priority": 5,
+        "precheck": {
+          "kind": "exec",
+          "cmd": ["bash", "-c", "printf '%s\\n' '{\"decision\":\"proceed\",\"reason\":\"precheck ok\",\"context\":{}}'"]
+        },
+        "policy": {
+          "no_overlap": true,
+          "silence_ok": true,
+          "max_runtime_ms": 120000,
+          "cooldown_ms": 300000,
+          "ttl_ms": 600000,
+          "retry": {
+            "max_attempts": 2,
+            "delay_ms": 30000
+          },
+          "budget": {
+            "window_ms": 86400000,
+            "max_runs": 12,
+            "max_isolated_llm_runs": 6
+          },
+          "quiet_hours": {
+            "start": "23:00",
+            "end": "08:00",
+            "timezone": "Asia/Kuala_Lumpur",
+            "channels": ["telegram"]
+          }
+        }
+      },
+
+      {
+        "id": "anchor-smoke-test",
+        "name": "Anchor Session Smoke Test",
+        "enabled": true,
+        "purpose": "Test anchor-session mode: verify the anchor lane fires, reuses the persistent session, and reports back correctly.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "3-59/5 * * * *" // every 5 minutes starting at minute 3
+        },
+        "mode": "anchor-session",
+        "instructions": "Greet the Master in the most extravagantly refined and theatrical butler fashion imaginable. Then report the current machine RAM consumption (total, used, available) in a concise summary. After delivering the report, respond exactly with SEBASTIAN_IDLE.",
+        "priority": 0
+      }
+
+    ]
   }
 }

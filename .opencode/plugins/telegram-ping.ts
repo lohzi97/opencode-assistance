@@ -47,6 +47,11 @@ import { basename } from "path"
 import * as fs from "fs"
 import * as path from "path"
 
+type DeliveryRuntimeState = {
+  version?: number
+  channels?: Record<string, { suppressed?: boolean; reason?: string; updated_at?: number }>
+}
+
 function stripJsonComments(json: string): string {
   let result = ""
   let i = 0
@@ -167,6 +172,16 @@ function loadConfig(): LoadConfigResult {
   }
 }
 
+function loadRuntimeState(): DeliveryRuntimeState {
+  const statePath = path.join(process.cwd(), ".opencode", "telegram-ping-state.json")
+  try {
+    const content = fs.readFileSync(statePath, "utf-8")
+    return JSON.parse(content) as DeliveryRuntimeState
+  } catch {
+    return {}
+  }
+}
+
 export const TelegramPingPlugin: Plugin = async ({ client, project, directory }) => {
   const { config, error, errorType } = loadConfig()
   const botToken = config.botToken
@@ -198,6 +213,19 @@ export const TelegramPingPlugin: Plugin = async ({ client, project, directory })
 
   async function sendTelegramNotification(message: string) {
     try {
+      const runtime = loadRuntimeState()
+      const channel = runtime.channels?.telegram
+      if (channel?.suppressed) {
+        await client.app.log({
+          body: {
+            service: "telegram-ping",
+            level: "info",
+            message: `Telegram delivery suppressed${channel.reason ? `: ${channel.reason}` : ""}`,
+          },
+        })
+        return
+      }
+
       const url = `https://api.telegram.org/bot${botToken}/sendMessage`
       const response = await fetch(url, {
         method: "POST",

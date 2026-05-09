@@ -14,11 +14,13 @@
 
 import { CronService } from "./cron";
 import { CompactionService } from "./compaction";
+import { ProactiveService } from "./proactive";
 import { OpenCodeClient, ensureStateDir, listenGlobalEvents, unwrapBusEvent } from "./shared";
 
 const client = new OpenCodeClient();
 const cron = new CronService(client);
 const compaction = new CompactionService(client);
+const proactive = new ProactiveService(client);
 
 main().catch((err) => {
   console.error("project worker failed", err);
@@ -30,12 +32,14 @@ async function main() {
   await client.health();
 
   await compaction.start();
+  await proactive.start();
 
   void listenGlobalEvents({
     onEvent: async (envelope) => {
       const bus = unwrapBusEvent(envelope);
       if (bus) {
         await cron.handleEvent(bus);
+        await proactive.handleEvent(bus);
       }
       await compaction.handleEnvelope(envelope);
     },

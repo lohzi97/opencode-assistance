@@ -3,12 +3,14 @@ import {
   OpenCodeClient,
   collapse,
   iso,
+  parseJsonc,
   readText,
   record,
   root,
   sleep,
   stateDir,
   truncate,
+  unwrapBusEvent,
   writeJsonFile,
 } from "./shared";
 import { loadWorkerConfig } from "./config";
@@ -1551,6 +1553,13 @@ function asNumber(input: unknown) {
 
 function errorMessage(err: unknown) {
   return err instanceof Error ? err.message : String(err);
+}
+
+function clampRatio(value: number) {
+  if (!Number.isFinite(value)) return 0.7;
+  if (value < 0.05) return 0.05;
+  if (value > 0.99) return 0.99;
+  return value;
 }
 
 function defaultCompactionConfig(): CompactionConfig {

@@ -4,7 +4,7 @@ bun.lock
 
 # plugins
 telegram-ping.jsonc
-server/state/*.json
+server/state/*
 compaction-prompts-state.json
 
 # debug

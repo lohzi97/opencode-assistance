@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+set -euo pipefail
+bun .opencode/scripts/proactive-cli.ts add-task-to-queue "$@"
