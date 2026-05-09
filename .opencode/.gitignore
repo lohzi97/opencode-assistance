@@ -6,6 +6,7 @@ bun.lock
 telegram-ping.jsonc
 server/state/*
 compaction-prompts-state.json
+telegram-ping-state.json
 
 # debug
 sysprompt-before.md
