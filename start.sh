@@ -11,9 +11,38 @@ host="${OPENCODE_ASSISTANT_HOST:-127.0.0.1}"
 backend="opencode-assistant-backend"
 worker="opencode-assistant-cron"
 brave_container="brave-search-mcp"
+attach_tui=1
 
 INFO() { printf "==> %s\n" "$*"; }
 WARN() { printf "!! %s\n" "$*" >&2; }
+
+usage() {
+  cat <<'EOF'
+Usage: ./start.sh [--no-tui]
+
+Options:
+  --no-tui  Start or verify services without attaching an OpenCode TUI.
+  -h, --help  Show this help text.
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    --no-tui)
+      attach_tui=0
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      WARN "Unknown argument: $1"
+      usage >&2
+      exit 1
+      ;;
+  esac
+  shift
+done
 
 docker_cmd() {
   if docker info >/dev/null 2>&1; then
@@ -99,5 +128,9 @@ while ! curl -sf "$url" >/dev/null 2>&1; do
   ((++elapsed))
 done
 INFO "Server ready (${elapsed}s)"
+
+if (( attach_tui == 0 )); then
+  exit 0
+fi
 
 exec opencode attach "$url"
