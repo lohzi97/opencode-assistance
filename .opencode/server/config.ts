@@ -170,7 +170,7 @@ export type WorkerConfig = {
   proactive: ProactiveConfig;
 };
 
-const file = path.resolve(root, ".opencode/server.jsonc");
+export const workerConfigFile = path.resolve(root, ".opencode/server.jsonc");
 
 const DEFAULT_COMPACTION_CONFIG: CompactionConfig = {
   enabled: true,
@@ -219,7 +219,7 @@ const DEFAULT_PROACTIVE_CONFIG: ProactiveConfig = {
 };
 
 export async function loadWorkerConfig() {
-  const raw = parseJsonc(await readText(file));
+  const raw = parseJsonc(await readText(workerConfigFile));
   return parseWorkerConfig(raw);
 }
 

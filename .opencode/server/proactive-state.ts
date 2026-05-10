@@ -63,6 +63,7 @@ export type ProactiveActiveRun = {
 };
 
 export type ProactiveTaskState = {
+  trigger_signature?: string;
   last_cron_stamp?: number;
   last_scheduled_at?: number;
   last_started_at?: number;
@@ -302,6 +303,7 @@ export function parseDeliveryRuntimeState(input: unknown): DeliveryRuntimeState 
 function parseTaskState(input: unknown): ProactiveTaskState | undefined {
   if (!record(input)) return undefined;
   return {
+    trigger_signature: asString(input.trigger_signature),
     last_cron_stamp: asNumber(input.last_cron_stamp),
     last_scheduled_at: asNumber(input.last_scheduled_at),
     last_started_at: asNumber(input.last_started_at),

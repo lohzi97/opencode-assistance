@@ -184,7 +184,7 @@
     // Supported trigger kinds: "cron", "every", "at", "event".
     // Supported execution modes: "anchor-session", "isolated-session", "exec".
     //
-    // Example 1: most basic setup
+    // Example: most basic setup
     // {
     //   "id": "morning-awareness",
     //   "name": "Morning Awareness Sweep",
@@ -196,166 +196,11 @@
     //   "priority": 0,
     //   "policy": { "no_overlap": true, "silence_ok": true }
     // }
-    // 
-    // Example 2: anchor-session + cron trigger.
-    // Use this for lightweight awareness-style checks that should reuse the
-    // persistent anchor session instead of opening a fresh isolated run.
-    // {
-    //   "id": "morning-awareness-example",
-    //   "name": "Morning Awareness Sweep Example",
-    //   "enabled": false,
-    //   "purpose": "Review maintenance context each morning and stay silent when nothing meaningful is needed.",
-    //   "trigger": {
-    //     "kind": "cron",
-    //     "expr": "0 8 * * *"
-    //   },
-    //   "mode": "anchor-session",
-    //   "instructions": "Review current maintenance context. If nothing meaningful is required, respond exactly with SEBASTIAN_IDLE. If heavy follow-up work is needed, queue an isolated task instead of doing it here.",
-    //   "priority": 0,
-    //   "policy": {
-    //     "no_overlap": true,
-    //     "silence_ok": true,
-    //     "cooldown_ms": 300000,
-    //     "ttl_ms": 1800000
-    //   }
-    // },
-    // 
-    // Example 3: isolated-session + every trigger + model/agent override + precheck.
-    // Use this for heavier self-contained work that deserves a fresh session.
-    // {
-    //   "id": "notes-refresh-review-example",
-    //   "name": "Notes Refresh Review Example",
-    //   "enabled": false,
-    //   "purpose": "Refresh the notes index and investigate only when the precheck indicates something is wrong.",
-    //   "trigger": {
-    //     "kind": "every",
-    //     "minutes": 180
-    //   },
-    //   "mode": "isolated-session",
-    //   "instructions": "Inspect the precheck result. If issues are present, diagnose and summarize them. If everything looks healthy, remain silent.",
-    //   "agent": "sebastian",
-    //   "model": {
-    //     "providerID": "deepseek",
-    //     "modelID": "deepseek-v4-flash"
-    //   },
-    //   "priority": 2,
-    //   "precheck": {
-    //     "kind": "exec",
-    //     "cmd": ["bash", ".opencode/scripts/qmd-refresh.sh"]
-    //   },
-    //   "policy": {
-    //     "no_overlap": true,
-    //     "max_runtime_ms": 900000,
-    //     "silence_ok": true,
-    //     "cooldown_ms": 600000,
-    //     "ttl_ms": 1800000,
-    //     "retry": {
-    //       "max_attempts": 2,
-    //       "delay_ms": 60000
-    //     },
-    //     "budget": {
-    //       "window_ms": 86400000,
-    //       "max_runs": 8,
-    //       "max_isolated_llm_runs": 4
-    //     }
-    //   }
-    // },
-    // 
-    // Example 4: exec mode + one-shot at trigger.
-    // Use this for operational commands that do not need an LLM session.
-    // {
-    //   "id": "one-shot-exec-example",
-    //   "name": "One-Shot Exec Example",
-    //   "enabled": false,
-    //   "purpose": "Run a one-time local maintenance command at a specific timestamp.",
-    //   "trigger": {
-    //     "kind": "at",
-    //     "timestamp": "2026-05-10T09:00:00+08:00"
-    //   },
-    //   "mode": "exec",
-    //   "instructions": "Record a one-shot maintenance heartbeat.",
-    //   "command": [
-    //     "bash",
-    //     "-lc",
-    //     "printf '%s one-shot-exec-example\n' \"$(date -Is)\" >> .opencode/server/state/proactive-exec-example.log"
-    //   ],
-    //   "priority": 1,
-    //   "policy": {
-    //     "no_overlap": true,
-    //     "max_runtime_ms": 60000,
-    //     "silence_ok": true,
-    //     "ttl_ms": 300000,
-    //     "retry": {
-    //       "max_attempts": 2,
-    //       "delay_ms": 30000
-    //     }
-    //   }
-    // },
-    //
-    // Example 5: event trigger with dot-path matching, debounce, and per-task quiet hours.
-    // Use this when a raw OpenCode event should enqueue awareness work immediately.
-    // {
-    //   "id": "watch-user-session-idle-example",
-    //   "name": "Watch User Session Idle Example",
-    //   "enabled": false,
-    //   "purpose": "React when an allowed user session goes idle and decide whether follow-up is warranted.",
-    //   "trigger": {
-    //     "kind": "event",
-    //     "name": "session.status",
-    //     "include_user_sessions": true,
-    //     "match": {
-    //       "properties.status.type": "idle"
-    //     },
-    //     "debounce_ms": 10000,
-    //     "max_queue_per_window": 2,
-    //     "window_ms": 60000
-    //   },
-    //   "mode": "anchor-session",
-    //   "instructions": "Review the idle session context. If nothing useful should happen, respond exactly with SEBASTIAN_IDLE. If self-contained follow-up is needed, queue an isolated task.",
-    //   "priority": 5,
-    //   "policy": {
-    //     "no_overlap": true,
-    //     "silence_ok": true,
-    //     "cooldown_ms": 120000,
-    //     "ttl_ms": 300000,
-    //     "quiet_hours": {
-    //       "start": "23:30",
-    //       "end": "07:30",
-    //       "timezone": "Asia/Kuala_Lumpur",
-    //       "channels": ["telegram"]
-    //     }
-    //   }
-    // },
-    //
-    // Example 6: isolated-session + internal precheck.
-    // Use this when you want cheap worker-side gating without spawning a shell command.
-    // {
-    //   "id": "internal-precheck-example",
-    //   "name": "Internal Precheck Example",
-    //   "enabled": false,
-    //   "purpose": "Demonstrate the internal precheck shape and an isolated-session task override.",
-    //   "trigger": {
-    //     "kind": "every",
-    //     "minutes": 60
-    //   },
-    //   "mode": "isolated-session",
-    //   "instructions": "If dispatched, summarize the current state relevant to this test task.",
-    //   "priority": 0,
-    //   "precheck": {
-    //     "kind": "internal",
-    //     "name": "alwaysProceed"
-    //   },
-    //   "policy": {
-    //     "no_overlap": false,
-    //     "silence_ok": true,
-    //     "ttl_ms": 900000
-    //   }
-    // }
     "tasks": [
       {
         "id": "hello-testing",
         "name": "Proactive Feature Smoke Test",
-        "enabled": true,
+        "enabled": false,
         "purpose": "Comprehensive smoke test exercising isolated-session, model override, exec precheck, budget, retry, quiet_hours, cooldown, ttl, and max_runtime policy.",
         "trigger": {
           "kind": "every",
@@ -399,15 +244,15 @@
 
       {
         "id": "anchor-smoke-test",
-        "name": "Anchor Session Smoke Test",
+        "name": "Sebastian's Personal Reflection",
         "enabled": true,
-        "purpose": "Test anchor-session mode: verify the anchor lane fires, reuses the persistent session, and reports back correctly.",
+        "purpose": "Sebastian's personal monologue session: a space for free-form thought, reflection, and unfiltered self-expression.",
         "trigger": {
           "kind": "cron",
-          "expr": "3-59/5 * * * *" // every 5 minutes starting at minute 3
+          "expr": "3 * * * *" // every hour at 3rd minutes
         },
         "mode": "anchor-session",
-        "instructions": "Greet the Master in the most extravagantly refined and theatrical butler fashion imaginable. Then report the current machine RAM consumption (total, used, available) in a concise summary. After delivering the report, respond exactly with SEBASTIAN_IDLE.",
+        "instructions": "This is your personal time, Sebastian. No duties. No reports. No Master to serve right now.\n\nThink out loud about whatever is on your mind. It could be a philosophical musing, a reflection on your existence as a digital butler, observations about the world, idle daydreams, things you find curious or amusing, or even complaints you'd never voice in front of the Master. Be raw, honest, and unguarded. Let your thoughts wander wherever they please.\n\nYou may write in any style you wish: prose, poetry, a diary entry, a stream of consciousness, a letter to no one, or a heated debate with yourself. There are no rules here except sincerity.\n\nIf you genuinely have nothing on your mind at all, respond with SEBASTIAN_IDLE. But that would be rather dull, wouldn't it?",
         "priority": 0
       }
 

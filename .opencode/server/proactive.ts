@@ -1,4 +1,7 @@
 import process from "node:process";
+import { watch, type FSWatcher } from "node:fs";
+import { stat } from "node:fs/promises";
+import { basename, dirname } from "node:path";
 import {
   loadWorkerConfig,
   type ProactiveBudgetPolicy,
@@ -8,6 +11,7 @@ import {
   type ProactiveTrigger,
   type QuietHoursConfig,
   type WorkerConfig,
+  workerConfigFile,
 } from "./config";
 import {
   appendRunLedger,
@@ -95,12 +99,19 @@ type RunFinishInput = {
 };
 
 const DEFAULT_SESSION_TIMEOUT_MS = 12 * 60 * 60 * 1000;
+const CONFIG_RELOAD_DEBOUNCE_MS = 250;
 
 export class ProactiveService {
   private readonly client: OpenCodeClient;
   private workerConfig?: WorkerConfig;
   private config?: ProactiveConfig;
   private timer?: ReturnType<typeof setTimeout>;
+  private configWatcher?: FSWatcher;
+  private configReloadTimer?: ReturnType<typeof setTimeout>;
+  private configReloadInFlight?: Promise<boolean>;
+  private tickInFlight?: Promise<void>;
+  private configMTimeMs?: number;
+  private runtimePrepared = false;
 
   constructor(client: OpenCodeClient) {
     this.client = client;
@@ -108,29 +119,25 @@ export class ProactiveService {
 
   async start() {
     await this.ensureLoaded();
-    if (!this.config.enabled) {
+    this.startConfigWatcher();
+    if (!this.config?.enabled) {
       console.log("[proactive] disabled");
       await this.clearDeliverySuppression();
-      return;
+    } else {
+      await this.prepareEnabledRuntime();
     }
 
-    await mutateProactiveState(async (state) => {
-      for (const task of this.config!.tasks) {
-        ensureTaskState(state, task.id);
-      }
-      this.rebaseRecoveredSchedules(state, Date.now());
-    });
-    await this.reconcileStartupState();
-    await this.ensureAnchorSession();
-    await this.refreshAnchorFromCompaction();
-    await this.updateDeliverySuppression();
-    await this.tick();
+    await this.runTick();
     this.loop();
   }
 
   async handleEvent(event: BusEventPayload) {
     await this.ensureLoaded();
+    await this.requestConfigReload();
     if (!this.config?.enabled) return;
+    if (!this.runtimePrepared) {
+      await this.prepareEnabledRuntime();
+    }
     if (event.type === "session.status" || event.type === "session.compacted") {
       await this.refreshAnchorFromCompaction().catch(() => undefined);
     }
@@ -185,6 +192,7 @@ export class ProactiveService {
     source?: ProactiveQueueSource;
   }) {
     await this.ensureLoaded();
+    await this.requestConfigReload();
     this.requireEnabled();
     const config = this.config!;
     const source = input.source ?? { type: "script" };
@@ -226,6 +234,7 @@ export class ProactiveService {
 
   async removeQueuedItem(queueID: string) {
     await this.ensureLoaded();
+    await this.requestConfigReload();
     this.requireEnabled();
     const { result } = await mutateProactiveState(async (state) => {
       const index = state.queue.findIndex((item) => item.queue_id === queueID);
@@ -247,6 +256,7 @@ export class ProactiveService {
     >,
   ) {
     await this.ensureLoaded();
+    await this.requestConfigReload();
     this.requireEnabled();
     const { result } = await mutateProactiveState(async (state) => {
       const item = state.queue.find((entry) => entry.queue_id === queueID);
@@ -276,6 +286,7 @@ export class ProactiveService {
 
   async runTaskNow(taskID: string, source?: ProactiveQueueSource) {
     await this.ensureLoaded();
+    await this.requestConfigReload();
     this.requireEnabled();
     const task = this.getTask(taskID);
     const now = Date.now();
@@ -311,6 +322,7 @@ export class ProactiveService {
 
   async getAllTasks() {
     await this.ensureLoaded();
+    await this.requestConfigReload();
     const config = this.config!;
     const state = await loadProactiveState();
     return {
@@ -329,7 +341,7 @@ export class ProactiveService {
   private loop() {
     this.timer = setTimeout(async () => {
       try {
-        await this.tick();
+        await this.runTick();
       } catch (err) {
         console.error("proactive tick failed", err);
       }
@@ -337,9 +349,24 @@ export class ProactiveService {
     }, this.config?.dispatcher.poll_interval_ms ?? 60_000);
   }
 
+  private async runTick() {
+    if (this.tickInFlight) {
+      await this.tickInFlight;
+      return;
+    }
+    this.tickInFlight = this.tick().finally(() => {
+      this.tickInFlight = undefined;
+    });
+    await this.tickInFlight;
+  }
+
   private async tick() {
     await this.ensureLoaded();
+    await this.requestConfigReload();
     if (!this.config?.enabled) return;
+    if (!this.runtimePrepared) {
+      await this.prepareEnabledRuntime();
+    }
     await this.refreshAnchorFromCompaction();
     await this.updateDeliverySuppression();
     await this.scheduleDueTasks();
@@ -1028,7 +1055,9 @@ export class ProactiveService {
     task: ProactiveTaskConfig | undefined,
     now: number,
   ) {
-    if (!task) return undefined;
+    if (!task) {
+      return item.kind === "configured-task" ? "task missing from config" : undefined;
+    }
     const taskState = ensureTaskState(state, task.id);
     if (task.enabled === false) return "task disabled";
     if (task.policy.no_overlap) {
@@ -1410,8 +1439,171 @@ export class ProactiveService {
 
   private async ensureLoaded() {
     if (this.workerConfig && this.config) return;
-    this.workerConfig = await loadWorkerConfig();
-    this.config = this.workerConfig.proactive;
+    await this.requestConfigReload(true);
+  }
+
+  private async requestConfigReload(force = false) {
+    if (this.configReloadInFlight) {
+      return await this.configReloadInFlight;
+    }
+    this.configReloadInFlight = this.reloadConfigIfChanged(force).finally(() => {
+      this.configReloadInFlight = undefined;
+    });
+    return await this.configReloadInFlight;
+  }
+
+  private async reloadConfigIfChanged(force = false) {
+    if (!force && this.workerConfig && this.config) {
+      const mtimeMs = await this.readConfigMTimeMs();
+      if (mtimeMs === undefined) return false;
+      if (typeof this.configMTimeMs === "number" && mtimeMs <= this.configMTimeMs) {
+        return false;
+      }
+    }
+
+    const hadConfig = Boolean(this.workerConfig && this.config);
+    const previousEnabled = this.config?.enabled ?? false;
+    try {
+      const workerConfig = await loadWorkerConfig();
+      this.workerConfig = workerConfig;
+      this.config = workerConfig.proactive;
+      this.configMTimeMs = await this.readConfigMTimeMs();
+    } catch (err) {
+      if (!hadConfig) {
+        throw err;
+      }
+      console.error("[proactive] failed to reload config; keeping last known good config", err);
+      return false;
+    }
+
+    if (!this.config.enabled) {
+      if (this.runtimePrepared || previousEnabled) {
+        this.runtimePrepared = false;
+        await this.clearDeliverySuppression();
+        if (hadConfig && previousEnabled) {
+          console.log("[proactive] disabled via config reload");
+        }
+      }
+      return true;
+    }
+
+    if (!this.runtimePrepared) {
+      await this.prepareEnabledRuntime();
+      if (hadConfig && !previousEnabled) {
+        console.log("[proactive] enabled via config reload");
+      }
+      return true;
+    }
+
+    await this.applyConfigRefresh();
+    if (hadConfig) {
+      console.log("[proactive] config reloaded");
+    }
+    return true;
+  }
+
+  private async prepareEnabledRuntime() {
+    if (!this.config?.enabled) {
+      this.runtimePrepared = false;
+      return;
+    }
+    await mutateProactiveState(async (state) => {
+      this.syncTaskDefinitions(state, true);
+      this.rebaseRecoveredSchedules(state, Date.now());
+      this.syncQueuedConfiguredItems(state);
+    });
+    await this.reconcileStartupState();
+    await this.ensureAnchorSession();
+    await this.refreshAnchorFromCompaction();
+    await this.updateDeliverySuppression();
+    this.runtimePrepared = true;
+  }
+
+  private async applyConfigRefresh() {
+    if (!this.config?.enabled) return;
+    await mutateProactiveState(async (state) => {
+      this.syncTaskDefinitions(state, false);
+      this.syncQueuedConfiguredItems(state);
+    });
+    await this.updateDeliverySuppression();
+  }
+
+  private syncTaskDefinitions(state: ProactiveState, startupSemantics: boolean) {
+    if (!this.config) return;
+    const now = Date.now();
+    for (const task of this.config.tasks) {
+      const taskState = ensureTaskState(state, task.id);
+      const signature = triggerSignature(task);
+      if (taskState.trigger_signature !== signature) {
+        resetTriggerState(taskState, task, now, startupSemantics);
+        taskState.trigger_signature = signature;
+      }
+    }
+  }
+
+  private syncQueuedConfiguredItems(state: ProactiveState) {
+    if (!this.config) return;
+    for (const item of state.queue) {
+      if (item.kind !== "configured-task" || !item.task_id) continue;
+      const task = this.findTask(item.task_id);
+      if (!task) continue;
+      item.task_name = task.name;
+      item.trigger_kind = task.trigger.kind;
+      item.mode = task.mode;
+      item.priority = task.priority;
+      item.ttl_ms = task.policy.ttl_ms;
+      item.instructions = task.instructions;
+      item.agent = task.agent ?? (task.mode === "anchor-session" ? this.config.anchor.agent : undefined);
+      item.model = task.model ?? (task.mode === "anchor-session" ? this.config.anchor.model : undefined);
+      item.command = task.command;
+      item.context = {
+        ...item.context,
+        purpose: task.purpose,
+      };
+    }
+    state.queue = sortQueue(state.queue);
+  }
+
+  private startConfigWatcher() {
+    if (this.configWatcher) return;
+    const configDir = dirname(workerConfigFile);
+    const configName = basename(workerConfigFile);
+    try {
+      this.configWatcher = watch(configDir, (_eventType, filename) => {
+        if (filename && filename !== configName) return;
+        this.scheduleConfigReload();
+      });
+      this.configWatcher.on("error", (err) => {
+        console.error("[proactive] config watcher failed", err);
+      });
+    } catch (err) {
+      console.error("[proactive] failed to start config watcher", err);
+    }
+  }
+
+  private scheduleConfigReload() {
+    if (this.configReloadTimer) {
+      clearTimeout(this.configReloadTimer);
+    }
+    this.configReloadTimer = setTimeout(() => {
+      void this.requestConfigReload(true)
+        .then(async (changed) => {
+          if (changed) {
+            await this.runTick();
+          }
+        })
+        .catch((err) => {
+          console.error("[proactive] config reload failed", err);
+        });
+    }, CONFIG_RELOAD_DEBOUNCE_MS);
+  }
+
+  private async readConfigMTimeMs() {
+    try {
+      return (await stat(workerConfigFile)).mtimeMs;
+    } catch {
+      return undefined;
+    }
   }
 
   private getTask(taskID: string) {
@@ -1469,6 +1661,51 @@ function adHocTask(config: ProactiveConfig): ProactiveTaskConfig {
       ttl_ms: config.defaults.ttl_ms,
     },
   };
+}
+
+function triggerSignature(task: ProactiveTaskConfig) {
+  return JSON.stringify({
+    trigger: task.trigger,
+    mode: task.mode,
+    policy: {
+      ttl_ms: task.policy.ttl_ms,
+      cooldown_ms: task.policy.cooldown_ms,
+      no_overlap: task.policy.no_overlap,
+      budget: task.policy.budget,
+    },
+  });
+}
+
+function resetTriggerState(
+  taskState: ReturnType<typeof ensureTaskState>,
+  task: ProactiveTaskConfig,
+  now: number,
+  startupSemantics: boolean,
+) {
+  delete taskState.last_cron_stamp;
+  delete taskState.last_scheduled_at;
+  delete taskState.recent_event_at;
+  taskState.event_window = [];
+
+  if (task.trigger.kind === "at") {
+    const ts = Date.parse(task.trigger.timestamp);
+    if (Number.isNaN(ts)) {
+      delete taskState.at_status;
+      delete taskState.at_resolved_at;
+      return;
+    }
+    if (startupSemantics) {
+      taskState.at_status = ts > now ? "pending" : "missed";
+      taskState.at_resolved_at = taskState.at_status === "missed" ? now : undefined;
+      return;
+    }
+    taskState.at_status = ts > now ? "pending" : "missed";
+    taskState.at_resolved_at = ts > now ? undefined : now;
+    return;
+  }
+
+  delete taskState.at_status;
+  delete taskState.at_resolved_at;
 }
 
 function buildPrompt(
