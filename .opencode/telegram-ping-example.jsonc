@@ -1,0 +1,9 @@
+{
+  // Managed by ./config.sh
+  // Telegram bot token from @BotFather.
+  "botToken": "__BOT_TOKEN__",
+  // Telegram chat ID for the destination chat.
+  "chatId": "__CHAT_ID__",
+  // Enable Telegram notifications.
+  "enabled": true
+}

@@ -4,6 +4,7 @@ set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cfg="$root/.opencode/server.jsonc"
+config_env="$root/.opencode/config.env"
 dir="$root/.opencode/server"
 state="$dir/state"
 port="${OPENCODE_ASSISTANT_PORT:-4096}"
@@ -12,6 +13,7 @@ backend="opencode-assistant-backend"
 worker="opencode-assistant-cron"
 brave_container="brave-search-mcp"
 attach_tui=1
+BRAVE_API_KEY=""
 
 INFO() { printf "==> %s\n" "$*"; }
 WARN() { printf "!! %s\n" "$*" >&2; }
@@ -52,7 +54,30 @@ docker_cmd() {
   fi
 }
 
+load_config_env() {
+  local line
+
+  if [[ ! -f "$config_env" ]]; then
+    return
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      ""|\#*)
+        continue
+        ;;
+      BRAVE_API_KEY=*)
+        BRAVE_API_KEY="${line#BRAVE_API_KEY=}"
+        BRAVE_API_KEY="${BRAVE_API_KEY%$'\r'}"
+        return
+        ;;
+    esac
+  done < "$config_env"
+}
+
 mkdir -p "$dir" "$state"
+
+load_config_env
 
 if [[ ! -f "$cfg" ]]; then
   cat <<'EOF'
@@ -92,18 +117,22 @@ start_brave_search_mcp() {
     return
   fi
 
-  WARN "$brave_container container not found. Create it once with:"
-  cat <<'EOF' >&2
-docker run -d \
-  --name brave-search-mcp \
-  --restart unless-stopped \
-  -p 9999:8080 \
-  -e BRAVE_API_KEY="api-key" \
-  -e BRAVE_MCP_TRANSPORT="http" \
-  -e BRAVE_MCP_ENABLED_TOOLS="brave_web_search" \
-  -e BRAVE_MCP_LOG_LEVEL="debug" \
-  mcp/brave-search:latest
-EOF
+  if [[ -z "$BRAVE_API_KEY" ]]; then
+    WARN "$brave_container container not found and BRAVE_API_KEY is not configured in $config_env"
+    WARN "Run ./config.sh to configure Brave Search MCP."
+    return
+  fi
+
+  INFO "Creating $brave_container"
+  docker_cmd run -d \
+    --name "$brave_container" \
+    --restart unless-stopped \
+    -p 9999:8080 \
+    -e BRAVE_API_KEY="$BRAVE_API_KEY" \
+    -e BRAVE_MCP_TRANSPORT="http" \
+    -e BRAVE_MCP_ENABLED_TOOLS="brave_web_search" \
+    -e BRAVE_MCP_LOG_LEVEL="debug" \
+    mcp/brave-search:latest >/dev/null
 }
 
 start_brave_search_mcp

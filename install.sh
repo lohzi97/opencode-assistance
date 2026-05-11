@@ -359,7 +359,7 @@ main() {
   install_qmd
   setup_qmd
   print_warning_summary
-  INFO "All done. Please log out and log back in before using Docker without sudo."
+  INFO "All done. Please log out and log back in before using Docker without sudo, then run ./config.sh."
 }
 
 main "$@"

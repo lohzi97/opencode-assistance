@@ -245,7 +245,7 @@
       {
         "id": "anchor-smoke-test",
         "name": "Sebastian's Personal Reflection",
-        "enabled": true,
+        "enabled": false,
         "purpose": "Sebastian's personal monologue session: a space for free-form thought, reflection, and unfiltered self-expression.",
         "trigger": {
           "kind": "cron",

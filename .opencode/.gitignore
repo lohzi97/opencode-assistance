@@ -3,6 +3,7 @@ package.json
 bun.lock
 
 # plugins
+config.env
 telegram-ping.jsonc
 server/state/*
 compaction-prompts-state.json
