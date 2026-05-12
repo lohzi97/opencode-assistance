@@ -2,6 +2,11 @@
   "$schema": "https://opencode.ai/config.json",
   "model": "zai-coding-plan/glm-5.1",
   "small_model": "github-copilot/gpt-5-mini",
+  "default_agent": "sebastian",
+  "agent": {
+    "build": { "disable": true },
+    "plan": { "disable": true }
+  },
   "compaction": {
     "auto": false
   },
