@@ -38,7 +38,9 @@ load_existing_brave_api_key() {
   local line
 
   EXISTING_BRAVE_API_KEY=""
-  [[ -f "$config_env" ]] || return
+  if [[ ! -f "$config_env" ]]; then
+    return 0
+  fi
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     case "$line" in
@@ -58,7 +60,9 @@ load_existing_telegram_values() {
   EXISTING_TELEGRAM_BOT_TOKEN=""
   EXISTING_TELEGRAM_CHAT_ID=""
 
-  [[ -f "$telegram_config" ]] || return
+  if [[ ! -f "$telegram_config" ]]; then
+    return 0
+  fi
 
   EXISTING_TELEGRAM_BOT_TOKEN="$(sed -n '/"botToken"/{s/.*"botToken"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p;q;}' "$telegram_config")"
   EXISTING_TELEGRAM_CHAT_ID="$(sed -n '/"chatId"/{s/.*"chatId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p;q;}' "$telegram_config")"
