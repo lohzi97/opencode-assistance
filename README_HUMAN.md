@@ -21,6 +21,16 @@ Re-run `./config.sh` any time you need to update:
 ./start.sh
 ```
 
+This starts the backend and worker, then opens the OpenCode web UI in your browser.
+
+### Attach OpenCode TUI
+
+```bash
+./tui.sh
+```
+
+You can run `./tui.sh` multiple times to attach additional TUI clients to the same backend.
+
 ### Start chrome in debug mode
 
 ```bash

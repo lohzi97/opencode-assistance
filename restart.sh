@@ -3,7 +3,6 @@
 set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-attach_args=()
 helper_args=()
 detached=0
 log_dir="/tmp/opencode"
@@ -13,7 +12,6 @@ usage() {
 Usage: ./restart.sh [options]
 
 Options:
-  --no-tui           Restart services without attaching an OpenCode TUI.
   --detached         Launch the restart helper in the background and return immediately.
   --session-id <id>  Session to notify after detached restart. Required with `--detached`.
   --reason <text>    Short reason included in detached restart follow-up.
@@ -23,9 +21,6 @@ EOF
 
 while (($#)); do
   case "$1" in
-    --no-tui)
-      attach_args+=("--no-tui")
-      ;;
     --detached)
       detached=1
       ;;
@@ -88,4 +83,4 @@ if (( detached == 1 )); then
 fi
 
 "$root/stop.sh"
-exec "$root/start.sh" "${attach_args[@]}"
+exec "$root/start.sh"

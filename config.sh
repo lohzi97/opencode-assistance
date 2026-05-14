@@ -238,8 +238,8 @@ main() {
     opencode providers login
   fi
 
-  if prompt_yes_no "Run ./start.sh --no-tui to verify the setup now?" "Y"; then
-    "$root/start.sh" --no-tui
+  if prompt_yes_no "Run ./start.sh to verify the setup now?" "Y"; then
+    "$root/start.sh"
   fi
 
   INFO "Configuration updated. Re-run ./config.sh any time you need to change these settings."
