@@ -6,6 +6,28 @@ root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 helper_args=()
 detached=0
 log_dir="/tmp/opencode"
+config_env="$root/.opencode/config.env"
+OPENCODE_SERVER_PASSWORD=""
+
+load_config_env() {
+  local line
+
+  if [[ ! -f "$config_env" ]]; then
+    return
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      ""|\#*)
+        continue
+        ;;
+      OPENCODE_SERVER_PASSWORD=*)
+        OPENCODE_SERVER_PASSWORD="${line#OPENCODE_SERVER_PASSWORD=}"
+        OPENCODE_SERVER_PASSWORD="${OPENCODE_SERVER_PASSWORD%$'\r'}"
+        ;;
+    esac
+  done < "$config_env"
+}
 
 usage() {
   cat <<'EOF'
@@ -54,6 +76,7 @@ while (($#)); do
 done
 
 if (( detached == 1 )); then
+  load_config_env
   mkdir -p "$log_dir"
 
   has_session_id=0
@@ -76,7 +99,7 @@ if (( detached == 1 )); then
 
   timestamp="$(date +%Y%m%d%H%M%S)"
   log_file="$log_dir/restart-opencode-$timestamp.log"
-  OPENCODE_RESTART_LOG_PATH="$log_file" nohup bun "$root/.opencode/scripts/restart-opencode.ts" "${helper_args[@]}" \
+  OPENCODE_SERVER_PASSWORD="$OPENCODE_SERVER_PASSWORD" OPENCODE_RESTART_LOG_PATH="$log_file" nohup bun "$root/.opencode/scripts/restart-opencode.ts" "${helper_args[@]}" \
     >"$log_file" 2>&1 </dev/null &
   printf 'Detached restart helper launched. Log: %s\n' "$log_file"
   exit 0

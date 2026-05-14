@@ -12,6 +12,7 @@
 
 Re-run `./config.sh` any time you need to update:
 - Brave Search API key
+- OpenCode web UI password
 - Telegram Ping bot token or chat ID
 - OpenCode provider login
 

@@ -10,6 +10,11 @@ telegram_config="$opencode_dir/telegram-ping.jsonc"
 telegram_template="$opencode_dir/telegram-ping-example.jsonc"
 brave_container="brave-search-mcp"
 
+EXISTING_BRAVE_API_KEY=""
+EXISTING_OPENCODE_SERVER_PASSWORD=""
+EXISTING_TELEGRAM_BOT_TOKEN=""
+EXISTING_TELEGRAM_CHAT_ID=""
+
 INFO() { printf "==> %s\n" "$*"; }
 WARN() { printf "!! %s\n" "$*" >&2; }
 ERR() { printf "ERROR: %s\n" "$*" >&2; exit 1; }
@@ -34,10 +39,9 @@ escape_sed_replacement() {
   printf '%s' "$1" | sed 's/[&|]/\\&/g'
 }
 
-load_existing_brave_api_key() {
+load_existing_config_values() {
   local line
 
-  EXISTING_BRAVE_API_KEY=""
   if [[ ! -f "$config_env" ]]; then
     return 0
   fi
@@ -50,7 +54,10 @@ load_existing_brave_api_key() {
       BRAVE_API_KEY=*)
         EXISTING_BRAVE_API_KEY="${line#BRAVE_API_KEY=}"
         EXISTING_BRAVE_API_KEY="${EXISTING_BRAVE_API_KEY%$'\r'}"
-        return
+        ;;
+      OPENCODE_SERVER_PASSWORD=*)
+        EXISTING_OPENCODE_SERVER_PASSWORD="${line#OPENCODE_SERVER_PASSWORD=}"
+        EXISTING_OPENCODE_SERVER_PASSWORD="${EXISTING_OPENCODE_SERVER_PASSWORD%$'\r'}"
         ;;
     esac
   done < "$config_env"
@@ -122,6 +129,36 @@ prompt_secret() {
   done
 }
 
+prompt_optional_secret() {
+  local prompt="$1"
+  local default_value="${2:-}"
+  local value
+
+  while true; do
+    if [[ -n "$default_value" ]]; then
+      printf "%s [press Enter to keep current, type - to clear]: " "$prompt" >&2
+    else
+      printf "%s [leave blank to skip]: " "$prompt" >&2
+    fi
+
+    IFS= read -rs value
+    printf "\n" >&2
+
+    if [[ -z "$value" ]]; then
+      printf '%s' "$default_value"
+      return
+    fi
+
+    if [[ "$value" == "-" ]]; then
+      printf ''
+      return
+    fi
+
+    printf '%s' "$value"
+    return
+  done
+}
+
 prompt_yes_no() {
   local prompt="$1"
   local default_answer="${2:-N}"
@@ -155,12 +192,18 @@ prompt_yes_no() {
 
 write_config_env() {
   local brave_api_key="$1"
+  local opencode_server_password="$2"
   local escaped_key
+  local escaped_password
   local tmp_file
 
   escaped_key="$(escape_sed_replacement "$brave_api_key")"
+  escaped_password="$(escape_sed_replacement "$opencode_server_password")"
   tmp_file="$(mktemp)"
-  sed "s|__BRAVE_API_KEY__|$escaped_key|g" "$config_template" > "$tmp_file"
+  sed \
+    -e "s|__BRAVE_API_KEY__|$escaped_key|g" \
+    -e "s|__OPENCODE_SERVER_PASSWORD__|$escaped_password|g" \
+    "$config_template" > "$tmp_file"
   mv "$tmp_file" "$config_env"
   chmod 600 "$config_env"
 }
@@ -205,6 +248,7 @@ configure_brave_container() {
 
 main() {
   local brave_api_key
+  local opencode_server_password
   local telegram_bot_token
   local telegram_chat_id
 
@@ -214,15 +258,16 @@ main() {
   require_file "$telegram_template"
   mkdir -p "$opencode_dir"
 
-  load_existing_brave_api_key
+  load_existing_config_values
   load_existing_telegram_values
 
   INFO "Updating opencode-assistant configuration"
   brave_api_key="$(prompt_secret "Brave Search API key" "$EXISTING_BRAVE_API_KEY")"
+  opencode_server_password="$(prompt_optional_secret "OpenCode server password" "$EXISTING_OPENCODE_SERVER_PASSWORD")"
   telegram_bot_token="$(prompt_secret "Telegram bot token" "$EXISTING_TELEGRAM_BOT_TOKEN")"
   telegram_chat_id="$(prompt_value "Telegram chat ID" "$EXISTING_TELEGRAM_CHAT_ID")"
 
-  write_config_env "$brave_api_key"
+  write_config_env "$brave_api_key" "$opencode_server_password"
   INFO "Wrote $config_env"
 
   write_telegram_config "$telegram_bot_token" "$telegram_chat_id"
@@ -238,8 +283,18 @@ main() {
     opencode providers login
   fi
 
-  if prompt_yes_no "Run ./start.sh to verify the setup now?" "Y"; then
-    "$root/start.sh"
+  verify_script="$root/start.sh"
+  if command -v tmux >/dev/null 2>&1 && tmux has-session -t "opencode-assistant-backend" 2>/dev/null; then
+    WARN "OpenCode backend is already running. Restart is required for server password changes to take effect."
+    verify_script="$root/restart.sh"
+  fi
+
+  if prompt_yes_no "Run ./$(basename "$verify_script") to apply and verify the setup now?" "Y"; then
+    "$verify_script"
+  fi
+
+  if [[ -n "$opencode_server_password" ]]; then
+    INFO "If OpenCode server password is configured, the web UI login username is 'opencode'."
   fi
 
   INFO "Configuration updated. Re-run ./config.sh any time you need to change these settings."

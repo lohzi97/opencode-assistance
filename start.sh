@@ -13,9 +13,16 @@ backend="opencode-assistant-backend"
 worker="opencode-assistant-cron"
 brave_container="brave-search-mcp"
 BRAVE_API_KEY=""
+OPENCODE_SERVER_PASSWORD=""
 
 INFO() { printf "==> %s\n" "$*"; }
 WARN() { printf "!! %s\n" "$*" >&2; }
+
+shell_quote() {
+  local value="$1"
+  value="${value//\'/\'\\\'\'}"
+  printf "'%s'" "$value"
+}
 
 usage() {
   cat <<'EOF'
@@ -64,15 +71,37 @@ load_config_env() {
       BRAVE_API_KEY=*)
         BRAVE_API_KEY="${line#BRAVE_API_KEY=}"
         BRAVE_API_KEY="${BRAVE_API_KEY%$'\r'}"
-        return
+        ;;
+      OPENCODE_SERVER_PASSWORD=*)
+        OPENCODE_SERVER_PASSWORD="${line#OPENCODE_SERVER_PASSWORD=}"
+        OPENCODE_SERVER_PASSWORD="${OPENCODE_SERVER_PASSWORD%$'\r'}"
         ;;
     esac
   done < "$config_env"
 }
 
+curl_health_check() {
+  if [[ -n "$OPENCODE_SERVER_PASSWORD" ]]; then
+    curl -sf -u "opencode:$OPENCODE_SERVER_PASSWORD" "$url"
+    return
+  fi
+
+  curl -sf "$url"
+}
+
 mkdir -p "$dir" "$state"
 
 load_config_env
+
+if [[ -z "$OPENCODE_SERVER_PASSWORD" ]]; then
+  WARN "OPENCODE_SERVER_PASSWORD is not configured in $config_env; the OpenCode server will run unsecured."
+fi
+
+root_q="$(shell_quote "$root")"
+dir_index_q="$(shell_quote "$dir/index.ts")"
+port_q="$(shell_quote "$port")"
+host_q="$(shell_quote "$host")"
+password_q="$(shell_quote "$OPENCODE_SERVER_PASSWORD")"
 
 if [[ ! -f "$cfg" ]]; then
   cat <<'EOF'
@@ -133,17 +162,17 @@ start_brave_search_mcp() {
 start_brave_search_mcp
 
 if ! tmux has-session -t "$backend" 2>/dev/null; then
-  tmux new-session -d -s "$backend" "cd '$root' && OPENCODE_ASSISTANT_PORT='$port' OPENCODE_ASSISTANT_HOST='$host' opencode serve --port '$port' --hostname '$host'"
+  tmux new-session -d -s "$backend" "cd $root_q && OPENCODE_ASSISTANT_PORT=$port_q OPENCODE_ASSISTANT_HOST=$host_q OPENCODE_SERVER_PASSWORD=$password_q opencode serve --port $port_q --hostname $host_q"
 fi
 
 if ! tmux has-session -t "$worker" 2>/dev/null; then
-  tmux new-session -d -s "$worker" "cd '$root' && OPENCODE_ASSISTANT_PORT='$port' OPENCODE_ASSISTANT_HOST='$host' bun '$dir/index.ts'"
+  tmux new-session -d -s "$worker" "cd $root_q && OPENCODE_ASSISTANT_PORT=$port_q OPENCODE_ASSISTANT_HOST=$host_q bun $dir_index_q"
 fi
 
 url="http://$host:$port"
 INFO "Waiting for server at $url ..."
 elapsed=0
-while ! curl -sf "$url" >/dev/null 2>&1; do
+while ! curl_health_check >/dev/null 2>&1; do
   if (( elapsed >= 30 )); then
     WARN "Server did not become ready within 30s"
     exit 1
@@ -153,3 +182,13 @@ while ! curl -sf "$url" >/dev/null 2>&1; do
 done
 INFO "Server ready (${elapsed}s)"
 INFO "Web UI: $url"
+
+if command -v xdg-open >/dev/null 2>&1; then
+  if xdg-open "$url" >/dev/null 2>&1; then
+    INFO "Opened web UI in default browser"
+  else
+    WARN "Failed to open browser automatically; open $url manually"
+  fi
+else
+  WARN "xdg-open not found; open $url manually"
+fi
