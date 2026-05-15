@@ -166,7 +166,7 @@ if ! tmux has-session -t "$backend" 2>/dev/null; then
 fi
 
 if ! tmux has-session -t "$worker" 2>/dev/null; then
-  tmux new-session -d -s "$worker" "cd $root_q && OPENCODE_ASSISTANT_PORT=$port_q OPENCODE_ASSISTANT_HOST=$host_q bun $dir_index_q"
+  tmux new-session -d -s "$worker" "cd $root_q && OPENCODE_ASSISTANT_PORT=$port_q OPENCODE_ASSISTANT_HOST=$host_q OPENCODE_SERVER_PASSWORD=$password_q bun $dir_index_q"
 fi
 
 url="http://$host:$port"
