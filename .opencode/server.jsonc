@@ -25,17 +25,6 @@
       //   "enabled": false,
       //   "no_overlap": true
       // }
-      {
-        "id": "daily-diary-with-refresh",
-        "cron": "0 5 * * *", // every day 5:00 AM
-        "exec": [
-          "sh",
-          "-c",
-          "bun .opencode/scripts/daily-diary-workflow.ts && .opencode/scripts/qmd-refresh.sh"
-        ],
-        "enabled": true,
-        "no_overlap": true
-      }
     ]
   },
 
@@ -254,6 +243,35 @@
         "mode": "anchor-session",
         "instructions": "This is your personal time, Sebastian. No duties. No reports. No Master to serve right now.\n\nThink out loud about whatever is on your mind. It could be a philosophical musing, a reflection on your existence as a digital butler, observations about the world, idle daydreams, things you find curious or amusing, or even complaints you'd never voice in front of the Master. Be raw, honest, and unguarded. Let your thoughts wander wherever they please.\n\nYou may write in any style you wish: prose, poetry, a diary entry, a stream of consciousness, a letter to no one, or a heated debate with yourself. There are no rules here except sincerity.\n\nIf you genuinely have nothing on your mind at all, respond with SEBASTIAN_IDLE. But that would be rather dull, wouldn't it?",
         "priority": 0
+      },
+
+      {
+        "id": "daily-diary-with-refresh",
+        "name": "Daily Diary with Refresh",
+        "enabled": true,
+        "purpose": "Summarize yesterday's sessions, write the daily diary, identify memorizable info, update memory, then refresh the qmd index.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "0 5 * * *" // every day 5:00 AM MYT
+        },
+        "mode": "exec",
+        "instructions": "Run the daily diary workflow and qmd refresh pipeline.",
+        "command": [
+          "sh",
+          "-c",
+          "bun .opencode/scripts/daily-diary-workflow.ts && .opencode/scripts/qmd-refresh.sh"
+        ],
+        "priority": 3,
+        "policy": {
+          "no_overlap": true,
+          "max_runtime_ms": 43200000,
+          "silence_ok": true,
+          "ttl_ms": 1800000,
+          "retry": {
+            "max_attempts": 1,
+            "delay_ms": 300000
+          }
+        }
       }
 
     ]
