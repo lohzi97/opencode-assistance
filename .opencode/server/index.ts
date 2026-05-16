@@ -5,20 +5,18 @@
  * backend started by `opencode serve`.
  *
  * Current services:
- * - cron automation from `.opencode/server.jsonc#cron`
  * - compaction management from `.opencode/server.jsonc#compaction`
+ * - proactive automation from `.opencode/server.jsonc#proactive`
  *
  * The worker shares one OpenCode HTTP client and one `/global/event` listener
  * across both services.
  */
 
-import { CronService } from "./cron";
 import { CompactionService } from "./compaction";
 import { ProactiveService } from "./proactive";
 import { OpenCodeClient, ensureStateDir, listenGlobalEvents, unwrapBusEvent } from "./shared";
 
 const client = new OpenCodeClient();
-const cron = new CronService(client);
 const compaction = new CompactionService(client);
 const proactive = new ProactiveService(client);
 
@@ -38,12 +36,9 @@ async function main() {
     onEvent: async (envelope) => {
       const bus = unwrapBusEvent(envelope);
       if (bus) {
-        await cron.handleEvent(bus);
         await proactive.handleEvent(bus);
       }
       await compaction.handleEnvelope(envelope);
     },
   });
-
-  await cron.start();
 }

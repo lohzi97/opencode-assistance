@@ -194,7 +194,7 @@ function printUsage() {
   bun .opencode/scripts/daily-diary-workflow.ts --date YYYYMMDD [options]
 
 Options:
-  --date YYYYMMDD     Explicit target date. Defaults to yesterday in cron timezone.
+  --date YYYYMMDD     Explicit target date. Defaults to yesterday in proactive timezone.
   --timezone IANA     Override timezone used to derive yesterday.
   --dry-run           Print planned work without creating OpenCode sessions.
   --skip-existing     Skip raw sessions whose summary file already exists.
@@ -289,7 +289,7 @@ function requireInteger(input: string | undefined, label: string) {
 
 async function loadTimezone() {
   const config = await loadWorkerConfig().catch(() => undefined);
-  return config?.cron.timezone;
+  return config?.proactive.timezone;
 }
 
 function yesterday(timezone?: string) {

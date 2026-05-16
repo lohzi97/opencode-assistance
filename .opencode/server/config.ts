@@ -2,23 +2,6 @@ import path from "node:path";
 import { parseJsonc, readText, record, root } from "./shared";
 import type { ModelRef } from "./shared";
 
-export type CronJob = {
-  id: string;
-  cron: string;
-  enabled?: boolean;
-  no_overlap?: boolean;
-  title?: string;
-  prompt?: string;
-  exec?: string[];
-  agent?: string;
-  model?: ModelRef;
-};
-
-export type CronConfig = {
-  timezone?: string;
-  jobs: CronJob[];
-};
-
 export type CleanupPolicy = "keep" | "delete" | "archive";
 
 export type CompactionConfig = {
@@ -165,7 +148,6 @@ export type ProactiveConfig = {
 };
 
 export type WorkerConfig = {
-  cron: CronConfig;
   compaction: CompactionConfig;
   proactive: ProactiveConfig;
 };
@@ -228,58 +210,13 @@ function parseWorkerConfig(input: unknown): WorkerConfig {
     throw new Error("server.jsonc must be an object");
   }
 
-  const cronSource = resolveCronSource(input);
   const compactionSource = record(input.compaction) ? input.compaction : {};
   const proactiveSource = record(input.proactive) ? input.proactive : {};
 
   return {
-    cron: parseCronConfig(cronSource),
     compaction: parseCompactionConfig(compactionSource),
     proactive: parseProactiveConfig(proactiveSource),
   };
-}
-
-function resolveCronSource(input: Record<string, unknown>) {
-  if (record(input.cron)) return input.cron;
-  return input;
-}
-
-function parseCronConfig(input: unknown): CronConfig {
-  if (!record(input)) {
-    return { jobs: [] };
-  }
-  const jobs = Array.isArray(input.jobs) ? input.jobs.filter(isCronJob) : [];
-  return {
-    timezone: typeof input.timezone === "string" ? input.timezone : undefined,
-    jobs,
-  };
-}
-
-function isCronJob(input: unknown): input is CronJob {
-  if (!record(input)) return false;
-  if (typeof input.id !== "string") return false;
-  if (typeof input.cron !== "string") return false;
-  if (input.enabled !== undefined && typeof input.enabled !== "boolean") return false;
-  if (input.no_overlap !== undefined && typeof input.no_overlap !== "boolean") return false;
-
-  const hasPrompt = typeof input.prompt === "string";
-  let hasExec = false;
-  if (Array.isArray(input.exec)) {
-    if (input.exec.length === 0) return false;
-    if (!input.exec.every((part) => typeof part === "string")) return false;
-    hasExec = true;
-  }
-  if (hasPrompt === hasExec) return false;
-
-  if (input.title !== undefined && typeof input.title !== "string") return false;
-  if (input.agent !== undefined && typeof input.agent !== "string") return false;
-  if (input.model !== undefined) {
-    if (!record(input.model)) return false;
-    if (typeof input.model.providerID !== "string") return false;
-    if (typeof input.model.modelID !== "string") return false;
-    if (input.model.variant !== undefined && typeof input.model.variant !== "string") return false;
-  }
-  return true;
 }
 
 function parseCompactionConfig(input: unknown): CompactionConfig {

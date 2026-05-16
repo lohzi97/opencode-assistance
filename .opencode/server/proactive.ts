@@ -1617,7 +1617,7 @@ export class ProactiveService {
   }
 
   private timezone() {
-    return this.config?.timezone ?? this.workerConfig?.cron.timezone;
+    return this.config?.timezone;
   }
 
   private rebaseRecoveredSchedules(state: ProactiveState, now: number) {

@@ -10,10 +10,11 @@ state="$dir/state"
 port="${OPENCODE_ASSISTANT_PORT:-4096}"
 host="${OPENCODE_ASSISTANT_HOST:-127.0.0.1}"
 backend="opencode-assistant-backend"
-worker="opencode-assistant-cron"
+worker="opencode-assistant-worker"
 brave_container="brave-search-mcp"
 BRAVE_API_KEY=""
 OPENCODE_SERVER_PASSWORD=""
+open_webui=1
 
 INFO() { printf "==> %s\n" "$*"; }
 WARN() { printf "!! %s\n" "$*" >&2; }
@@ -26,15 +27,19 @@ shell_quote() {
 
 usage() {
   cat <<'EOF'
-Usage: ./start.sh
+Usage: ./start.sh [options]
 
 Options:
+  --no-webui  Start or verify services without opening the web UI.
   -h, --help  Show this help text.
 EOF
 }
 
 while (($#)); do
   case "$1" in
+    --no-webui)
+      open_webui=0
+      ;;
     -h|--help)
       usage
       exit 0
@@ -182,6 +187,10 @@ while ! curl_health_check >/dev/null 2>&1; do
 done
 INFO "Server ready (${elapsed}s)"
 INFO "Web UI: $url"
+
+if (( open_webui == 0 )); then
+  exit 0
+fi
 
 if command -v xdg-open >/dev/null 2>&1; then
   if xdg-open "$url" >/dev/null 2>&1; then

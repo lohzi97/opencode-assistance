@@ -3,7 +3,7 @@
 set -euo pipefail
 
 backend="opencode-assistant-backend"
-worker="opencode-assistant-cron"
+worker="opencode-assistant-worker"
 brave_container="brave-search-mcp"
 
 docker_cmd() {

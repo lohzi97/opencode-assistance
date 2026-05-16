@@ -22,7 +22,7 @@ Re-run `./config.sh` any time you need to update:
 ./start.sh
 ```
 
-This starts the backend and worker, then opens the OpenCode web UI in your browser.
+This starts the backend and project worker, then opens the OpenCode web UI in your browser.
 
 ### Attach OpenCode TUI
 

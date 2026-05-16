@@ -1,33 +1,4 @@
 {
-  "cron": {
-    // Optional IANA timezone for cron evaluation.
-    // If omitted, the machine local timezone is used.
-    "timezone": "Asia/Kuala_Lumpur",
-    "jobs": [
-      // Example:
-      // {
-      //   "id": "memory-updater-last-7-days",
-      //   "title": "Update last 7 days memory",
-      //   "cron": "0 5 * * *", // every day 5:00 AM
-      //   "prompt": "/update-last-7-days-memory",
-      //   "enabled": false,
-      //   "no_overlap": true
-      // },
-      // {
-      //   "id": "cron-worker-heartbeat",
-      //   "cron": "*/2 * * * *", // every 2 minutes
-      //   // exec will provide OPENCODE_CRON_TRIGGERED_AT and OPENCODE_CRON_JOB_ID as process env
-      //   "exec": [
-      //     "bash",
-      //     "-lc",
-      //     "printf '%s %s\n' \"$OPENCODE_CRON_TRIGGERED_AT\" \"$OPENCODE_CRON_JOB_ID\" >> .opencode/server/state/exec-heartbeat.log"
-      //   ],
-      //   "enabled": false,
-      //   "no_overlap": true
-      // }
-    ]
-  },
-
   "compaction": {
     // Abort once usage_ratio = tokens_total / model.limit.context reaches this.
     "enabled": true,
@@ -76,8 +47,8 @@
     // Set to true to enable proactive behavior.
     "enabled": true,
 
-    // IANA timezone used for cron evaluation and quiet-hours windows.
-    // If omitted, falls back to cron.timezone, then the machine local timezone.
+    // IANA timezone used for proactive schedule evaluation and quiet-hours windows.
+    // If omitted, the machine local timezone is used.
     "timezone": "Asia/Kuala_Lumpur",
 
     "dispatcher": {
@@ -196,7 +167,7 @@
           "minutes": 10
         },
         "mode": "isolated-session",
-        "instructions": "You are a proactive smoke test run. Produce a structured diagnostic report with these sections: (1) Current date/time in Asia/Kuala_Lumpur, (2) Disk usage summary (df -h /), (3) Last 5 lines of the cron worker heartbeat log if it exists, (4) A one-sentence health verdict. Keep the report concise.",
+        "instructions": "You are a proactive smoke test run. Produce a structured diagnostic report with these sections: (1) Current date/time in Asia/Kuala_Lumpur, (2) Disk usage summary (df -h /), (3) Last 5 lines of `.opencode/server/state/exec-heartbeat.log` if it exists, (4) A one-sentence health verdict. Keep the report concise.",
         "agent": "sebastian",
         "model": {
           "providerID": "deepseek",
