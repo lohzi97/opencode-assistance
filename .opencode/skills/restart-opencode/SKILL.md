@@ -24,7 +24,7 @@ The helper will:
 1. use the explicit triggering session id supplied by the agent
 2. record the restart request under `.opencode/server/state/restart/`
 3. run `./stop.sh`
-4. run `./start.sh --no-tui`
+4. run `./start.sh`
 5. post a follow-up prompt back into the original session after services are healthy again
 
 ## Required Inputs

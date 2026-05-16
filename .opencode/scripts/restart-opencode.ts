@@ -52,7 +52,7 @@ async function main() {
 
   try {
     runScript("stop.sh");
-    runScript("start.sh", ["--no-tui"]);
+    runScript("start.sh");
     await sendCompletionPrompt({
       serverURL,
       sessionID,
