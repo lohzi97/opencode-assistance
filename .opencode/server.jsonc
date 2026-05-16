@@ -243,6 +243,24 @@
             "delay_ms": 300000
           }
         }
+      },
+
+      {
+        "id": "master-evening-diary",
+        "name": "Master's Evening Diary",
+        "enabled": true,
+        "purpose": "Ask the Master about their day every evening and write a personal diary entry into ~/diary/.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "0 20 * * *" // every day 8:00 PM MYT
+        },
+        "mode": "anchor-session",
+        "instructions": "Run the /write-master-diary command to ask the Master about their day and write their diary entry.",
+        "priority": 3,
+        "policy": {
+          "silence_ok": true,
+          "ttl_ms": 1800000
+        }
       }
 
     ]

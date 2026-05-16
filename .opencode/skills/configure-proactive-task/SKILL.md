@@ -77,7 +77,37 @@ Each proactive task lives under:
 - `purpose`: why the task exists
 - `trigger`: when the task becomes eligible
 - `mode`: how the task runs
-- `instructions`: what it should do
+- `instructions`: what it should do (see `instructions` Options below)
+
+### `instructions` Options
+
+The `instructions` field supports two modes:
+
+#### Plain text (default)
+
+Freeform text sent as a regular prompt to the session. All current examples use this form.
+
+```json
+"instructions": "Review context. If nothing needed, respond SEBASTIAN_IDLE."
+```
+
+#### Custom command reference
+
+If the value starts with `/`, the proactive dispatcher invokes it as a custom OpenCode command instead of a text prompt. The first token is the command name (without the `/`), and remaining tokens are passed as arguments.
+
+This lets you reuse existing custom commands without duplicating their full workflow in the instructions field.
+
+```json
+"instructions": "/write-master-diary"
+```
+
+With arguments:
+
+```json
+"instructions": "/write-master-diary 20260517"
+```
+
+Only applies to `anchor-session` and `isolated-session` modes. The `exec` mode ignores `instructions` and runs `command` directly.
 
 ### Optional Common Fields
 
