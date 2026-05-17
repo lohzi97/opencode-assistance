@@ -255,7 +255,7 @@
           "expr": "0 20 * * *" // every day 8:00 PM MYT
         },
         "mode": "anchor-session",
-        "instructions": "Run the /write-master-diary command to ask the Master about their day and write their diary entry.",
+        "instructions": "/write-master-diary",
         "priority": 3,
         "policy": {
           "silence_ok": true,
