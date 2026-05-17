@@ -6,11 +6,13 @@ root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 opencode_dir="$root/.opencode"
 config_env="$opencode_dir/config.env"
 config_template="$opencode_dir/config.env.example"
+google_drive_oauth_credentials="$opencode_dir/gcp-oauth.keys.json"
 telegram_config="$opencode_dir/telegram-ping.jsonc"
 telegram_template="$opencode_dir/telegram-ping-example.jsonc"
 brave_container="brave-search-mcp"
 
 EXISTING_BRAVE_API_KEY=""
+EXISTING_GOOGLE_DRIVE_OAUTH_CREDENTIALS=""
 EXISTING_OPENCODE_SERVER_PASSWORD=""
 EXISTING_TELEGRAM_BOT_TOKEN=""
 EXISTING_TELEGRAM_CHAT_ID=""
@@ -98,6 +100,37 @@ prompt_value() {
     fi
 
     WARN "$prompt cannot be empty."
+  done
+}
+
+prompt_file_path() {
+  local prompt="$1"
+  local default_value="${2:-}"
+  local value
+
+  while true; do
+    if [[ -n "$default_value" ]]; then
+      printf "%s [%s]: " "$prompt" "$default_value" >&2
+    else
+      printf "%s: " "$prompt" >&2
+    fi
+
+    IFS= read -r value
+    if [[ -z "$value" ]]; then
+      value="$default_value"
+    fi
+
+    if [[ -z "$value" ]]; then
+      WARN "$prompt cannot be empty."
+      continue
+    fi
+
+    if [[ -f "$value" ]]; then
+      printf '%s' "$value"
+      return
+    fi
+
+    WARN "File '$value' was not found."
   done
 }
 
@@ -226,6 +259,17 @@ write_telegram_config() {
   chmod 600 "$telegram_config"
 }
 
+stage_google_drive_oauth_credentials() {
+  local source_path="$1"
+
+  if [[ -f "$google_drive_oauth_credentials" && "$source_path" -ef "$google_drive_oauth_credentials" ]]; then
+    chmod 600 "$google_drive_oauth_credentials"
+    return
+  fi
+
+  install -m 600 "$source_path" "$google_drive_oauth_credentials"
+}
+
 configure_brave_container() {
   local brave_api_key="$1"
 
@@ -248,6 +292,7 @@ configure_brave_container() {
 
 main() {
   local brave_api_key
+  local google_drive_oauth_credentials_source
   local opencode_server_password
   local telegram_bot_token
   local telegram_chat_id
@@ -260,15 +305,22 @@ main() {
 
   load_existing_config_values
   load_existing_telegram_values
+  if [[ -f "$google_drive_oauth_credentials" ]]; then
+    EXISTING_GOOGLE_DRIVE_OAUTH_CREDENTIALS="$google_drive_oauth_credentials"
+  fi
 
   INFO "Updating opencode-assistant configuration"
   brave_api_key="$(prompt_secret "Brave Search API key" "$EXISTING_BRAVE_API_KEY")"
   opencode_server_password="$(prompt_optional_secret "OpenCode server password" "$EXISTING_OPENCODE_SERVER_PASSWORD")"
+  google_drive_oauth_credentials_source="$(prompt_file_path "Google Drive OAuth credentials JSON path" "$EXISTING_GOOGLE_DRIVE_OAUTH_CREDENTIALS")"
   telegram_bot_token="$(prompt_secret "Telegram bot token" "$EXISTING_TELEGRAM_BOT_TOKEN")"
   telegram_chat_id="$(prompt_value "Telegram chat ID" "$EXISTING_TELEGRAM_CHAT_ID")"
 
   write_config_env "$brave_api_key" "$opencode_server_password"
   INFO "Wrote $config_env"
+
+  stage_google_drive_oauth_credentials "$google_drive_oauth_credentials_source"
+  INFO "Staged Google Drive OAuth credentials at $google_drive_oauth_credentials"
 
   write_telegram_config "$telegram_bot_token" "$telegram_chat_id"
   INFO "Wrote $telegram_config"

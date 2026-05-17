@@ -4,6 +4,7 @@ bun.lock
 
 # plugins
 config.env
+gcp-oauth.keys.json
 telegram-ping.jsonc
 server/state/*
 compaction-prompts-state.json
