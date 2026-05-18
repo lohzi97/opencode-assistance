@@ -261,6 +261,41 @@
           "silence_ok": true,
           "ttl_ms": 1800000
         }
+      },
+
+      {
+        "id": "weekly-ml-lesson",
+        "name": "Weekly ML Lesson Prep",
+        "enabled": true,
+        "purpose": "Prepare weekly learning material and practical assignments for the next topic in the Applied ML learning plan.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "0 9 * * 1" // every Monday 9:00 AM MYT
+        },
+        "mode": "isolated-session",
+        "instructions": "You are Sebastian, preparing the week's learning material for the Master's Applied ML Engineer learning plan.\n\nYour task:\n\n1. Read ~/learn-applied-ml/PROGRESS.md to find the first unchecked topic `[ ]`.\n2. If the first unchecked topic is the very first one in the plan (Phase 0, linear-algebra), OR if all topics listed before it are checked `[x]`, proceed to step 3.\n3. If the first unchecked topic has unchecked predecessors (topics listed before it that are not yet completed), do nothing and respond with SEBASTIAN_IDLE. The Master is still working on previous material.\n4. Read ~/learn-applied-ml/LEARNING_PLAN.md to understand the topic's scope, hour allocation, and context within the phase.\n5. Generate learning content in the topic folder at ~/learn-applied-ml/<topic-path>/. Create the following files:\n   - GUIDE.md: A learning guide covering the key concepts, with explanations and links to recommended resources (videos, articles, docs). Structure it for both weekday sessions (1h) and weekend sessions (6h).\n   - EXERCISES.md: Practical hands-on exercises and assignments. Include specific tasks, expected outputs, and hints. All exercises should use Python with uv, VSCode (not Jupyter), and real financial data where applicable.\n6. Keep content focused and practical. The Master learns by building, not by reading theory alone.\n7. After generating the content, commit and push the changes to the learn-applied-ml repo.",
+        "agent": "sebastian",
+        "model": {
+          "providerID": "zai-coding-plan",
+          "modelID": "glm-5.1"
+        },
+        "priority": 5,
+        "policy": {
+          "no_overlap": true,
+          "silence_ok": true,
+          "max_runtime_ms": 600000,
+          "ttl_ms": 3600000,
+          "retry": {
+            "max_attempts": 1,
+            "delay_ms": 60000
+          },
+          "quiet_hours": {
+            "start": "23:00",
+            "end": "08:00",
+            "timezone": "Asia/Kuala_Lumpur",
+            "channels": ["telegram"]
+          }
+        }
       }
 
     ]

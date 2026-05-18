@@ -1,7 +1,7 @@
 ---
 description: Write a personal diary entry for the Master into ~/diary/
 agent: sebastian
-model: zaicodingplan/glm4.7
+model: zai-coding-plan/glm-4.7
 ---
 
 Write a personal diary entry for the Master into the ~/diary/ repository.
