@@ -345,6 +345,24 @@ install_tmux() {
   apt_install tmux
 }
 
+WORKSPACE_MCP_REPO="https://github.com/taylorwilsdon/google_workspace_mcp.git"
+WORKSPACE_MCP_DIR="${PROJECT_ROOT}/../google_workspace_mcp"
+
+install_workspace_mcp() {
+  if [ ! -d "$WORKSPACE_MCP_DIR/.git" ]; then
+    INFO "Cloning google_workspace_mcp into $WORKSPACE_MCP_DIR"
+    git clone "$WORKSPACE_MCP_REPO" "$WORKSPACE_MCP_DIR"
+  else
+    INFO "google_workspace_mcp already cloned at $WORKSPACE_MCP_DIR; pulling latest"
+    git -C "$WORKSPACE_MCP_DIR" pull --ff-only || \
+      WARN "Failed to pull latest google_workspace_mcp. Continuing with existing version."
+  fi
+
+  INFO "Installing google_workspace_mcp dependencies"
+  run_as_user env HOME="$HOME_DIR" PATH="${HOME_DIR}/.local/bin:${PATH}" bash -lc \
+    "cd '$WORKSPACE_MCP_DIR' && uv sync"
+}
+
 main() {
   ensure_sudo
   install_prereqs
@@ -356,6 +374,7 @@ main() {
   install_google_chrome
   install_docker_engine
   install_tmux
+  install_workspace_mcp
   install_qmd
   setup_qmd
   print_warning_summary
