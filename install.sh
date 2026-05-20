@@ -16,12 +16,12 @@
 #    - required for computer-control mcp
 # 5. Install node version manager (nvm)
 # 6. Install latest node LTS version with nvm
-#    - required for chrome-devtools mcp
-# 7. Install google chrome
-#    - required for chrome-devtools mcp
+#    - kept available for MCPs and agent-run tooling
+# 7. Install Steel CLI via the official installer
+#    - required for the local Steel Browser workflow
 # 8. Install docker engine 
 #    - https://docs.docker.com/engine/install/ubuntu/
-#    - required for brave-search mcp
+#    - required for brave-search mcp and local Steel Browser runtime
 # 9. install tmux
 #    - required for ./start.sh and ./stop.sh script
 
@@ -31,7 +31,7 @@
 set -euo pipefail
 
 # Idempotent installer for Linux Mint / Ubuntu (apt-based)
-# - Installs bun, opencode (global), qmd (global), uv/uvx, nvm + Node LTS, Google Chrome, Docker engine
+# - Installs bun, opencode (global), qmd (global), uv/uvx, nvm + Node LTS, Steel CLI, Docker engine
 # - Creates sudoers entry to allow running opencode with NOPASSWD
 # Usage:
 #   ./install.sh
@@ -80,6 +80,8 @@ else
 fi
 HOME_DIR="${HOME_DIR:-/home/${USER_NAME}}"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STEEL_BIN_DIR="${HOME_DIR}/.steel/bin"
+STEEL_BIN="${STEEL_BIN_DIR}/steel"
 
 run_as_user() {
   if [ -n "${SUDO_USER:-}" ] && command -v sudo >/dev/null 2>&1; then
@@ -282,22 +284,38 @@ install_nvm_and_node() {
   fi
 }
 
-install_google_chrome() {
-  if command -v google-chrome >/dev/null 2>&1 || dpkg -s google-chrome-stable >/dev/null 2>&1; then
-    INFO "Google Chrome already installed, skipping"
-    return
+install_steel_cli() {
+  local existing_path=""
+  local resolved_path=""
+  local version_output=""
+
+  existing_path="$(user_command_path steel)"
+  if [ -n "$existing_path" ] && [ "$existing_path" != "$STEEL_BIN" ]; then
+    WARN "steel currently resolves to $existing_path; installing the official copy to $STEEL_BIN as well"
   fi
-  INFO "Installing Google Chrome"
-  TMP_DEB="/tmp/google-chrome-stable_current_amd64.deb"
-  wget -q -O "$TMP_DEB" "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
-  # Try apt-get install local deb; fallback to dpkg + fix deps
-  if ! sudo apt-get install -y "$TMP_DEB"; then
-    sudo dpkg -i "$TMP_DEB" || true
-    apt_update_if_needed
-    sudo apt-get install -f -y
+
+  if [ -x "$STEEL_BIN" ]; then
+    INFO "Steel CLI already installed at $STEEL_BIN"
+  else
+    INFO "Installing Steel CLI for current user"
+    run_as_user env HOME="$HOME_DIR" bash -lc 'curl -fsS https://setup.steel.dev | sh -s -- --non-interactive --from opencode'
   fi
-  rm -f "$TMP_DEB"
-  INFO "Google Chrome installation (attempted)"
+
+  if [ ! -x "$STEEL_BIN" ]; then
+    ERR "Steel CLI installation finished but the official binary was not found at $STEEL_BIN"
+  fi
+
+  if ! version_output="$(run_as_user env HOME="$HOME_DIR" "$STEEL_BIN" --version 2>/dev/null)"; then
+    ERR "Steel CLI installation finished but verification failed for $STEEL_BIN --version"
+  fi
+
+  INFO "Verified Steel CLI: $version_output"
+  export PATH="${STEEL_BIN_DIR}:${PATH}"
+
+  resolved_path="$(user_command_path steel)"
+  if [ -n "$resolved_path" ] && [ "$resolved_path" != "$STEEL_BIN" ]; then
+    record_warning "steel in PATH resolves to $resolved_path instead of the official install at $STEEL_BIN. Restart the shell or adjust PATH if the older binary shadows the official one."
+  fi
 }
 
 install_docker_engine() {
@@ -371,14 +389,14 @@ main() {
   setup_sudoers_for_opencode
   install_uv
   install_nvm_and_node
-  install_google_chrome
+  install_steel_cli
   install_docker_engine
   install_tmux
   install_workspace_mcp
   install_qmd
   setup_qmd
   print_warning_summary
-  INFO "All done. Please log out and log back in before using Docker without sudo, then run ./config.sh."
+  INFO "All done. Please log out and log back in before using Docker without sudo, restart your shell if needed so steel is on PATH, then run ./config.sh."
 }
 
 main "$@"

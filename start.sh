@@ -12,6 +12,10 @@ host="${OPENCODE_ASSISTANT_HOST:-127.0.0.1}"
 backend="opencode-assistant-backend"
 worker="opencode-assistant-worker"
 brave_container="brave-search-mcp"
+steel_container="opencode-assistant-steel-browser"
+steel_image="ghcr.io/steel-dev/steel-browser:latest"
+steel_api_port="3000"
+steel_debug_port="9223"
 BRAVE_API_KEY=""
 OPENCODE_SERVER_PASSWORD=""
 open_webui=1
@@ -59,6 +63,35 @@ docker_cmd() {
   else
     sudo docker "$@"
   fi
+}
+
+docker_ready() {
+  if ! command -v docker >/dev/null 2>&1; then
+    return 1
+  fi
+
+  docker_cmd info >/dev/null 2>&1
+}
+
+port_is_listening() {
+  local port="$1"
+
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnH "( sport = :$port )" | grep -q .
+    return
+  fi
+
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+    return
+  fi
+
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 1 bash -c "exec 3<>/dev/tcp/127.0.0.1/$port" >/dev/null 2>&1
+    return
+  fi
+
+  return 1
 }
 
 load_config_env() {
@@ -164,7 +197,65 @@ start_brave_search_mcp() {
     mcp/brave-search:latest >/dev/null
 }
 
+start_steel_browser() {
+  if ! command -v docker >/dev/null 2>&1; then
+    WARN "docker is not available; Steel Browser will remain unavailable"
+    return
+  fi
+
+  if ! docker_ready; then
+    WARN "docker is unavailable or the daemon is down; Steel Browser will remain unavailable"
+    return
+  fi
+
+  if docker_cmd ps --format '{{.Names}}' | grep -wq "$steel_container"; then
+    INFO "$steel_container is already running"
+    return
+  fi
+
+  if docker_cmd ps -a --format '{{.Names}}' | grep -wq "$steel_container"; then
+    if port_is_listening "$steel_api_port"; then
+      WARN "port $steel_api_port is already occupied; Steel Browser will remain unavailable"
+      return
+    fi
+
+    INFO "Starting $steel_container"
+    if ! docker_cmd start "$steel_container" >/dev/null 2>&1; then
+      WARN "Failed to start $steel_container; Steel Browser will remain unavailable"
+    fi
+    return
+  fi
+
+  if port_is_listening "$steel_api_port"; then
+    WARN "port $steel_api_port is already occupied; Steel Browser will remain unavailable"
+    return
+  fi
+
+  if ! docker_cmd image inspect "$steel_image" >/dev/null 2>&1; then
+    INFO "Pulling $steel_image"
+    if ! docker_cmd pull "$steel_image" >/dev/null 2>&1; then
+      if docker_cmd image inspect "$steel_image" >/dev/null 2>&1; then
+        WARN "Failed to pull $steel_image; reusing the local image copy"
+      else
+        WARN "Failed to pull $steel_image; Steel Browser will remain unavailable"
+        return
+      fi
+    fi
+  fi
+
+  INFO "Creating $steel_container"
+  if ! docker_cmd run -d \
+    --name "$steel_container" \
+    --restart unless-stopped \
+    -p "$steel_api_port:$steel_api_port" \
+    -p "$steel_debug_port:$steel_debug_port" \
+    "$steel_image" >/dev/null 2>&1; then
+    WARN "Failed to create $steel_container; Steel Browser will remain unavailable"
+  fi
+}
+
 start_brave_search_mcp
+start_steel_browser
 
 if ! tmux has-session -t "$backend" 2>/dev/null; then
   tmux new-session -d -s "$backend" "cd $root_q && OPENCODE_ASSISTANT_PORT=$port_q OPENCODE_ASSISTANT_HOST=$host_q OPENCODE_SERVER_PASSWORD=$password_q opencode serve --port $port_q --hostname $host_q"

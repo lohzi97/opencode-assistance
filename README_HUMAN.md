@@ -51,6 +51,34 @@ Re-run `./config.sh` any time you need to update:
 
 This starts the backend and project worker, then opens the OpenCode web UI in your browser.
 
+`./start.sh` also attempts to start the repo-managed local Steel Browser container at `http://localhost:3000/v1` when Docker is available and port `3000` is free. Steel is optional: assistant startup still succeeds if Steel cannot be started.
+
+### Optional Steel browser smoke test
+
+Check the CLI first:
+
+```bash
+steel --version
+```
+
+If Steel started successfully, these quick checks are useful:
+
+```bash
+curl http://localhost:3000/v1/health
+```
+
+The local Steel UI is also available at `http://localhost:3000/ui` when the container is running.
+
+Simple interactive smoke test:
+
+```bash
+SESSION="smoke-$(date +%Y%m%d%H%M%S)"
+steel browser start --session "$SESSION" --api-url http://localhost:3000/v1
+steel browser open https://example.com --session "$SESSION" --api-url http://localhost:3000/v1
+steel browser snapshot -i -c -d 3 --session "$SESSION" --api-url http://localhost:3000/v1
+steel browser stop --session "$SESSION" --api-url http://localhost:3000/v1
+```
+
 ### Attach OpenCode TUI
 
 ```bash
@@ -58,9 +86,3 @@ This starts the backend and project worker, then opens the OpenCode web UI in yo
 ```
 
 You can run `./tui.sh` multiple times to attach additional TUI clients to the same backend.
-
-### Start chrome in debug mode
-
-```bash
-google-chrome-stable --remote-debugging-port=9222 --user-data-dir=/home/lohzi/Documents/chrome-temp/personal-chrome-1
-```

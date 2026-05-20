@@ -5,6 +5,7 @@ set -euo pipefail
 backend="opencode-assistant-backend"
 worker="opencode-assistant-worker"
 brave_container="brave-search-mcp"
+steel_container="opencode-assistant-steel-browser"
 
 docker_cmd() {
   if docker info >/dev/null 2>&1; then
@@ -21,4 +22,5 @@ fi
 
 if command -v docker >/dev/null 2>&1; then
   docker_cmd stop "$brave_container" >/dev/null 2>&1 || true
+  docker_cmd stop "$steel_container" >/dev/null 2>&1 || true
 fi

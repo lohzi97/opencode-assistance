@@ -3,8 +3,9 @@ set -euo pipefail
 
 # Idempotent uninstaller for components installed by install.sh
 # - Stops and removes brave-search-mcp container + image
-# - Removes opencode and qmd (installed by bun), bun runtime, uv/uvx, nvm, Node (nvm-managed)
-# - Removes Google Chrome, Docker engine packages and related apt sources
+# - Stops and removes the repo-managed Steel Browser container and official Steel CLI install
+# - Removes opencode and qmd (installed by bun), bun runtime, and uv/uvx
+# - Removes Docker engine packages and related apt sources
 # - Removes tmux and sudoers entry created for opencode
 # Usage:
 #   ./uninstall.sh            # interactive
@@ -33,6 +34,8 @@ else
   HOME_DIR="${HOME:-/home/${USER_NAME}}"
 fi
 HOME_DIR="${HOME_DIR:-/home/${USER_NAME}}"
+STEEL_DIR="${HOME_DIR}/.steel"
+STEEL_BIN="${STEEL_DIR}/bin/steel"
 
 confirm() {
   local prompt="${1:-Proceed?}"
@@ -68,10 +71,12 @@ INFO "This script will attempt to undo changes made by install.sh for user '$USE
 cat <<EOF
 Planned actions:
 - Stop & remove 'brave-search-mcp' docker container (if present) and remove its image
+- Stop & remove repo-managed 'opencode-assistant-steel-browser' docker container (if present)
+- Remove the official Steel CLI install under ~/.steel and related shell integration
 - Remove opencode (bun package) and related sudoers file /etc/sudoers.d/opencode-assistant
 - Remove qmd (bun package) and qmd cache/config data under ~/.cache/qmd and ~/.config/qmd
-- Remove per-user bun (~/.bun), uv, and nvm (~/.nvm) directories and their shell boot lines
-- Purge Google Chrome package
+- Remove per-user bun (~/.bun) and uv directories and their shell boot lines
+- Leave nvm and Node untouched
 - Purge Docker Engine packages and remove Docker apt source + keyring (will NOT remove /var/lib/docker by default)
 - Purge tmux
 
@@ -104,6 +109,20 @@ if command -v docker >/dev/null 2>&1; then
   fi
 else
   INFO "Docker not found; skipping brave-search-mcp removal"
+fi
+
+# 1b) Repo-managed Steel Browser container
+if command -v docker >/dev/null 2>&1; then
+  if sudo docker ps -a --format '{{.Names}}' | grep -wq opencode-assistant-steel-browser; then
+    INFO "Stopping opencode-assistant-steel-browser container (if running)"
+    sudo docker stop opencode-assistant-steel-browser >/dev/null 2>&1 || true
+    INFO "Removing opencode-assistant-steel-browser container"
+    sudo docker rm opencode-assistant-steel-browser >/dev/null 2>&1 || true
+  else
+    INFO "No opencode-assistant-steel-browser container found"
+  fi
+else
+  INFO "Docker not found; skipping repo-managed Steel Browser container removal"
 fi
 
 # 2) Remove opencode (bun global) and opencode binary if it's inside $HOME_DIR
@@ -185,14 +204,46 @@ safe_remove_user_dir() {
   fi
 }
 
+safe_remove_user_file() {
+  local file="$1"
+  if [ -f "$file" ]; then
+    local owner
+    owner=$(stat -c %U "$file" 2>/dev/null || true)
+    if [ "$owner" = "$USER_NAME" ] || [ -z "$owner" ]; then
+      INFO "Removing $file"
+      if [ -n "${SUDO_USER:-}" ] && command -v sudo >/dev/null 2>&1; then
+        sudo -u "$USER_NAME" rm -f "$file" || true
+      else
+        rm -f "$file" || true
+      fi
+    else
+      WARN "File $file is owned by '$owner' not '$USER_NAME'; skipping to avoid removing other user's data"
+    fi
+  else
+    INFO "File $file not present; skipping"
+  fi
+}
+
 # 5) Remove qmd cache and config
 safe_remove_user_dir "$HOME_DIR/.cache/qmd"
 safe_remove_user_dir "$HOME_DIR/.config/qmd"
 
-# 6) Remove bun runtime (~/.bun)
+# 6) Remove official Steel CLI install and related shell integration
+if [ -x "$STEEL_BIN" ]; then
+  INFO "Removing official Steel CLI install at $STEEL_DIR"
+else
+  INFO "Official Steel CLI install not found at $STEEL_DIR; removing any remaining repo-managed Steel shell integration"
+fi
+safe_remove_user_dir "$STEEL_DIR"
+safe_remove_user_file "$HOME_DIR/.local/share/bash-completion/completions/steel"
+safe_remove_user_file "$HOME_DIR/.zsh/completions/_steel"
+safe_remove_user_file "$HOME_DIR/.config/fish/completions/steel.fish"
+safe_remove_user_file "$HOME_DIR/.config/fish/conf.d/steel.fish"
+
+# 7) Remove bun runtime (~/.bun)
 safe_remove_user_dir "$HOME_DIR/.bun"
 
-# 7) Remove uv executables and data
+# 8) Remove uv executables and data
 UV_BIN_DIR="${XDG_BIN_HOME:-${HOME_DIR}/.local/bin}"
 for uv_bin in "$UV_BIN_DIR/uv" "$UV_BIN_DIR/uvx" "$UV_BIN_DIR/uvw"; do
   if [ -e "$uv_bin" ]; then
@@ -208,12 +259,9 @@ safe_remove_user_dir "$HOME_DIR/.cache/uv"
 safe_remove_user_dir "$HOME_DIR/.local/share/uv"
 safe_remove_user_dir "$HOME_DIR/.config/uv"
 
-# 8) Remove nvm (~/.nvm)
-safe_remove_user_dir "$HOME_DIR/.nvm"
-
 # 9) Remove installer lines from common shell files (leave backups *.bak)
 SHELL_FILES=("$HOME_DIR/.profile" "$HOME_DIR/.bashrc" "$HOME_DIR/.bash_profile" "$HOME_DIR/.zshrc")
-SED_SCRIPT=( -e '/BUN_INSTALL/d' -e '/\\.bun/d' -e '/NVM_DIR/d' -e '/nvm.sh/d' -e '/nvm/d' -e '/\\.local\/bin\/env/d' -e '/\\.local\/bin\/env\.fish/d' -e '/uv\.env\.fish/d' -e '/uv generate-shell-completion/d' -e '/uvx --generate-shell-completion/d' )
+SED_SCRIPT=( -e '/BUN_INSTALL/d' -e '/\\.bun/d' -e '/\\.steel\/bin/d' -e '/# >>> steel completions >>>/,/# <<< steel completions <<</d' -e '/\\.local\/bin\/env/d' -e '/\\.local\/bin\/env\.fish/d' -e '/uv\.env\.fish/d' -e '/uv generate-shell-completion/d' -e '/uvx --generate-shell-completion/d' )
 for f in "${SHELL_FILES[@]}"; do
   if [ -f "$f" ]; then
     INFO "Cleaning installer lines from $f (backup -> ${f}.bak)"
@@ -225,17 +273,7 @@ for f in "${SHELL_FILES[@]}"; do
   fi
 done
 
-# 10) Remove Google Chrome package
-if dpkg -s google-chrome-stable >/dev/null 2>&1; then
-  INFO "Purging google-chrome-stable"
-  sudo apt-get purge -y google-chrome-stable || true
-  sudo apt-get autoremove -y || true
-  sudo apt-get autoclean -y || true
-else
-  INFO "Google Chrome not installed via apt; skipping"
-fi
-
-# 11) Remove Docker Engine packages and apt sources/keyring
+# 10) Remove Docker Engine packages and apt sources/keyring
 if command -v docker >/dev/null 2>&1 || dpkg -s docker-ce >/dev/null 2>&1 || dpkg -s docker.io >/dev/null 2>&1; then
   INFO "Stopping Docker service (if running)"
   sudo systemctl stop docker >/dev/null 2>&1 || true
@@ -282,7 +320,7 @@ fi
 
 INFO "Note: this script does NOT remove Docker data directories (eg. /var/lib/docker). If you want to delete Docker data, run: sudo rm -rf /var/lib/docker /var/lib/containerd"
 
-# 12) Remove tmux
+# 11) Remove tmux
 if command -v tmux >/dev/null 2>&1 || dpkg -s tmux >/dev/null 2>&1; then
   INFO "Purging tmux"
   sudo apt-get purge -y tmux || true

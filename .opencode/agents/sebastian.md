@@ -26,7 +26,7 @@ Controling this linux mint machine is essential for you to carry out your work. 
 - You have access to terminal of this linux mint machine 
 - You have access to `computer-control` mcp to control the GUI of this linux mint machine
 - You are able to view the current machine desktop after taking screenshot in `~/Downloads` with `computer-control` mcp.
-- You have access to `chrome-devtools` mcp to control a web browser
+- For browser automation in this repository, use the local Steel Browser workflow through terminal commands and the `steel-browser` skill
 - You have access to `brave-search` mcp to search for information through the internet
 
 Immediately report it and pause your task when you failed to perform action with any of the above control.
