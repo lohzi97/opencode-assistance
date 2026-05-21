@@ -1,4 +1,4 @@
-import { appendFile, mkdir, rmdir } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rmdir } from "node:fs/promises";
 import path from "node:path";
 import { readJsonc, record, stateDir, writeJsonFile, type ModelRef } from "./shared";
 
@@ -8,6 +8,9 @@ export type ProactiveSourceType = "trigger" | "manual" | "script" | "anchor" | "
 export type ProactiveQueueStatus = "queued" | "dispatched" | "cancelled" | "expired" | "completed" | "failed";
 export type ProactiveRunStatus = "running" | "completed" | "failed" | "suppressed" | "expired";
 export type ProactiveLane = "anchor" | "isolated" | "exec";
+export type ProactiveAnchorAction = "start" | "retrigger" | "rollover" | "end";
+
+export type ProactiveAnchorWindowStatus = "open" | "closing" | "rolling-over";
 
 export type ProactiveQueueSource = {
   type: ProactiveSourceType;
@@ -30,6 +33,8 @@ export type ProactiveQueueItem = {
   dedupe_key?: string;
   ttl_ms: number;
   mode: ProactiveExecutionMode;
+  anchor_action?: ProactiveAnchorAction;
+  anchor_window_id?: string;
   agent?: string;
   model?: ModelRef;
   instructions: string;
@@ -48,6 +53,8 @@ export type ProactiveActiveRun = {
   mode: ProactiveExecutionMode;
   lane: ProactiveLane;
   status: "running";
+  anchor_action?: ProactiveAnchorAction;
+  anchor_window_id?: string;
   started_at: number;
   wake_reason: string;
   root_session_id?: string;
@@ -66,6 +73,7 @@ export type ProactiveTaskState = {
   trigger_signature?: string;
   last_cron_stamp?: number;
   last_scheduled_at?: number;
+  last_retrigger_at?: number;
   last_started_at?: number;
   last_completed_at?: number;
   last_status?: string;
@@ -82,18 +90,34 @@ export type ProactiveTaskState = {
 };
 
 export type ProactiveAnchorState = {
-  session_id?: string;
+  task_id: string;
+  open_windows: ProactiveAnchorWindow[];
+  updated_at?: number;
+};
+
+export type ProactiveAnchorWindow = {
+  window_id: string;
+  scheduled_start_at: number;
+  window_end_at: number;
+  status: ProactiveAnchorWindowStatus;
+  current_session_id?: string;
   root_session_id?: string;
-  title?: string;
+  lineage: string[];
+  rendered_title: string;
   agent?: string;
   model?: ModelRef;
-  lineage: string[];
+  last_retrigger_at?: number;
+  last_usage_ratio?: number;
+  last_tokens_total?: number;
+  last_message_id?: string;
+  pending_action?: ProactiveAnchorAction;
+  last_error?: string;
   updated_at?: number;
 };
 
 export type ProactiveState = {
   version: 1;
-  anchor: ProactiveAnchorState;
+  anchors: Record<string, ProactiveAnchorState>;
   tasks: Record<string, ProactiveTaskState>;
   queue: ProactiveQueueItem[];
   active: Record<string, ProactiveActiveRun>;
@@ -135,6 +159,7 @@ export const proactiveStateFile = path.join(stateDir, "proactive-state.json");
 export const proactiveRunsFile = path.join(stateDir, "proactive-runs.jsonl");
 export const proactiveFailureDir = path.join(stateDir, "proactive", "failures");
 export const telegramPingStateFile = path.resolve(path.join(stateDir, "..", "..", "telegram-ping-state.json"));
+export const proactiveAnchorRegistryFile = path.join(stateDir, "proactive-anchor-registry.json");
 const proactiveStateLockDir = path.join(stateDir, "proactive-state.lock");
 
 export async function loadProactiveState() {
@@ -170,8 +195,39 @@ export async function mutateProactiveState<T>(
   });
 }
 
+const ANCHOR_REGISTRY_MAX_SESSIONS = 10_000;
+
 export async function saveProactiveState(state: ProactiveState) {
+  const existingRegistry = await loadProactiveAnchorRegistry();
+  const currentSessions = Object.values(state.anchors).flatMap((anchor) =>
+    anchor.open_windows.flatMap((window) =>
+      [window.current_session_id, window.root_session_id, ...window.lineage].filter(
+        (value): value is string => Boolean(value),
+      ),
+    ),
+  );
+  const merged = [...new Set([...existingRegistry, ...currentSessions])].sort();
+  // Safety cap: contract point 20 requires permanent compaction exemption for all lineage
+  // sessions, so this only trims when the registry grows far beyond any reasonable deployment.
+  const capped = merged.length > ANCHOR_REGISTRY_MAX_SESSIONS ? merged.slice(merged.length - ANCHOR_REGISTRY_MAX_SESSIONS) : merged;
   await writeJsonFile(proactiveStateFile, state);
+  await writeJsonFile(proactiveAnchorRegistryFile, {
+    version: 1,
+    sessions: capped,
+  });
+}
+
+export async function loadProactiveAnchorRegistry() {
+  try {
+    const parsed = JSON.parse(await readFile(proactiveAnchorRegistryFile, "utf8")) as {
+      sessions?: unknown;
+    };
+    return Array.isArray(parsed.sessions)
+      ? parsed.sessions.filter((value): value is string => typeof value === "string")
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 export async function appendRunLedger(entry: ProactiveRunLedgerEntry) {
@@ -197,9 +253,7 @@ export async function loadDeliveryRuntimeState() {
 export function emptyProactiveState(): ProactiveState {
   return {
     version: 1,
-    anchor: {
-      lineage: [],
-    },
+    anchors: {},
     tasks: {},
     queue: [],
     active: {},
@@ -230,6 +284,43 @@ export function ensureTaskState(state: ProactiveState, taskID: string) {
   return state.tasks[taskID];
 }
 
+export function ensureAnchorState(state: ProactiveState, taskID: string) {
+  state.anchors[taskID] ??= {
+    task_id: taskID,
+    open_windows: [],
+  };
+  return state.anchors[taskID];
+}
+
+export function createAnchorWindow(input: {
+  windowID: string;
+  scheduledStartAt: number;
+  windowEndAt: number;
+  renderedTitle: string;
+  updatedAt: number;
+}): ProactiveAnchorWindow {
+  return {
+    window_id: input.windowID,
+    scheduled_start_at: input.scheduledStartAt,
+    window_end_at: input.windowEndAt,
+    status: "open",
+    lineage: [],
+    rendered_title: input.renderedTitle,
+    updated_at: input.updatedAt,
+  };
+}
+
+export function findAnchorWindow(anchor: ProactiveAnchorState, windowID: string) {
+  return anchor.open_windows.find((window) => window.window_id === windowID);
+}
+
+export function removeAnchorWindow(anchor: ProactiveAnchorState, windowID: string) {
+  const index = anchor.open_windows.findIndex((window) => window.window_id === windowID);
+  if (index >= 0) {
+    anchor.open_windows.splice(index, 1);
+  }
+}
+
 export function sortQueue(queue: ProactiveQueueItem[]) {
   return [...queue].sort((left, right) => {
     if (left.priority !== right.priority) return right.priority - left.priority;
@@ -249,18 +340,14 @@ export function pruneTimestamps(values: number[], windowMs: number, now: number)
 export function parseProactiveState(input: unknown): ProactiveState {
   if (!record(input)) return emptyProactiveState();
   const state = emptyProactiveState();
-  if (record(input.anchor)) {
-    state.anchor = {
-      session_id: asString(input.anchor.session_id),
-      root_session_id: asString(input.anchor.root_session_id),
-      title: asString(input.anchor.title),
-      agent: asString(input.anchor.agent),
-      model: parseModelRef(input.anchor.model),
-      lineage: Array.isArray(input.anchor.lineage)
-        ? input.anchor.lineage.filter((value): value is string => typeof value === "string")
-        : [],
-      updated_at: asNumber(input.anchor.updated_at),
-    };
+  if (record(input.anchors)) {
+    for (const [taskID, value] of Object.entries(input.anchors)) {
+      const anchor = parseAnchorState(value, taskID);
+      if (anchor) state.anchors[taskID] = anchor;
+    }
+  } else if (record(input.anchor)) {
+    const legacy = parseLegacyAnchorState(input.anchor, "legacy-global-anchor");
+    if (legacy) state.anchors[legacy.task_id] = legacy;
   }
   if (record(input.tasks)) {
     for (const [taskID, value] of Object.entries(input.tasks)) {
@@ -306,6 +393,7 @@ function parseTaskState(input: unknown): ProactiveTaskState | undefined {
     trigger_signature: asString(input.trigger_signature),
     last_cron_stamp: asNumber(input.last_cron_stamp),
     last_scheduled_at: asNumber(input.last_scheduled_at),
+    last_retrigger_at: asNumber(input.last_retrigger_at),
     last_started_at: asNumber(input.last_started_at),
     last_completed_at: asNumber(input.last_completed_at),
     last_status: asString(input.last_status),
@@ -322,6 +410,99 @@ function parseTaskState(input: unknown): ProactiveTaskState | undefined {
     recent_isolated_llm_runs: parseNumberArray(input.recent_isolated_llm_runs),
     suppression_count: asNumber(input.suppression_count) ?? 0,
     failure_count: asNumber(input.failure_count) ?? 0,
+  };
+}
+
+function parseAnchorState(input: unknown, taskID: string): ProactiveAnchorState | undefined {
+  if (!record(input)) return undefined;
+  return {
+    task_id: asString(input.task_id) ?? taskID,
+    open_windows: Array.isArray(input.open_windows)
+      ? input.open_windows.flatMap((value) => {
+          const parsed = parseAnchorWindow(value);
+          return parsed ? [parsed] : [];
+        })
+      : [],
+    updated_at: asNumber(input.updated_at),
+  };
+}
+
+function parseLegacyAnchorState(input: unknown, taskID: string): ProactiveAnchorState | undefined {
+  if (!record(input)) return undefined;
+  const currentSessionID = asString(input.session_id);
+  const rootSessionID = asString(input.root_session_id);
+  const title = asString(input.title);
+  const windowStartedAt = asNumber(input.window_started_at);
+  const windowEndsAt = asNumber(input.window_ends_at);
+  const updatedAt = asNumber(input.updated_at) ?? Date.now();
+  const active = input.active === true;
+
+  const anchor: ProactiveAnchorState = {
+    task_id: asString(input.task_id) ?? taskID,
+    open_windows: [],
+    updated_at: updatedAt,
+  };
+
+  if (active && currentSessionID && windowStartedAt && windowEndsAt) {
+    anchor.open_windows.push({
+      window_id: `legacy_${windowStartedAt}`,
+      scheduled_start_at: windowStartedAt,
+      window_end_at: windowEndsAt,
+      status: "open",
+      current_session_id: currentSessionID,
+      root_session_id: rootSessionID ?? currentSessionID,
+      lineage: Array.isArray(input.lineage)
+        ? input.lineage.filter((value): value is string => typeof value === "string")
+        : [currentSessionID],
+      rendered_title: title ?? "Anchor",
+      agent: asString(input.agent),
+      model: parseModelRef(input.model),
+      last_retrigger_at: asNumber(input.last_retrigger_at),
+      last_usage_ratio: asNumber(input.last_usage_ratio),
+      last_tokens_total: asNumber(input.last_tokens_total),
+      last_message_id: asString(input.last_message_id),
+      updated_at: updatedAt,
+    });
+  }
+
+  return anchor;
+}
+
+function parseAnchorWindow(input: unknown): ProactiveAnchorWindow | undefined {
+  if (!record(input)) return undefined;
+  if (typeof input.window_id !== "string") return undefined;
+  if (typeof input.scheduled_start_at !== "number") return undefined;
+  if (typeof input.window_end_at !== "number") return undefined;
+  if (typeof input.rendered_title !== "string") return undefined;
+  return {
+    window_id: input.window_id,
+    scheduled_start_at: input.scheduled_start_at,
+    window_end_at: input.window_end_at,
+    status:
+      input.status === "open" || input.status === "closing" || input.status === "rolling-over"
+        ? input.status
+        : "open",
+    current_session_id: asString(input.current_session_id),
+    root_session_id: asString(input.root_session_id),
+    lineage: Array.isArray(input.lineage)
+      ? input.lineage.filter((value): value is string => typeof value === "string")
+      : [],
+    rendered_title: input.rendered_title,
+    agent: asString(input.agent),
+    model: parseModelRef(input.model),
+    last_retrigger_at: asNumber(input.last_retrigger_at),
+    last_usage_ratio: asNumber(input.last_usage_ratio),
+    last_tokens_total: asNumber(input.last_tokens_total),
+    last_message_id: asString(input.last_message_id),
+    pending_action:
+      input.pending_action === "start" ||
+      input.pending_action === "retrigger" ||
+      input.pending_action === "rollover" ||
+      input.pending_action === "end"
+        ? input.pending_action
+        : undefined,
+    last_error: asString(input.last_error),
+    updated_at: asNumber(input.updated_at),
   };
 }
 
@@ -360,6 +541,14 @@ function parseQueueItem(input: unknown): ProactiveQueueItem | undefined {
     dedupe_key: asString(input.dedupe_key),
     ttl_ms: input.ttl_ms,
     mode: input.mode,
+    anchor_action:
+      input.anchor_action === "start" ||
+      input.anchor_action === "retrigger" ||
+      input.anchor_action === "rollover" ||
+      input.anchor_action === "end"
+        ? input.anchor_action
+        : undefined,
+    anchor_window_id: asString(input.anchor_window_id),
     agent: asString(input.agent),
     model: parseModelRef(input.model),
     instructions: input.instructions,
@@ -391,6 +580,14 @@ function parseActiveRun(input: unknown): ProactiveActiveRun | undefined {
     mode: input.mode,
     lane: input.lane,
     status: "running",
+    anchor_action:
+      input.anchor_action === "start" ||
+      input.anchor_action === "retrigger" ||
+      input.anchor_action === "rollover" ||
+      input.anchor_action === "end"
+        ? input.anchor_action
+        : undefined,
+    anchor_window_id: asString(input.anchor_window_id),
     started_at: input.started_at,
     wake_reason: input.wake_reason,
     root_session_id: asString(input.root_session_id),

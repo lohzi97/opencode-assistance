@@ -59,6 +59,16 @@ Choose commands using this rule set:
 4. **Execute the CLI directly** -- Use the canonical Bun command surface.
 5. **Return the actual JSON result** -- Summarize but preserve essential output.
 
+## Config Behavior
+
+### Cron Timezone
+
+Cron expressions (`trigger.kind: "cron"`) are evaluated in the server-level `proactive.timezone` field from `.opencode/server.jsonc`. There is no per-task timezone override. When describing a cron trigger to the Master, always interpret it in the configured server timezone (e.g. `0 8 * * *` with `timezone: "Asia/Kuala_Lumpur"` means 08:00 MYT, not UTC).
+
+### Hot Reload
+
+Edits to `.opencode/server.jsonc` are picked up automatically by the running proactive worker via mtime-based hot reload. A worker restart is **not** required for changes to proactive task definitions (add, edit, enable, disable, reorder). The reload happens on the next scheduler tick. If a config parse fails, the worker keeps the last known good config.
+
 ## Guardrails
 
 - Never mutate `.opencode/server.jsonc` through this skill.

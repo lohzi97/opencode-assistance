@@ -14,19 +14,25 @@ import {
   workerConfigFile,
 } from "./config";
 import {
+  createAnchorWindow,
   appendRunLedger,
+  ensureAnchorState,
   ensureTaskState,
+  findAnchorWindow,
   loadDeliveryRuntimeState,
   loadProactiveState,
   mutateProactiveState,
   randomID,
+  removeAnchorWindow,
   pruneTimestamps,
-  saveProactiveState,
   sortQueue,
   writeDeliveryRuntimeState,
   writeFailureArtifact,
   type DeliveryRuntimeState,
   type ProactiveActiveRun,
+  type ProactiveAnchorAction,
+  type ProactiveAnchorState,
+  type ProactiveAnchorWindow,
   type ProactiveExecutionMode,
   type ProactiveLane,
   type ProactiveQueueItem,
@@ -35,8 +41,18 @@ import {
   type ProactiveRunStatus,
   type ProactiveState,
 } from "./proactive-state";
-import { readCompactionStateSafe, resolveCompaction, waitForSessionCompletion } from "./run-monitor";
-import { OpenCodeClient, record, root, sleep, type BusEventPayload, type ModelRef } from "./shared";
+import { inspectOutcome, waitForSessionCompletion } from "./run-monitor";
+import {
+  OpenCodeClient,
+  parseJsonc,
+  readText,
+  record,
+  root,
+  sleep,
+  type BusEventPayload,
+  type MessageWithParts,
+  type ModelRef,
+} from "./shared";
 
 type AdmissionInput = {
   task: ProactiveTaskConfig;
@@ -49,6 +65,7 @@ type AdmissionInput = {
   triggerKind?: string;
   instructions: string;
   mode: ProactiveExecutionMode;
+  anchorAction?: ProactiveAnchorAction;
   priority: number;
   ttlMs: number;
   notBefore: number;
@@ -60,6 +77,8 @@ type AdmissionInput = {
   scheduledAt?: number;
   attempt?: number;
   enforceEnabled?: boolean;
+  anchorWindowID?: string;
+  bypassAnchorNoOverlap?: boolean;
 };
 
 type AdmissionOutcome = {
@@ -96,10 +115,13 @@ type RunFinishInput = {
   pid?: number;
   retryable?: boolean;
   failureArtifact?: Record<string, unknown>;
+  retryAsAnchorAction?: ProactiveAnchorAction;
 };
 
 const DEFAULT_SESSION_TIMEOUT_MS = 12 * 60 * 60 * 1000;
 const CONFIG_RELOAD_DEBOUNCE_MS = 250;
+const ANCHOR_END_PRIORITY_BOOST = 2000;
+const ANCHOR_ROLLOVER_PRIORITY_BOOST = 1000;
 
 export class ProactiveService {
   private readonly client: OpenCodeClient;
@@ -112,6 +134,9 @@ export class ProactiveService {
   private tickInFlight?: Promise<void>;
   private configMTimeMs?: number;
   private runtimePrepared = false;
+  private providersLoadedAt = 0;
+  private readonly providers = new Map<string, number>();
+  private defaultModel?: ModelRef;
 
   constructor(client: OpenCodeClient) {
     this.client = client;
@@ -139,7 +164,13 @@ export class ProactiveService {
       await this.prepareEnabledRuntime();
     }
     if (event.type === "session.status" || event.type === "session.compacted") {
-      await this.refreshAnchorFromCompaction().catch(() => undefined);
+      await this.refreshAnchorSessions().catch(() => undefined);
+    }
+    if (event.type === "session.idle") {
+      await this.refreshAnchorSessions().catch(() => undefined);
+    }
+    if (event.type === "message.updated") {
+      await this.captureAnchorUsageFromEvent(event).catch(() => undefined);
     }
 
     const suppressions: ProactiveRunLedgerEntry[] = [];
@@ -148,21 +179,79 @@ export class ProactiveService {
       for (const task of this.config!.tasks) {
         if (task.enabled === false || task.trigger.kind !== "event") continue;
         if (!this.matchesEvent(task, state, event)) continue;
-        const outcome = this.admitConfiguredTask(state, task, {
-          now,
-          source: {
-            type: eventSessionSourceType(event, state),
-            session_id: getEventSessionID(event),
-            event_name: event.type,
-          },
-          wakeReason: `event:${task.trigger.name}`,
-          triggerKind: "event",
-          context: {
-            event_type: event.type,
-            event_properties: event.properties,
-          },
-          scheduledAt: now,
-        });
+        let outcome: AdmissionOutcome;
+        if (task.mode === "anchor-session") {
+          if (task.policy.no_overlap && ensureAnchorState(state, task.id).open_windows.length > 0) {
+            this.recordAdmissionSuppression(
+              state,
+              {
+                task,
+                source: {
+                  type: eventSessionSourceType(event, state),
+                  session_id: getEventSessionID(event),
+                  event_name: event.type,
+                },
+                now,
+                wakeReason: `event:${task.trigger.name}`,
+                kind: "configured-task",
+                taskID: task.id,
+                taskName: task.name,
+                triggerKind: "event",
+                instructions: task.instructions,
+                mode: task.mode,
+                priority: task.priority,
+                ttlMs: task.policy.ttl_ms,
+                notBefore: now,
+                scheduledAt: now,
+              },
+              "no-overlap blocked duplicate run",
+            );
+            outcome = { suppressed: { queueID: randomID("pq"), reason: "no-overlap blocked duplicate run" } };
+          } else {
+            const window = this.createScheduledAnchorWindow(state, task, now);
+            outcome = this.admitConfiguredTask(state, task, {
+              now,
+              source: {
+                type: eventSessionSourceType(event, state),
+                session_id: getEventSessionID(event),
+                event_name: event.type,
+              },
+              wakeReason: `event:${task.trigger.name}`,
+              triggerKind: "event",
+              context: {
+                event_type: event.type,
+                event_properties: event.properties,
+                anchor_action: "start",
+                window_started_at: window.scheduled_start_at,
+                window_ends_at: window.window_end_at,
+              },
+              scheduledAt: now,
+              anchorAction: "start",
+              anchorWindowID: window.window_id,
+              instructions: task.instructions,
+              dedupeKey: `anchor:${task.id}:start:${window.window_id}`,
+            });
+            if (!outcome.queueItem) {
+              removeAnchorWindow(ensureAnchorState(state, task.id), window.window_id);
+            }
+          }
+        } else {
+          outcome = this.admitConfiguredTask(state, task, {
+            now,
+            source: {
+              type: eventSessionSourceType(event, state),
+              session_id: getEventSessionID(event),
+              event_name: event.type,
+            },
+            wakeReason: `event:${task.trigger.name}`,
+            triggerKind: "event",
+            context: {
+              event_type: event.type,
+              event_properties: event.properties,
+            },
+            scheduledAt: now,
+          });
+        }
         if (outcome.suppressed) {
           suppressions.push(
             this.buildLedgerEntry({
@@ -290,6 +379,44 @@ export class ProactiveService {
     this.requireEnabled();
     const task = this.getTask(taskID);
     const now = Date.now();
+    if (task.mode === "anchor-session") {
+      const { result } = await mutateProactiveState(async (state) => {
+        const window = this.createScheduledAnchorWindow(state, task, now);
+        return this.admitConfiguredTask(state, task, {
+          now,
+          source: source ?? { type: "manual" },
+          wakeReason: `manual:${task.id}`,
+          triggerKind: task.trigger.kind,
+          context: {
+            manual: true,
+            anchor_action: "start",
+            window_started_at: window.scheduled_start_at,
+            window_ends_at: window.window_end_at,
+          },
+          scheduledAt: now,
+          enforceEnabled: true,
+          anchorAction: "start",
+          anchorWindowID: window.window_id,
+          instructions: task.instructions,
+          dedupeKey: `anchor:${task.id}:start:${window.window_id}`,
+          bypassAnchorNoOverlap: true,
+        });
+      });
+      if (result.suppressed) {
+        await appendRunLedger(
+          this.buildLedgerEntry({
+            queueID: result.suppressed.queueID,
+            task,
+            wakeReason: `manual:${task.id}`,
+            mode: task.mode,
+            status: result.suppressed.status ?? "suppressed",
+            suppressionReason: result.suppressed.reason,
+          }),
+        );
+        throw new Error(result.suppressed.reason);
+      }
+      return result.queueItem!;
+    }
     const { result } = await mutateProactiveState(async (state) => {
       const outcome = this.admitConfiguredTask(state, task, {
         now,
@@ -324,14 +451,17 @@ export class ProactiveService {
     await this.ensureLoaded();
     await this.requestConfigReload();
     const config = this.config!;
-    const state = await loadProactiveState();
+    const { state } = await mutateProactiveState(async (inner) => {
+      this.syncTaskDefinitions(inner, false);
+    });
     return {
       enabled: config.enabled,
-      anchor: state.anchor,
+      anchors: state.anchors,
       configured_tasks: config.tasks.map((task) => ({
         ...task,
         queued_count: state.queue.filter((item) => item.task_id === task.id).length,
         active_count: Object.values(state.active).filter((item) => item.task_id === task.id).length,
+        open_anchor_windows: task.mode === "anchor-session" ? ensureAnchorState(state, task.id).open_windows : undefined,
       })),
       queue: sortQueue(state.queue),
       active_runs: Object.values(state.active),
@@ -367,8 +497,10 @@ export class ProactiveService {
     if (!this.runtimePrepared) {
       await this.prepareEnabledRuntime();
     }
-    await this.refreshAnchorFromCompaction();
+    await this.refreshAnchorSessions();
+    await this.refreshAnchorUsage();
     await this.updateDeliverySuppression();
+    await this.scheduleAnchorActions();
     await this.scheduleDueTasks();
     await this.dispatchQueuedRuns();
   }
@@ -377,16 +509,14 @@ export class ProactiveService {
     if (!this.config) return;
     const suppressions: ProactiveRunLedgerEntry[] = [];
     await mutateProactiveState(async (state) => {
-      const compaction = await readCompactionStateSafe();
       const statusMap = await this.client.sessionStatus().catch(() => ({}));
       for (const [runID, active] of Object.entries(state.active)) {
         let stillActive = false;
         let finalSessionID = active.session_id;
         if (active.mode === "exec") {
           stillActive = typeof active.pid === "number" ? isAlive(active.pid) : false;
-        } else if (active.root_session_id) {
-          const resolution = resolveCompaction(active.root_session_id, compaction);
-          finalSessionID = resolution.currentSessionID;
+        } else if (active.session_id) {
+          finalSessionID = active.session_id;
           const status = finalSessionID ? statusMap[finalSessionID] : undefined;
           stillActive = status?.type === "busy" || status?.type === "retry";
         }
@@ -394,10 +524,15 @@ export class ProactiveService {
         if (stillActive) {
           if (finalSessionID && finalSessionID !== active.session_id) {
             active.session_id = finalSessionID;
-            if (active.lane === "anchor") {
-              state.anchor.session_id = finalSessionID;
-              state.anchor.updated_at = Date.now();
-              if (!state.anchor.lineage.includes(finalSessionID)) state.anchor.lineage.push(finalSessionID);
+            if (active.lane === "anchor" && active.task_id && active.anchor_window_id) {
+              const anchor = ensureAnchorState(state, active.task_id);
+              const window = findAnchorWindow(anchor, active.anchor_window_id);
+              if (window) {
+                window.current_session_id = finalSessionID;
+                window.updated_at = Date.now();
+                if (!window.lineage.includes(finalSessionID)) window.lineage.push(finalSessionID);
+              }
+              anchor.updated_at = Date.now();
             }
           }
           continue;
@@ -445,6 +580,150 @@ export class ProactiveService {
     await this.writeLedgerEntries(suppressions);
   }
 
+  private async scheduleAnchorActions() {
+    if (!this.config) return;
+    const suppressions: ProactiveRunLedgerEntry[] = [];
+    await mutateProactiveState(async (state) => {
+      const now = Date.now();
+      const statusMap = await this.client.sessionStatus().catch(() => ({} as Record<string, { type: string }>));
+      for (const task of this.config!.tasks) {
+        if (!task.enabled || task.mode !== "anchor-session" || !task.anchor) continue;
+        const anchor = ensureAnchorState(state, task.id);
+        for (const window of [...anchor.open_windows]) {
+          const endDue = now >= window.window_end_at;
+          const rolloverDue = Boolean(
+            window.current_session_id &&
+              typeof window.last_usage_ratio === "number" &&
+              window.last_usage_ratio >= task.anchor.rollover_threshold,
+          );
+          const retriggerDue = this.anchorRetriggerDue(task, window, now);
+
+          if (endDue) {
+            window.pending_action = rolloverDue ? "rollover" : "end";
+          } else if (rolloverDue) {
+            window.pending_action = "rollover";
+          } else if (retriggerDue) {
+            window.pending_action = "retrigger";
+          } else if (!windowActionQueuedOrActive(state, window.window_id, "end") && !windowActionQueuedOrActive(state, window.window_id, "rollover")) {
+            window.pending_action = undefined;
+          }
+
+          if (!window.current_session_id) {
+            if (window.pending_action && window.pending_action !== "start") {
+              window.last_error = "current anchor session unavailable";
+            }
+            continue;
+          }
+
+          const sessionStatus = statusMap[window.current_session_id];
+          if (sessionStatus?.type === "busy" || sessionStatus?.type === "retry") continue;
+
+          if (window.pending_action === "rollover" && !windowActionQueuedOrActive(state, window.window_id, "rollover")) {
+            const outcome = this.admitConfiguredTask(state, task, {
+              now,
+              source: { type: "trigger", session_id: window.current_session_id },
+              wakeReason: `anchor-rollover:${task.id}`,
+              triggerKind: "anchor-rollover",
+              context: {
+                purpose: task.purpose,
+                anchor_action: "rollover",
+                prior_session_id: window.current_session_id,
+              },
+              scheduledAt: now,
+              anchorAction: "rollover",
+              anchorWindowID: window.window_id,
+              instructions: task.anchor.rollover_instructions,
+              priority: task.priority + ANCHOR_ROLLOVER_PRIORITY_BOOST,
+              ttlMsOverride: 0,
+              dedupeKey: `anchor:${task.id}:rollover:${window.window_id}:${window.last_message_id ?? "usage"}`,
+            });
+            if (outcome.suppressed) {
+              suppressions.push(
+                this.buildLedgerEntry({
+                  queueID: outcome.suppressed.queueID,
+                  task,
+                  wakeReason: `anchor-rollover:${task.id}`,
+                  mode: task.mode,
+                  status: outcome.suppressed.status ?? "suppressed",
+                  suppressionReason: outcome.suppressed.reason,
+                }),
+              );
+            } else {
+              window.status = "rolling-over";
+            }
+            continue;
+          }
+
+          if (window.pending_action === "end" && !windowActionQueuedOrActive(state, window.window_id, "end")) {
+            const outcome = this.admitConfiguredTask(state, task, {
+              now,
+              source: { type: "trigger", session_id: window.current_session_id },
+              wakeReason: `anchor-end:${task.id}`,
+              triggerKind: "anchor-end",
+              context: {
+                purpose: task.purpose,
+                anchor_action: "end",
+              },
+              scheduledAt: window.window_end_at,
+              anchorAction: "end",
+              anchorWindowID: window.window_id,
+              instructions: task.anchor.end_instructions,
+              priority: task.priority + ANCHOR_END_PRIORITY_BOOST,
+              ttlMsOverride: 0,
+              dedupeKey: `anchor:${task.id}:end:${window.window_id}`,
+            });
+            if (outcome.suppressed) {
+              suppressions.push(
+                this.buildLedgerEntry({
+                  queueID: outcome.suppressed.queueID,
+                  task,
+                  wakeReason: `anchor-end:${task.id}`,
+                  mode: task.mode,
+                  status: outcome.suppressed.status ?? "suppressed",
+                  suppressionReason: outcome.suppressed.reason,
+                }),
+              );
+            } else {
+              window.status = "closing";
+            }
+            continue;
+          }
+
+          if (window.pending_action === "retrigger" && retriggerDue && !windowActionQueuedOrActive(state, window.window_id, "retrigger")) {
+            const outcome = this.admitConfiguredTask(state, task, {
+              now,
+              source: { type: "trigger", session_id: window.current_session_id },
+              wakeReason: `anchor-retrigger:${task.id}`,
+              triggerKind: "anchor-retrigger",
+              context: {
+                purpose: task.purpose,
+                anchor_action: "retrigger",
+              },
+              scheduledAt: retriggerDue.scheduledAt,
+              anchorAction: "retrigger",
+              anchorWindowID: window.window_id,
+              instructions: task.anchor.retrigger_instructions!,
+              dedupeKey: `anchor:${task.id}:retrigger:${window.window_id}:${retriggerDue.scheduledAt}`,
+            });
+            if (outcome.suppressed) {
+              suppressions.push(
+                this.buildLedgerEntry({
+                  queueID: outcome.suppressed.queueID,
+                  task,
+                  wakeReason: `anchor-retrigger:${task.id}`,
+                  mode: task.mode,
+                  status: outcome.suppressed.status ?? "suppressed",
+                  suppressionReason: outcome.suppressed.reason,
+                }),
+              );
+            }
+          }
+        }
+      }
+    });
+    await this.writeLedgerEntries(suppressions);
+  }
+
   private async scheduleDueTasks() {
     if (!this.config) return;
     const suppressions: ProactiveRunLedgerEntry[] = [];
@@ -454,18 +733,82 @@ export class ProactiveService {
         if (!task.enabled || task.trigger.kind === "event") continue;
         const due = this.isTaskDue(state, task, now);
         if (!due) continue;
-        const outcome = this.admitConfiguredTask(state, task, due);
+        let outcome: AdmissionOutcome;
+        if (task.mode === "anchor-session") {
+          if (task.policy.no_overlap && ensureAnchorState(state, task.id).open_windows.length > 0) {
+            this.recordAdmissionSuppression(
+              state,
+              {
+                task,
+                source: due.source,
+                now,
+                wakeReason: due.wakeReason,
+                kind: "configured-task",
+                taskID: task.id,
+                taskName: task.name,
+                triggerKind: "anchor-start",
+                instructions: task.instructions,
+                mode: task.mode,
+                priority: task.priority,
+                ttlMs: task.policy.ttl_ms,
+                notBefore: now,
+                scheduledAt: due.scheduledAt,
+              },
+              "no-overlap blocked duplicate run",
+            );
+            suppressions.push(
+              this.buildLedgerEntry({
+                queueID: randomID("pq"),
+                task,
+                wakeReason: `anchor-start:${task.id}`,
+                mode: task.mode,
+                status: "suppressed",
+                suppressionReason: "no-overlap blocked duplicate run",
+              }),
+            );
+            continue;
+          }
+          const window = this.createScheduledAnchorWindow(state, task, due.scheduledAt);
+          outcome = this.admitConfiguredTask(state, task, {
+            ...due,
+            wakeReason: due.wakeReason,
+            triggerKind: "anchor-start",
+            context: {
+              ...due.context,
+              anchor_action: "start",
+              window_started_at: window.scheduled_start_at,
+              window_ends_at: window.window_end_at,
+            },
+            anchorAction: "start",
+            anchorWindowID: window.window_id,
+            instructions: task.instructions,
+            dedupeKey: `anchor:${task.id}:start:${window.window_id}`,
+          });
+          if (!outcome.queueItem) {
+            removeAnchorWindow(ensureAnchorState(state, task.id), window.window_id);
+          }
+        } else {
+          outcome = this.admitConfiguredTask(state, task, due);
+        }
         if (outcome.suppressed) {
+          const wakeReason = task.mode === "anchor-session" ? `anchor-start:${task.id}` : due.wakeReason;
           suppressions.push(
             this.buildLedgerEntry({
               queueID: outcome.suppressed.queueID,
               task,
-              wakeReason: due.wakeReason,
+              wakeReason,
               mode: task.mode,
               status: outcome.suppressed.status ?? "suppressed",
               suppressionReason: outcome.suppressed.reason,
             }),
           );
+        }
+      }
+
+      for (const taskID of Object.keys(state.anchors)) {
+        const task = this.findTask(taskID);
+        if (!task || task.enabled === false || task.mode !== "anchor-session") {
+          this.orphanAnchorTask(state, taskID);
         }
       }
     });
@@ -521,11 +864,11 @@ export class ProactiveService {
           continue;
         }
         const lane = laneForMode(item.mode);
-        if (!laneAvailable(lanes, lane)) {
+        if (!laneAvailable(lanes, lane, item.task_id, item.anchor_window_id)) {
           keep.push(item);
           continue;
         }
-        occupyLane(lanes, lane);
+        occupyLane(lanes, lane, item.task_id, item.anchor_window_id);
         const runID = randomID("run");
         const activeRun: ProactiveActiveRun = {
           run_id: runID,
@@ -535,6 +878,8 @@ export class ProactiveService {
           mode: item.mode,
           lane,
           status: "running",
+          anchor_action: item.anchor_action,
+          anchor_window_id: item.anchor_window_id,
           started_at: now,
           wake_reason: item.wake_reason,
           attempt: item.attempt ?? 1,
@@ -549,7 +894,9 @@ export class ProactiveService {
         selected.push({ queueItem: item, activeRun, task });
         if (item.task_id && task) {
           const taskState = ensureTaskState(state, item.task_id);
-          taskState.active_run_id = runID;
+          if (!item.anchor_window_id || item.anchor_action === "start") {
+            taskState.active_run_id = runID;
+          }
           taskState.last_started_at = now;
           taskState.last_status = "running";
           taskState.recent_runs = pruneTimestamps(taskState.recent_runs, task.policy.budget?.window_ms ?? Number.MAX_SAFE_INTEGER, now);
@@ -647,12 +994,13 @@ export class ProactiveService {
     const timeoutMs = task?.policy.max_runtime_ms ?? DEFAULT_SESSION_TIMEOUT_MS;
     let rootSessionID: string;
     let title: string;
+    let anchorWindow: ProactiveAnchorWindow | undefined;
     if (claim.queueItem.mode === "anchor-session") {
-      const anchor = await this.ensureAnchorSession();
-      rootSessionID = anchor.session_id!;
-      title = anchor.title ?? this.config!.anchor.title;
+      anchorWindow = await this.ensureTaskAnchorWindow(task!, claim.queueItem.anchor_window_id, claim.queueItem.anchor_action ?? "start");
+      rootSessionID = anchorWindow.current_session_id!;
+      title = anchorWindow.rendered_title;
     } else {
-      title = task?.name ? `Proactive: ${task.name}` : "Proactive Isolated Run";
+      title = task ? renderIsolatedTitle(task, claim.queueItem.scheduled_at ?? Date.now(), this.timezone()) : "Proactive Isolated Run";
       const session = await this.client.createSession(title);
       rootSessionID = session.id;
     }
@@ -664,14 +1012,15 @@ export class ProactiveService {
       active.session_id = rootSessionID;
     });
 
-    const dispatchModel = claim.queueItem.model ?? (claim.queueItem.mode === "anchor-session" ? this.config!.anchor.model : undefined);
-    const dispatchAgent = claim.queueItem.agent ?? (claim.queueItem.mode === "anchor-session" ? this.config!.anchor.agent : undefined);
-    const prompt = buildPrompt(
-      claim,
-      context,
-      precheckResult,
-      claim.queueItem.mode === "anchor-session" ? this.config!.anchor.light_context : undefined,
-    );
+    const dispatchModel =
+      claim.queueItem.mode === "anchor-session" && task
+        ? this.resolveAnchorDispatchModel(task, anchorWindow)
+        : claim.queueItem.model;
+    const dispatchAgent =
+      claim.queueItem.mode === "anchor-session" && task
+        ? this.resolveAnchorDispatchAgent(task, anchorWindow)
+        : claim.queueItem.agent;
+    const prompt = claim.queueItem.instructions.trim();
     try {
       const trimmed = claim.queueItem.instructions.trim();
       if (trimmed.startsWith("/")) {
@@ -697,20 +1046,48 @@ export class ProactiveService {
             const active = state.active[claim.activeRun.run_id];
             if (!active) return;
             active.session_id = sessionID;
-            if (active.lane === "anchor") {
-              state.anchor.session_id = sessionID;
-              state.anchor.updated_at = Date.now();
-              if (!state.anchor.lineage.includes(sessionID)) state.anchor.lineage.push(sessionID);
+            if (active.lane === "anchor" && active.task_id && active.anchor_window_id) {
+              const anchor = ensureAnchorState(state, active.task_id);
+              const window = findAnchorWindow(anchor, active.anchor_window_id);
+              if (!window) return;
+              window.current_session_id = sessionID;
+              window.updated_at = Date.now();
+              if (!window.lineage.includes(sessionID)) window.lineage.push(sessionID);
+              anchor.updated_at = Date.now();
             }
           });
         },
       });
       if (claim.queueItem.mode === "anchor-session") {
+        let continuationPrompt: string | undefined;
         await mutateProactiveState(async (state) => {
-          state.anchor.session_id = outcome.finalSessionID;
-          state.anchor.updated_at = Date.now();
-          if (!state.anchor.lineage.includes(outcome.finalSessionID)) state.anchor.lineage.push(outcome.finalSessionID);
+          if (!claim.queueItem.task_id || !claim.queueItem.anchor_window_id) return;
+          const anchor = ensureAnchorState(state, claim.queueItem.task_id);
+          const window = findAnchorWindow(anchor, claim.queueItem.anchor_window_id);
+          if (!window) return;
+          window.current_session_id = outcome.finalSessionID;
+          window.updated_at = Date.now();
+          if (!window.lineage.includes(outcome.finalSessionID)) window.lineage.push(outcome.finalSessionID);
+          anchor.updated_at = Date.now();
         });
+        if (claim.queueItem.anchor_action === "rollover" && task) {
+          continuationPrompt = outcome.lastAssistantText?.trim() || undefined;
+          if (!continuationPrompt) {
+            throw new Error("rollover handover produced no continuation prompt");
+          }
+          if (continuationPrompt === "SEBASTIAN_IDLE") {
+            await this.finishRun(claim, {
+              status: "suppressed",
+              summary: "SEBASTIAN_IDLE",
+              suppressionReason: "SEBASTIAN_IDLE",
+              finalSessionID: outcome.finalSessionID,
+            });
+            return;
+          }
+          const fresh = await this.rotateAnchorWindow(task, claim.queueItem.anchor_window_id!, continuationPrompt);
+          rootSessionID = fresh.current_session_id!;
+          outcome.finalSessionID = rootSessionID;
+        }
       }
       const text = outcome.lastAssistantText?.trim();
       if (claim.queueItem.mode === "anchor-session" && text === "SEBASTIAN_IDLE") {
@@ -848,7 +1225,12 @@ export class ProactiveService {
         }
         taskState.last_completed_at = endedAt;
         taskState.last_status = input.status;
-        if (task && task.policy.cooldown_ms && input.status !== "failed") {
+        if (
+          task &&
+          task.policy.cooldown_ms &&
+          input.status !== "failed" &&
+          (claim.queueItem.mode !== "anchor-session" || claim.queueItem.anchor_action === "start")
+        ) {
           taskState.cooldown_until = endedAt + task.policy.cooldown_ms;
         }
         if (input.status === "suppressed" || input.status === "expired") {
@@ -861,7 +1243,14 @@ export class ProactiveService {
         }
       }
 
-      if (task && input.status === "failed" && input.retryable && shouldRetry(task, claim.activeRun.attempt)) {
+      const retryAllowed =
+        task &&
+        input.status === "failed" &&
+        input.retryable &&
+        (claim.queueItem.mode === "anchor-session" && (claim.queueItem.anchor_action === "rollover" || claim.queueItem.anchor_action === "end")
+          ? true
+          : shouldRetry(task, claim.activeRun.attempt));
+      if (task && retryAllowed) {
         const candidate: ProactiveQueueItem = {
           ...claim.queueItem,
           queue_id: randomID("pq"),
@@ -880,10 +1269,43 @@ export class ProactiveService {
         }
       }
 
-      if (active?.lane === "anchor" && input.finalSessionID) {
-        state.anchor.session_id = input.finalSessionID;
-        state.anchor.updated_at = endedAt;
-        if (!state.anchor.lineage.includes(input.finalSessionID)) state.anchor.lineage.push(input.finalSessionID);
+      if (active?.lane === "anchor" && claim.queueItem.task_id && claim.queueItem.anchor_window_id) {
+        const anchor = ensureAnchorState(state, claim.queueItem.task_id);
+        const window = findAnchorWindow(anchor, claim.queueItem.anchor_window_id);
+        if (window) {
+          if (input.finalSessionID) {
+            window.current_session_id = input.finalSessionID;
+            window.updated_at = endedAt;
+            if (!window.lineage.includes(input.finalSessionID)) window.lineage.push(input.finalSessionID);
+          }
+          if (input.status === "completed" || input.status === "suppressed") {
+            window.pending_action = undefined;
+            window.last_error = undefined;
+            if (claim.queueItem.anchor_action === "retrigger") {
+              window.last_retrigger_at = endedAt;
+            }
+            if (claim.queueItem.anchor_action === "rollover") {
+              window.status = "open";
+              window.last_usage_ratio = undefined;
+              window.last_tokens_total = undefined;
+              window.last_message_id = undefined;
+            }
+            if (claim.queueItem.anchor_action === "end") {
+              removeAnchorWindow(anchor, claim.queueItem.anchor_window_id);
+            }
+          }
+          if (input.status === "failed") {
+            window.last_error = input.error;
+            if (claim.queueItem.anchor_action === "end") {
+              window.status = "closing";
+              window.pending_action = "end";
+            } else if (claim.queueItem.anchor_action === "rollover") {
+              window.status = "rolling-over";
+              window.pending_action = "rollover";
+            }
+          }
+        }
+        anchor.updated_at = endedAt;
       }
       state.queue = sortQueue(state.queue);
     });
@@ -942,6 +1364,13 @@ export class ProactiveService {
       context: Record<string, unknown>;
       scheduledAt: number;
       enforceEnabled?: boolean;
+      anchorAction?: ProactiveAnchorAction;
+      anchorWindowID?: string;
+      instructions?: string;
+      priority?: number;
+      dedupeKey?: string;
+      ttlMsOverride?: number;
+      bypassAnchorNoOverlap?: boolean;
     },
   ): AdmissionOutcome {
     return this.admitQueueItem(state, {
@@ -953,13 +1382,16 @@ export class ProactiveService {
       taskID: task.id,
       taskName: task.name,
       triggerKind: input.triggerKind,
-      instructions: task.instructions,
+      instructions: input.instructions ?? task.instructions,
       mode: task.mode,
-      priority: task.priority,
-      ttlMs: task.policy.ttl_ms,
+      anchorAction: input.anchorAction,
+      anchorWindowID: input.anchorWindowID,
+      priority: input.priority ?? task.priority,
+      ttlMs: input.ttlMsOverride ?? task.policy.ttl_ms,
       notBefore: input.now,
-      agent: task.agent ?? (task.mode === "anchor-session" ? this.config?.anchor.agent : undefined),
-      model: task.model ?? (task.mode === "anchor-session" ? this.config?.anchor.model : undefined),
+      dedupeKey: input.dedupeKey,
+      agent: task.agent,
+      model: this.resolveConfiguredTaskModel(task),
       context: {
         purpose: task.purpose,
         ...input.context,
@@ -968,6 +1400,7 @@ export class ProactiveService {
       scheduledAt: input.scheduledAt,
       attempt: 1,
       enforceEnabled: input.enforceEnabled,
+      bypassAnchorNoOverlap: input.bypassAnchorNoOverlap,
     });
   }
 
@@ -983,7 +1416,13 @@ export class ProactiveService {
       this.recordAdmissionSuppression(state, input, `task ${input.task.id} is disabled`);
       return { suppressed: { queueID, reason: `task ${input.task.id} is disabled` } };
     }
-    if (taskState && input.task.policy.no_overlap && hasTaskInFlight(state, input.task.id)) {
+    if (
+      taskState &&
+      input.task.policy.no_overlap &&
+      !(input.mode === "anchor-session" && input.anchorAction && input.anchorAction !== "start") &&
+      !input.bypassAnchorNoOverlap &&
+      hasTaskInFlight(state, input.task.id)
+    ) {
       this.recordAdmissionSuppression(state, input, "no-overlap blocked duplicate run");
       return { suppressed: { queueID, reason: "no-overlap blocked duplicate run" } };
     }
@@ -1004,7 +1443,11 @@ export class ProactiveService {
       }
     }
 
-    const dedupeKey = input.dedupeKey ?? (input.task.policy.no_overlap && input.taskID ? `task:${input.taskID}` : undefined);
+    const dedupeKey =
+      input.dedupeKey ??
+      (input.task.policy.no_overlap && input.taskID && !(input.mode === "anchor-session" && input.anchorAction && input.anchorAction !== "start")
+        ? `task:${input.taskID}`
+        : undefined);
     if (dedupeKey && hasDedupeCollision(state, dedupeKey)) {
       this.recordAdmissionSuppression(state, input, "dedupe key already queued or active");
       return { suppressed: { queueID, reason: "dedupe key already queued or active" } };
@@ -1024,6 +1467,8 @@ export class ProactiveService {
       dedupe_key: dedupeKey,
       ttl_ms: input.ttlMs,
       mode: input.mode,
+      anchor_action: input.anchorAction,
+      anchor_window_id: input.anchorWindowID,
       agent: input.agent,
       model: input.model,
       instructions: input.instructions,
@@ -1060,7 +1505,7 @@ export class ProactiveService {
     }
     const taskState = ensureTaskState(state, task.id);
     if (task.enabled === false) return "task disabled";
-    if (task.policy.no_overlap) {
+    if (task.policy.no_overlap && !(item.mode === "anchor-session" && item.anchor_action && item.anchor_action !== "start")) {
       const other = Object.values(state.active).some(
         (active) => active.task_id === task.id && active.run_id !== taskState.active_run_id,
       );
@@ -1222,57 +1667,212 @@ export class ProactiveService {
     return undefined;
   }
 
-  private async ensureAnchorSession() {
-    this.requireEnabled();
-    const existing = await mutateProactiveState(async (state) => {
-      const anchor = state.anchor;
-      const resolved = anchor.root_session_id
-        ? resolveCompaction(anchor.root_session_id, await readCompactionStateSafe())
-        : undefined;
-      const current = resolved?.currentSessionID ?? anchor.session_id;
-      if (current) {
-        try {
-          const session = await this.client.getSession(current);
-          anchor.session_id = session.id;
-          anchor.root_session_id ??= session.id;
-          anchor.title = session.title;
-          anchor.agent = this.config!.anchor.agent;
-          anchor.model = this.config!.anchor.model;
-          anchor.updated_at = Date.now();
-          if (!anchor.lineage.includes(session.id)) anchor.lineage.push(session.id);
-          return anchor;
-        } catch {
-          // recreate below
-        }
-      }
-
-      const session = await this.client.createSession(this.config!.anchor.title);
-      anchor.session_id = session.id;
-      anchor.root_session_id = session.id;
-      anchor.title = session.title;
-      anchor.agent = this.config!.anchor.agent;
-      anchor.model = this.config!.anchor.model;
-      anchor.updated_at = Date.now();
-      if (!anchor.lineage.includes(session.id)) anchor.lineage.push(session.id);
-      return anchor;
-    });
-    return existing.result;
-  }
-
-  private async refreshAnchorFromCompaction() {
+  private async refreshAnchorSessions() {
     if (!this.config?.enabled) return;
     await mutateProactiveState(async (state) => {
-      if (!state.anchor.root_session_id) return;
-      const compaction = await readCompactionStateSafe();
-      const resolution = resolveCompaction(state.anchor.root_session_id, compaction);
-      if (resolution.currentSessionID && resolution.currentSessionID !== state.anchor.session_id) {
-        state.anchor.session_id = resolution.currentSessionID;
-        state.anchor.updated_at = Date.now();
-        if (!state.anchor.lineage.includes(resolution.currentSessionID)) {
-          state.anchor.lineage.push(resolution.currentSessionID);
+      for (const task of this.config!.tasks) {
+        if (task.mode !== "anchor-session") continue;
+        const anchor = ensureAnchorState(state, task.id);
+        for (const window of [...anchor.open_windows]) {
+          if (!window.current_session_id) continue;
+          try {
+            const session = await this.client.getSession(window.current_session_id);
+            window.current_session_id = session.id;
+            window.updated_at = Date.now();
+            if (!window.lineage.includes(session.id)) window.lineage.push(session.id);
+          } catch {
+            window.last_error = "current anchor session unavailable";
+          }
         }
+        anchor.updated_at = Date.now();
       }
     });
+  }
+
+  private async refreshAnchorUsage() {
+    if (!this.config?.enabled) return;
+    await this.refreshProviders(false);
+    const messages = await this.recentAnchorAssistantMessages();
+    if (messages.length === 0) return;
+    await mutateProactiveState(async (state) => {
+      for (const message of messages) {
+        if (message.info.role !== "assistant") continue;
+        const owner = findAnchorOwnerBySession(state, message.info.sessionID);
+        if (!owner) continue;
+        const task = this.findTask(owner.task_id);
+        if (!task?.anchor) continue;
+        const anchor = ensureAnchorState(state, owner.task_id);
+        const contextLimit = this.providers.get(`${message.info.providerID}/${message.info.modelID}`);
+        if (!contextLimit) continue;
+        const total = assistantTokenCount(message.info.tokens);
+        if (total <= 0) continue;
+        owner.window.last_tokens_total = total;
+        owner.window.last_usage_ratio = total / contextLimit;
+        owner.window.last_message_id = message.info.id;
+        owner.window.model = {
+          providerID: message.info.providerID,
+          modelID: message.info.modelID,
+          variant: message.info.variant,
+        };
+        owner.window.agent = message.info.agent;
+        owner.window.updated_at = Date.now();
+        anchor.updated_at = Date.now();
+      }
+    });
+  }
+
+  private async captureAnchorUsageFromEvent(_event: BusEventPayload) {
+    await this.refreshAnchorUsage();
+  }
+
+  private anchorRetriggerDue(task: ProactiveTaskConfig, window: ProactiveAnchorWindow, now: number) {
+    if (!task.anchor?.retrigger || !task.anchor.retrigger_instructions) return undefined;
+    if (now >= window.window_end_at) return undefined;
+    if (!window.current_session_id) return undefined;
+
+    const retrigger = task.anchor.retrigger;
+    if (retrigger.kind === "cron") {
+      if (!matchesCron(retrigger.expr, new Date(now), this.timezone())) return undefined;
+      const stamp = minuteStamp(new Date(now), this.timezone());
+      const lastStamp = typeof window.last_retrigger_at === "number"
+        ? minuteStamp(new Date(window.last_retrigger_at), this.timezone())
+        : undefined;
+      if (lastStamp === stamp) return undefined;
+      return { scheduledAt: now };
+    }
+
+    const intervalMs = retrigger.minutes * 60_000;
+    const last = window.last_retrigger_at ?? window.scheduled_start_at;
+    if (now - last < intervalMs) return undefined;
+    return { scheduledAt: last + intervalMs };
+  }
+
+  private async recentAnchorAssistantMessages() {
+    const state = await loadProactiveState();
+    const messages: MessageWithParts[] = [];
+    for (const anchor of Object.values(state.anchors)) {
+      for (const window of anchor.open_windows) {
+        if (!window.current_session_id) continue;
+        try {
+          const history = await this.client.sessionMessages(window.current_session_id);
+          const lastAssistant = [...history].reverse().find((message) => message.info.role === "assistant");
+          if (lastAssistant) messages.push(lastAssistant);
+        } catch {
+          // ignore transient failures
+        }
+      }
+    }
+    return messages;
+  }
+
+  private async ensureTaskAnchorWindow(
+    task: ProactiveTaskConfig,
+    windowID: string | undefined,
+    action: ProactiveAnchorAction,
+  ) {
+    this.requireEnabled();
+    if (!windowID) {
+      throw new Error(`anchor ${action} is missing window id for task ${task.id}`);
+    }
+    const { result } = await mutateProactiveState(async (state) => {
+      const anchor = ensureAnchorState(state, task.id);
+      const window = findAnchorWindow(anchor, windowID);
+      if (!window) {
+        throw new Error(`anchor window ${windowID} not found for task ${task.id}`);
+      }
+      if ((action === "retrigger" || action === "rollover" || action === "end") && !window.current_session_id) {
+        throw new Error(`anchor window ${windowID} has no active session`);
+      }
+      if (action === "start") {
+        await this.ensureAnchorStartModelLimit(task, window);
+      }
+      if (action === "start" || !window.current_session_id) {
+        const session = await this.client.createSession(window.rendered_title);
+        window.current_session_id = session.id;
+        window.root_session_id ??= session.id;
+        window.updated_at = Date.now();
+        if (!window.lineage.includes(session.id)) window.lineage.push(session.id);
+      }
+      return window;
+    });
+    return result;
+  }
+
+  private async rotateAnchorWindow(task: ProactiveTaskConfig, windowID: string, continuationPrompt: string): Promise<{ current_session_id: string }> {
+    this.requireEnabled();
+
+    // 1. Read window state under lock
+    const { result: snapshot } = await mutateProactiveState(async (state) => {
+      const anchor = ensureAnchorState(state, task.id);
+      const window = findAnchorWindow(anchor, windowID);
+      if (!window) {
+        throw new Error(`anchor window ${windowID} not found for task ${task.id}`);
+      }
+      return {
+        rendered_title: window.rendered_title,
+        agent: this.resolveAnchorDispatchAgent(task, window),
+        model: this.resolveAnchorDispatchModel(task, window),
+        window_end_at: window.window_end_at,
+      };
+    });
+    const dispatchModel = snapshot.model;
+    if (!dispatchModel) {
+      throw new Error(`anchor window ${windowID} cannot rollover: effective model is unknown`);
+    }
+
+    // 2. Outside lock: create session, send prompt, wait for completion
+    const session = await this.client.createSession(snapshot.rendered_title);
+    let continuationSessionID: string;
+    try {
+      await this.client.promptAsync(session.id, {
+        agent: snapshot.agent,
+        model: dispatchModel,
+        parts: [{ type: "text", text: buildRolloverContinuationPrompt(task, windowID, snapshot.window_end_at, continuationPrompt) }],
+      });
+      await waitForSessionCompletion(this.client, session.id, {
+        timeoutMs: task.policy.max_runtime_ms ?? DEFAULT_SESSION_TIMEOUT_MS,
+        pollMs: 1_000,
+      });
+      continuationSessionID = session.id;
+    } catch (err) {
+      await this.client.abortSession(session.id).catch(() => undefined);
+      throw err;
+    }
+
+    // 3. Write final state under lock
+    await mutateProactiveState(async (state) => {
+      const anchor = ensureAnchorState(state, task.id);
+      const window = findAnchorWindow(anchor, windowID);
+      if (!window) return;
+      window.current_session_id = continuationSessionID;
+      window.root_session_id ??= continuationSessionID;
+      window.status = "open";
+      window.pending_action = undefined;
+      window.updated_at = Date.now();
+      if (!window.lineage.includes(continuationSessionID)) window.lineage.push(continuationSessionID);
+      if (task.agent) {
+        window.agent = task.agent;
+      }
+      anchor.updated_at = Date.now();
+    });
+
+    return { current_session_id: continuationSessionID };
+  }
+
+  private async refreshProviders(force: boolean) {
+    const now = Date.now();
+    if (!force && now - this.providersLoadedAt < 300_000) return;
+    const result = await this.client.providers().catch(() => undefined);
+    if (!result) return;
+    this.providers.clear();
+    for (const provider of result.all) {
+      for (const [modelID, model] of Object.entries(provider.models ?? {})) {
+        if (typeof model.limit?.context === "number") {
+          this.providers.set(`${provider.id}/${modelID}`, model.limit.context);
+        }
+      }
+    }
+    this.providersLoadedAt = now;
   }
 
   private async updateDeliverySuppression() {
@@ -1467,6 +2067,7 @@ export class ProactiveService {
       const workerConfig = await loadWorkerConfig();
       this.workerConfig = workerConfig;
       this.config = workerConfig.proactive;
+      this.defaultModel = await this.loadDefaultModel();
       this.configMTimeMs = await this.readConfigMTimeMs();
     } catch (err) {
       if (!hadConfig) {
@@ -1513,8 +2114,8 @@ export class ProactiveService {
       this.syncQueuedConfiguredItems(state);
     });
     await this.reconcileStartupState();
-    await this.ensureAnchorSession();
-    await this.refreshAnchorFromCompaction();
+    await this.refreshAnchorSessions();
+    await this.refreshAnchorUsage();
     await this.updateDeliverySuppression();
     this.runtimePrepared = true;
   }
@@ -1531,8 +2132,20 @@ export class ProactiveService {
   private syncTaskDefinitions(state: ProactiveState, startupSemantics: boolean) {
     if (!this.config) return;
     const now = Date.now();
+    for (const taskID of Object.keys(state.anchors)) {
+      if (taskID === "legacy-global-anchor" || !this.config.tasks.some((task) => task.id === taskID && task.mode === "anchor-session")) {
+        this.orphanAnchorTask(state, taskID);
+      }
+    }
     for (const task of this.config.tasks) {
       const taskState = ensureTaskState(state, task.id);
+      if (task.mode === "anchor-session" && task.enabled !== false) {
+        ensureAnchorState(state, task.id);
+      } else if (task.enabled === false || task.mode !== "anchor-session") {
+        if (state.anchors[task.id]) {
+          this.orphanAnchorTask(state, task.id);
+        }
+      }
       const signature = triggerSignature(task);
       if (taskState.trigger_signature !== signature) {
         resetTriggerState(taskState, task, now, startupSemantics);
@@ -1550,11 +2163,23 @@ export class ProactiveService {
       item.task_name = task.name;
       item.trigger_kind = task.trigger.kind;
       item.mode = task.mode;
-      item.priority = task.priority;
-      item.ttl_ms = task.policy.ttl_ms;
-      item.instructions = task.instructions;
-      item.agent = task.agent ?? (task.mode === "anchor-session" ? this.config.anchor.agent : undefined);
-      item.model = task.model ?? (task.mode === "anchor-session" ? this.config.anchor.model : undefined);
+      if (!item.anchor_action) {
+        item.priority = task.priority;
+      }
+      if (!item.anchor_action || (item.anchor_action !== "rollover" && item.anchor_action !== "end")) {
+        item.ttl_ms = task.policy.ttl_ms;
+      }
+      if (!item.anchor_action) {
+        item.instructions = task.instructions;
+      }
+      if (task.mode === "anchor-session" && item.anchor_window_id) {
+        const window = findAnchorWindow(ensureAnchorState(state, task.id), item.anchor_window_id);
+        item.agent = task.agent ?? window?.agent;
+        item.model = task.model ?? window?.model ?? this.resolveConfiguredTaskModel(task);
+      } else {
+        item.agent = task.agent;
+        item.model = this.resolveConfiguredTaskModel(task);
+      }
       item.command = task.command;
       item.context = {
         ...item.context,
@@ -1620,6 +2245,66 @@ export class ProactiveService {
     return this.config?.timezone;
   }
 
+  private async loadDefaultModel() {
+    try {
+      const raw = parseJsonc(await readText(`${root}/opencode.json`));
+      if (!record(raw) || typeof raw.model !== "string") return undefined;
+      return parseModelString(raw.model);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private createScheduledAnchorWindow(state: ProactiveState, task: ProactiveTaskConfig, scheduledAt: number) {
+    const anchor = ensureAnchorState(state, task.id);
+    const window = createAnchorWindow({
+      windowID: randomID("aw"),
+      scheduledStartAt: scheduledAt,
+      windowEndAt: scheduledAt + task.anchor!.duration_ms,
+      renderedTitle: renderAnchorTitle(task, scheduledAt, this.timezone()),
+      updatedAt: Date.now(),
+    });
+    anchor.open_windows.push(window);
+    anchor.open_windows.sort((left, right) => left.scheduled_start_at - right.scheduled_start_at);
+    anchor.updated_at = Date.now();
+    return window;
+  }
+
+  private resolveConfiguredTaskModel(task: ProactiveTaskConfig) {
+    return task.model ?? this.defaultModel;
+  }
+
+  private resolveAnchorDispatchAgent(task: ProactiveTaskConfig, window: ProactiveAnchorWindow | undefined) {
+    return task.agent ?? window?.agent;
+  }
+
+  private resolveAnchorDispatchModel(task: ProactiveTaskConfig, window: ProactiveAnchorWindow | undefined) {
+    return task.model ?? window?.model ?? this.defaultModel;
+  }
+
+  private async ensureAnchorStartModelLimit(task: ProactiveTaskConfig, window: ProactiveAnchorWindow) {
+    await this.refreshProviders(false);
+    const model = this.resolveAnchorDispatchModel(task, window);
+    if (!model) {
+      throw new Error(`anchor window ${window.window_id} cannot start: effective model is unknown`);
+    }
+    if (!this.providers.has(`${model.providerID}/${model.modelID}`)) {
+      throw new Error(
+        `anchor window ${window.window_id} cannot start: missing context limit for ${model.providerID}/${model.modelID}`,
+      );
+    }
+    window.model = model;
+    if (task.agent) {
+      window.agent = task.agent;
+    }
+    return model;
+  }
+
+  private orphanAnchorTask(state: ProactiveState, taskID: string) {
+    if (!state.anchors[taskID]) return;
+    delete state.anchors[taskID];
+  }
+
   private rebaseRecoveredSchedules(state: ProactiveState, now: number) {
     if (!this.config) return;
     for (const task of this.config.tasks) {
@@ -1667,6 +2352,7 @@ function triggerSignature(task: ProactiveTaskConfig) {
   return JSON.stringify({
     trigger: task.trigger,
     mode: task.mode,
+    anchor: task.anchor,
     policy: {
       ttl_ms: task.policy.ttl_ms,
       cooldown_ms: task.policy.cooldown_ms,
@@ -1684,6 +2370,7 @@ function resetTriggerState(
 ) {
   delete taskState.last_cron_stamp;
   delete taskState.last_scheduled_at;
+  delete taskState.last_retrigger_at;
   delete taskState.recent_event_at;
   taskState.event_window = [];
 
@@ -1708,33 +2395,6 @@ function resetTriggerState(
   delete taskState.at_resolved_at;
 }
 
-function buildPrompt(
-  claim: DispatchClaim,
-  context: Record<string, unknown>,
-  precheckResult?: PrecheckResult,
-  anchorLightContext?: string,
-) {
-  const contextText = Object.keys(context).length > 0 ? JSON.stringify(context, null, 2) : "{}";
-  const lines = [claim.queueItem.instructions.trim()];
-  if (anchorLightContext?.trim()) {
-    lines.push("");
-    lines.push("Anchor light context:");
-    lines.push(anchorLightContext.trim());
-  }
-  lines.push("");
-  lines.push("Proactive runtime context:");
-  lines.push(`- Wake reason: ${claim.queueItem.wake_reason}`);
-  if (claim.queueItem.task_name) lines.push(`- Task: ${claim.queueItem.task_name}`);
-  if (claim.queueItem.source.type) lines.push(`- Source type: ${claim.queueItem.source.type}`);
-  if (precheckResult?.reason) lines.push(`- Precheck: ${precheckResult.reason}`);
-  lines.push("");
-  lines.push("Structured context:");
-  lines.push("```json");
-  lines.push(contextText);
-  lines.push("```");
-  return lines.join("\n").trim();
-}
-
 function lookup(value: unknown, path: string): unknown {
   let current: unknown = value;
   for (const part of path.split(".")) {
@@ -1751,7 +2411,7 @@ function getEventSessionID(event: BusEventPayload) {
 function eventSessionSourceType(event: BusEventPayload, state: ProactiveState): ProactiveQueueSource["type"] {
   const sessionID = getEventSessionID(event);
   if (!sessionID) return "trigger";
-  if (state.anchor.session_id === sessionID || state.anchor.root_session_id === sessionID) {
+  if (findAnchorOwnerBySession(state, sessionID)) {
     return "anchor";
   }
   const active = Object.values(state.active).find(
@@ -1762,7 +2422,7 @@ function eventSessionSourceType(event: BusEventPayload, state: ProactiveState): 
 }
 
 function belongsToProactive(state: ProactiveState, sessionID: string) {
-  if (state.anchor.session_id === sessionID || state.anchor.root_session_id === sessionID) return true;
+  if (findAnchorOwnerBySession(state, sessionID)) return true;
   return Object.values(state.active).some(
     (active) => active.session_id === sessionID || active.root_session_id === sessionID,
   );
@@ -1841,7 +2501,7 @@ function laneForMode(mode: ProactiveExecutionMode): ProactiveLane {
 function laneAvailability(state: ProactiveState, maxConcurrentRuns: number) {
   const active = Object.values(state.active);
   return {
-    anchor: active.some((run) => run.lane === "anchor"),
+    anchor_windows: new Set(active.filter((run) => run.lane === "anchor" && run.anchor_window_id).map((run) => run.anchor_window_id!)),
     exec: active.some((run) => run.lane === "exec"),
     isolated: active.filter((run) => run.lane === "isolated").length,
     isolated_limit: maxConcurrentRuns,
@@ -1851,16 +2511,93 @@ function laneAvailability(state: ProactiveState, maxConcurrentRuns: number) {
 function laneAvailable(
   lanes: ReturnType<typeof laneAvailability>,
   lane: ProactiveLane,
+  taskID?: string,
+  anchorWindowID?: string,
 ) {
-  if (lane === "anchor") return !lanes.anchor;
+  if (lane === "anchor") return anchorWindowID ? !lanes.anchor_windows.has(anchorWindowID) : false;
   if (lane === "exec") return !lanes.exec;
   return lanes.isolated < lanes.isolated_limit;
 }
 
-function occupyLane(lanes: ReturnType<typeof laneAvailability>, lane: ProactiveLane) {
-  if (lane === "anchor") lanes.anchor = true;
+function occupyLane(lanes: ReturnType<typeof laneAvailability>, lane: ProactiveLane, taskID?: string, anchorWindowID?: string) {
+  if (lane === "anchor") {
+    if (anchorWindowID) lanes.anchor_windows.add(anchorWindowID);
+  }
   else if (lane === "exec") lanes.exec = true;
   else lanes.isolated += 1;
+}
+
+function renderTaskName(task: ProactiveTaskConfig, at: number, timezone?: string) {
+  const date = zoned(new Date(at), timezone);
+  const replacements: Record<string, string> = {
+    YYYY: String(date.year),
+    MM: pad(date.month),
+    DD: pad(date.day),
+    HH: pad(date.hour),
+    mm: pad(date.minute),
+    ss: pad(date.second),
+  };
+  return task.name.replace(/YYYY|MM|DD|HH|mm|ss/g, (token) => replacements[token] ?? token);
+}
+
+function renderAnchorTitle(task: ProactiveTaskConfig, at: number, timezone?: string) {
+  return `Anchor: ${renderTaskName(task, at, timezone)}`;
+}
+
+function renderIsolatedTitle(task: ProactiveTaskConfig, at: number, timezone?: string) {
+  return `Proactive: ${renderTaskName(task, at, timezone)}`;
+}
+
+function windowActionQueuedOrActive(state: ProactiveState, windowID: string, action: ProactiveAnchorAction) {
+  return (
+    state.queue.some((item) => item.anchor_window_id === windowID && item.anchor_action === action) ||
+    Object.values(state.active).some((run) => run.anchor_window_id === windowID && run.anchor_action === action)
+  );
+}
+
+function parseModelString(value: string): ModelRef | undefined {
+  const [providerID, ...rest] = value.split("/");
+  const modelID = rest.join("/");
+  if (!providerID || !modelID) return undefined;
+  return { providerID, modelID };
+}
+
+function buildRolloverContinuationPrompt(
+  task: ProactiveTaskConfig,
+  windowID: string,
+  windowEndAt: number,
+  continuationPrompt: string,
+) {
+  return [
+    `Continue the same anchor window for task: ${task.id}`,
+    `Window ID: ${windowID}`,
+    `Window end at (ms): ${windowEndAt}`,
+    `Keep the existing context and intent of this window. Do not restart the task from scratch.`,
+    "",
+    continuationPrompt.trim(),
+  ]
+    .join("\n")
+    .trim();
+}
+
+function findAnchorOwnerBySession(state: ProactiveState, sessionID: string) {
+  for (const anchor of Object.values(state.anchors)) {
+    const window = anchor.open_windows.find(
+      (candidate) =>
+        candidate.current_session_id === sessionID ||
+        candidate.root_session_id === sessionID ||
+        candidate.lineage.includes(sessionID),
+    );
+    if (window) {
+      return { task_id: anchor.task_id, window };
+    }
+  }
+  return undefined;
+}
+
+function assistantTokenCount(tokens: { total?: number; input: number; output: number; reasoning: number; cache: { read: number; write: number } }) {
+  if (typeof tokens.total === "number") return tokens.total;
+  return tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write;
 }
 
 async function runInternalPrecheck(name: string, claim: DispatchClaim): Promise<PrecheckResult> {
@@ -2016,6 +2753,7 @@ function zoned(now: Date, timezone?: string) {
     hour: Number(parts.hour),
     day: Number(parts.day),
     month: Number(parts.month),
+    second: Number(parts.second ?? "0"),
     weekday,
   };
 }

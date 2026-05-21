@@ -14,6 +14,7 @@ import {
   writeJsonFile,
 } from "./shared";
 import { loadWorkerConfig } from "./config";
+import { loadProactiveAnchorRegistry } from "./proactive-state";
 import type {
   AssistantMessageInfo,
   BusEventPayload,
@@ -279,6 +280,7 @@ export class CompactionService {
   }
 
   private async inspectBusySession(sessionID: string) {
+    if (await this.isAnchorManagedSession(sessionID)) return;
     const session = await this.safeGetSession(sessionID);
     if (!session || session.parentID) return;
     const history = await this.fetchHistoryWithRetry(sessionID);
@@ -290,6 +292,7 @@ export class CompactionService {
   private async processAssistantUpdate(info: AssistantMessageInfo, sessionHint?: SessionInfo) {
     if (info.summary) return;
     if (this.isTempSession(info.sessionID)) return;
+    if (await this.isAnchorManagedSession(info.sessionID)) return;
 
     const policy = await this.resolvePolicy(info.providerID, info.modelID);
     if (!policy) return;
@@ -350,6 +353,7 @@ export class CompactionService {
 
   private async processOverflowEvent(sessionID: string) {
     if (this.isTempSession(sessionID)) return;
+    if (await this.isAnchorManagedSession(sessionID)) return;
     const existing = this.state.sessions[sessionID];
     if (existing && existing.status !== "monitoring") return;
 
@@ -784,6 +788,11 @@ export class CompactionService {
     } catch {
       return undefined;
     }
+  }
+
+  private async isAnchorManagedSession(sessionID: string) {
+    const registry = await loadProactiveAnchorRegistry();
+    return registry.includes(sessionID);
   }
 
   private async failSession(sessionID: string, err: unknown) {

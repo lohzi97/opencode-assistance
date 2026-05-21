@@ -58,33 +58,16 @@
       "poll_interval_ms": 60000,
 
       // Maximum number of proactive isolated-session runs that may execute concurrently.
-      // The anchor lane has its own dedicated single-run slot and does NOT consume this capacity.
+      // Anchor runs are serialized per anchor window and do NOT consume this capacity.
       // exec runs are serialized in v1 and also do not consume this capacity.
       // Default: 1.
       "max_concurrent_runs": 1
     },
 
-    "anchor": {
-      // Display title for the persistent anchor session in OpenCode.
-      "title": "Anchor",
-
-      // Default agent used when sending prompts into the anchor session.
-      // Per-task overrides may replace this for specific tasks.
-      // The anchor lane allows only one run at a time.
-      "agent": "sebastian",
-
-      // Optional. Appended after the main instruction.
-      // If not configured, nothing is added.
-      "light_context": "",
-
-      // Optional default model override for the anchor session.
-      // If omitted, the anchor uses the normal OpenCode model stack.
-      // Example:
-      // "model": {
-      //   "providerID": "deepseek",
-      //   "modelID": "deepseek-v4-flash"
-      // }
-    },
+    // No global proactive.anchor block exists anymore.
+    // Anchor behavior is fully configured per task under task.anchor.
+    // Titles render as `Anchor: ${task.name}` for anchor windows.
+    // Generic compaction must never compact any anchor-lineage session.
 
     // Default policy values applied to every task that does not override them.
     // Individual tasks may define their own "policy" block to override these.
@@ -246,16 +229,27 @@
       },
 
       {
-        "id": "master-evening-diary",
-        "name": "Master's Evening Diary",
+        "id": "master-diary",
+        "name": "Master's Diary",
         "enabled": true,
         "purpose": "Ask the Master about their day every evening and write a personal diary entry into ~/diary/.",
         "trigger": {
           "kind": "cron",
-          "expr": "0 20 * * *" // every day 8:00 PM MYT
+          "expr": "0 8 * * *" // every day 8:00 AM MYT
         },
         "mode": "anchor-session",
-        "instructions": "/write-master-diary",
+        "instructions": "/master-diary-start",
+        "anchor": {
+          "duration_ms": 82800000,
+          "end_instructions": "/master-diary-end",
+          "rollover_threshold": 0.8,
+          "rollover_instructions": "/master-diary-rollover",
+          "retrigger": {
+            "kind": "every",
+            "minutes": 300
+          },
+          "retrigger_instructions": "/master-diary-retrigger"
+        },
         "priority": 3,
         "policy": {
           "silence_ok": true,

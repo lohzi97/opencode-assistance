@@ -71,6 +71,25 @@ export type ProactivePrecheck =
       name: string;
     };
 
+export type ProactiveAnchorRetrigger =
+  | {
+      kind: "cron";
+      expr: string;
+    }
+  | {
+      kind: "every";
+      minutes: number;
+    };
+
+export type ProactiveTaskAnchorConfig = {
+  duration_ms: number;
+  end_instructions: string;
+  rollover_threshold: number;
+  rollover_instructions: string;
+  retrigger?: ProactiveAnchorRetrigger;
+  retrigger_instructions?: string;
+};
+
 export type ProactiveTrigger =
   | {
       kind: "cron";
@@ -105,6 +124,7 @@ export type ProactiveTaskConfig = {
   command?: string[];
   agent?: string;
   model?: ModelRef;
+  anchor?: ProactiveTaskAnchorConfig;
   priority: number;
   precheck?: ProactivePrecheck;
   policy: ProactiveTaskPolicy;
@@ -113,13 +133,6 @@ export type ProactiveTaskConfig = {
 export type ProactiveDispatcherConfig = {
   poll_interval_ms: number;
   max_concurrent_runs: number;
-};
-
-export type ProactiveAnchorConfig = {
-  title: string;
-  agent: string;
-  model?: ModelRef;
-  light_context?: string;
 };
 
 export type ProactiveDefaultsConfig = {
@@ -141,7 +154,6 @@ export type ProactiveConfig = {
   enabled: boolean;
   timezone?: string;
   dispatcher: ProactiveDispatcherConfig;
-  anchor: ProactiveAnchorConfig;
   defaults: ProactiveDefaultsConfig;
   delivery: ProactiveDeliveryConfig;
   tasks: ProactiveTaskConfig[];
@@ -181,10 +193,6 @@ const DEFAULT_PROACTIVE_CONFIG: ProactiveConfig = {
   dispatcher: {
     poll_interval_ms: 60_000,
     max_concurrent_runs: 1,
-  },
-  anchor: {
-    title: "Sebastian Proactive Anchor",
-    agent: "sebastian",
   },
   defaults: {
     no_overlap: true,
@@ -292,10 +300,13 @@ function parseCompactionConfig(input: unknown): CompactionConfig {
 function parseProactiveConfig(input: unknown): ProactiveConfig {
   if (!record(input)) return DEFAULT_PROACTIVE_CONFIG;
   const dispatcher = record(input.dispatcher) ? input.dispatcher : {};
-  const anchor = record(input.anchor) ? input.anchor : {};
   const defaults = record(input.defaults) ? input.defaults : {};
   const delivery = record(input.delivery) ? input.delivery : {};
   const tasks = Array.isArray(input.tasks) ? input.tasks.flatMap((value) => parseProactiveTask(value, defaults)) : [];
+
+  if (input.anchor !== undefined) {
+    throw new Error("proactive.anchor is no longer supported; move anchor behavior into per-task settings");
+  }
 
   return {
     enabled: input.enabled === true,
@@ -305,12 +316,6 @@ function parseProactiveConfig(input: unknown): ProactiveConfig {
         asPositiveInt(dispatcher.poll_interval_ms) ?? DEFAULT_PROACTIVE_CONFIG.dispatcher.poll_interval_ms,
       max_concurrent_runs:
         asPositiveInt(dispatcher.max_concurrent_runs) ?? DEFAULT_PROACTIVE_CONFIG.dispatcher.max_concurrent_runs,
-    },
-    anchor: {
-      title: typeof anchor.title === "string" ? anchor.title : DEFAULT_PROACTIVE_CONFIG.anchor.title,
-      agent: typeof anchor.agent === "string" ? anchor.agent : DEFAULT_PROACTIVE_CONFIG.anchor.agent,
-      model: parseModelRef(anchor.model),
-      light_context: typeof anchor.light_context === "string" ? anchor.light_context : undefined,
     },
     defaults: {
       no_overlap:
@@ -343,6 +348,8 @@ function parseProactiveTask(
   if (input.mode !== "anchor-session" && input.mode !== "isolated-session" && input.mode !== "exec") return [];
   const trigger = parseTrigger(input.trigger);
   if (!trigger) return [];
+  const anchor = input.mode === "anchor-session" ? parseTaskAnchor(input.anchor) : undefined;
+  if (input.mode === "anchor-session" && !anchor) return [];
   const precheck = parsePrecheck(input.precheck);
   const policy = parseTaskPolicy(input.policy, defaults);
   const command = Array.isArray(input.command)
@@ -361,6 +368,7 @@ function parseProactiveTask(
       command,
       agent: typeof input.agent === "string" ? input.agent : undefined,
       model: parseModelRef(input.model),
+      anchor,
       priority: typeof input.priority === "number" ? input.priority : 0,
       precheck,
       policy,
@@ -380,6 +388,32 @@ function parseTaskPolicy(input: unknown, defaults: Record<string, unknown>): Pro
     budget: parseBudget(source.budget) ?? parseBudget(defaults.budget),
     silence_ok: typeof source.silence_ok === "boolean" ? source.silence_ok : defaultBoolean(defaults.silence_ok, true),
     ttl_ms: asPositiveInt(source.ttl_ms) ?? asPositiveInt(defaults.ttl_ms) ?? DEFAULT_PROACTIVE_CONFIG.defaults.ttl_ms,
+  };
+}
+
+function parseTaskAnchor(input: unknown): ProactiveTaskAnchorConfig | undefined {
+  if (!record(input)) return undefined;
+  const duration_ms = asPositiveInt(input.duration_ms);
+  const end_instructions = typeof input.end_instructions === "string" ? input.end_instructions : undefined;
+  const rollover_instructions =
+    typeof input.rollover_instructions === "string" ? input.rollover_instructions : undefined;
+  const rollover_threshold = asRatio(input.rollover_threshold);
+  const retrigger = parseAnchorRetrigger(input.retrigger);
+  const retrigger_instructions =
+    typeof input.retrigger_instructions === "string" ? input.retrigger_instructions : undefined;
+
+  if (!duration_ms || !end_instructions || !rollover_instructions || rollover_threshold === undefined) {
+    return undefined;
+  }
+  if (retrigger && !retrigger_instructions) return undefined;
+
+  return {
+    duration_ms,
+    end_instructions,
+    rollover_threshold,
+    rollover_instructions,
+    retrigger,
+    retrigger_instructions,
   };
 }
 
@@ -406,6 +440,19 @@ function parseTrigger(input: unknown): ProactiveTrigger | undefined {
       max_queue_per_window: asPositiveInt(input.max_queue_per_window),
       window_ms: asPositiveInt(input.window_ms),
     };
+  }
+  return undefined;
+}
+
+function parseAnchorRetrigger(input: unknown): ProactiveAnchorRetrigger | undefined {
+  if (!record(input) || typeof input.kind !== "string") return undefined;
+  if (input.kind === "cron" && typeof input.expr === "string") {
+    return { kind: "cron", expr: input.expr };
+  }
+  if (input.kind === "every") {
+    const minutes = asPositiveInt(input.minutes);
+    if (!minutes) return undefined;
+    return { kind: "every", minutes };
   }
   return undefined;
 }
@@ -487,6 +534,10 @@ function asPositiveInt(input: unknown) {
 
 function asNonNegativeInt(input: unknown) {
   return typeof input === "number" && Number.isInteger(input) && input >= 0 ? input : undefined;
+}
+
+function asRatio(input: unknown) {
+  return typeof input === "number" && Number.isFinite(input) ? clampRatio(input) : undefined;
 }
 
 function clampRatio(value: number) {
