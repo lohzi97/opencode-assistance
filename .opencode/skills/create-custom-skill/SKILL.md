@@ -69,7 +69,7 @@ Scripts save tokens and improve reliability versus generated code.
 ### When to split files
 
 Extract content to separate files when:
-- `SKILL.md` exceeds 100 lines.
+- `SKILL.md` exceeds 200 lines.
 - Content has distinct domains (e.g. different schemas or operating modes).
 - Advanced features are rarely needed and would bloat the main file.
 
