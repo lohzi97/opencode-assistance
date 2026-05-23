@@ -328,7 +328,7 @@ main() {
   configure_brave_container "$brave_api_key"
   INFO "$brave_container is configured and running"
 
-  IMAP_MCP_DIR="${root}/imap-mcp-server"
+  IMAP_MCP_DIR="${HOME}/imap-mcp-server"
   if [[ -d "$IMAP_MCP_DIR" ]] && [[ -f "$IMAP_MCP_DIR/dist/index.js" ]]; then
     if prompt_yes_no "Launch IMAP email account setup wizard? (port 9998)" "N"; then
       INFO "Starting IMAP setup wizard at http://localhost:9998"
