@@ -26,6 +26,10 @@
 #    - required for ./start.sh and ./stop.sh script
 
 # 10. Install qmd (new)
+# 11. Install agent-tui (TUI automation for AI agents)
+#    - required for antigravity-websearch skill
+# 12. Install Antigravity CLI (agy)
+#    - required for antigravity-websearch skill
 
 
 set -euo pipefail
@@ -381,6 +385,44 @@ install_imap_mcp() {
     "cd '$IMAP_MCP_DIR' && npm install && npm run build"
 }
 
+install_agent_tui() {
+  if [ -x "${HOME_DIR}/.bun/bin/agent-tui" ]; then
+    INFO "agent-tui already installed via bun at ${HOME_DIR}/.bun/bin/agent-tui"
+    return
+  fi
+  if ! user_has_command bun && [ ! -x "${HOME_DIR}/.bun/bin/bun" ]; then
+    ERR "bun is required to install agent-tui. Run the script again after bun is installed."
+  fi
+  if user_has_command agent-tui; then
+    WARN "agent-tui already exists at $(user_command_path agent-tui); installing a bun-managed copy as well."
+  fi
+  INFO "Installing agent-tui (global) with bun"
+  run_as_user env HOME="$HOME_DIR" PATH="${HOME_DIR}/.bun/bin:${PATH}" bash -lc 'bun add -g agent-tui'
+  if [ -x "${HOME_DIR}/.bun/bin/agent-tui" ]; then
+    INFO "agent-tui installed at ${HOME_DIR}/.bun/bin/agent-tui"
+  else
+    WARN "agent-tui installation finished but bun-managed binary not found at ${HOME_DIR}/.bun/bin/agent-tui"
+  fi
+}
+
+install_antigravity_cli() {
+  if [ -x "${HOME_DIR}/.local/bin/agy" ]; then
+    INFO "Antigravity CLI (agy) already installed at ${HOME_DIR}/.local/bin/agy"
+    return
+  fi
+  if user_has_command agy; then
+    INFO "Antigravity CLI (agy) already in PATH: $(user_command_path agy)"
+    return
+  fi
+  INFO "Installing Antigravity CLI (agy)"
+  run_as_user env HOME="$HOME_DIR" bash -lc 'curl -fsSL https://antigravity.google/cli/install.sh | bash'
+  if [ -x "${HOME_DIR}/.local/bin/agy" ]; then
+    INFO "Antigravity CLI installed at ${HOME_DIR}/.local/bin/agy"
+  else
+    WARN "Antigravity CLI installation finished but binary not found at ${HOME_DIR}/.local/bin/agy"
+  fi
+}
+
 main() {
   ensure_sudo
   install_prereqs
@@ -396,8 +438,10 @@ main() {
   install_imap_mcp
   install_qmd
   setup_qmd
+  install_agent_tui
+  install_antigravity_cli
   print_warning_summary
-  INFO "All done. Please log out and log back in before using Docker without sudo, then run ./config.sh."
+INFO "All done. Please log out and log back in before using Docker without sudo, then run ./config.sh."
 }
 
 main "$@"

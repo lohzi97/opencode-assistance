@@ -3,9 +3,10 @@ set -euo pipefail
 
 # Idempotent uninstaller for components installed by install.sh
 # - Stops and removes brave-search-mcp container + image
-# - Removes opencode and qmd (installed by bun), bun runtime, uv/uvx, nvm, Node (nvm-managed)
+# - Removes opencode, qmd, agent-tui (installed by bun), bun runtime, uv/uvx, nvm, Node (nvm-managed)
 # - Removes Google Chrome, Docker engine packages and related apt sources
 # - Removes tmux and sudoers entry created for opencode
+# - Removes Antigravity CLI (agy) binary and config directories
 # Usage:
 #   ./uninstall.sh            # interactive
 #   ./uninstall.sh -y         # non-interactive (assume yes)
@@ -70,6 +71,8 @@ Planned actions:
 - Stop & remove 'brave-search-mcp' docker container (if present) and remove its image
 - Remove opencode (bun package) and related sudoers file /etc/sudoers.d/opencode-assistant
 - Remove qmd (bun package) and qmd cache/config data under ~/.cache/qmd and ~/.config/qmd
+- Remove agent-tui (bun package) and agent-tui state data under ~/.agent-tui
+- Remove Antigravity CLI binary (~/.local/bin/agy) and config/data under ~/.antigravitycli
 - Remove per-user bun (~/.bun), uv, and nvm (~/.nvm) directories and their shell boot lines
 - Purge Google Chrome package
 - Purge Docker Engine packages and remove Docker apt source + keyring (will NOT remove /var/lib/docker by default)
@@ -189,6 +192,47 @@ safe_remove_user_dir() {
 # 5) Remove qmd cache and config
 safe_remove_user_dir "$HOME_DIR/.cache/qmd"
 safe_remove_user_dir "$HOME_DIR/.config/qmd"
+
+# 5b) Remove agent-tui (bun global) and state data
+if user_has_command bun || [ -x "${HOME_DIR}/.bun/bin/bun" ]; then
+  INFO "Attempting to remove agent-tui via bun"
+  run_as_user env HOME="$HOME_DIR" PATH="$HOME_DIR/.bun/bin:$PATH" bash -lc 'bun remove -g agent-tui >/dev/null 2>&1 || true'
+else
+  INFO "bun not available; looking for agent-tui binary"
+fi
+
+AGENT_TUI_BIN="$(user_command_path agent-tui)"
+if [ -z "$AGENT_TUI_BIN" ] && [ -x "${HOME_DIR}/.bun/bin/agent-tui" ]; then
+  AGENT_TUI_BIN="${HOME_DIR}/.bun/bin/agent-tui"
+fi
+if [ -n "$AGENT_TUI_BIN" ]; then
+  if echo "$AGENT_TUI_BIN" | grep -q "$HOME_DIR"; then
+    INFO "Removing agent-tui binary at $AGENT_TUI_BIN"
+    sudo rm -f "$AGENT_TUI_BIN" || true
+  else
+    WARN "Found agent-tui at $AGENT_TUI_BIN which is outside $HOME_DIR; leaving it untouched."
+    INFO "If you want it removed, run: sudo rm -f $AGENT_TUI_BIN"
+  fi
+else
+  INFO "No agent-tui binary found in PATH"
+fi
+
+safe_remove_user_dir "$HOME_DIR/.agent-tui"
+
+# 5c) Remove Antigravity CLI (agy) binary and config
+AGY_BIN="${HOME_DIR}/.local/bin/agy"
+if [ -x "$AGY_BIN" ]; then
+  INFO "Removing Antigravity CLI binary at $AGY_BIN"
+  if [ -n "${SUDO_USER:-}" ] && command -v sudo >/dev/null 2>&1; then
+    sudo -u "$USER_NAME" rm -f "$AGY_BIN" || true
+  else
+    rm -f "$AGY_BIN" || true
+  fi
+else
+  INFO "Antigravity CLI binary not found at $AGY_BIN"
+fi
+
+safe_remove_user_dir "$HOME_DIR/.antigravitycli"
 
 # 6) Remove bun runtime (~/.bun)
 safe_remove_user_dir "$HOME_DIR/.bun"

@@ -346,6 +346,19 @@ main() {
     opencode providers login
   fi
 
+  # Antigravity CLI (agy) Google OAuth setup
+  if command -v agy >/dev/null 2>&1 || [ -x "${HOME:-~}/.local/bin/agy" ]; then
+    if prompt_yes_no "Run Antigravity CLI (agy) Google OAuth sign-in? (opens browser)" "N"; then
+      INFO "Launching Antigravity CLI for Google OAuth sign-in"
+      INFO "Complete the sign-in in the browser, then press Ctrl+C in the agy TUI to exit."
+      INFO "Alternatively, you can sign in manually later by running: agy"
+      agy || true
+      INFO "Antigravity CLI sign-in completed (or skipped)."
+    fi
+  else
+    WARN "Antigravity CLI (agy) not found. Run ./install.sh first to install it."
+  fi
+
   verify_script="$root/start.sh"
   if command -v tmux >/dev/null 2>&1 && tmux has-session -t "opencode-assistant-backend" 2>/dev/null; then
     WARN "OpenCode backend is already running. Restart is required for server password changes to take effect."
