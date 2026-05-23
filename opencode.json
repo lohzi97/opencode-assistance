@@ -42,7 +42,7 @@
   },
   "mcp": {
     "chrome-devtools": {
-      "enabled": true,
+      "enabled": false,
       "type": "local",
       "command": [
         "npx",
@@ -51,7 +51,7 @@
       ],
     },
     "brave-search": {
-      "enabled": true,
+      "enabled": false,
       "type": "remote",
       "url": "http://localhost:9999/mcp",
       "oauth": false
@@ -67,7 +67,7 @@
       ]
     },
     "google-workspace": {
-      "enabled": true,
+      "enabled": false,
       "type": "local",
       "command": [
         "uv",
@@ -81,6 +81,14 @@
         "GOOGLE_CLIENT_SECRET_PATH": "/home/linux-mint/opencode-assistance/.opencode/gcp-oauth.keys.json",
         "OAUTHLIB_INSECURE_TRANSPORT": "1"
       }
+    },
+    "imap": {
+      "enabled": false,
+      "type": "local",
+      "command": [
+        "node",
+        "/home/linux-mint/imap-mcp-server/dist/index.js"
+      ]
     }
   }
 }

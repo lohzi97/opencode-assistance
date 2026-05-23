@@ -74,6 +74,7 @@ Planned actions:
 - Purge Google Chrome package
 - Purge Docker Engine packages and remove Docker apt source + keyring (will NOT remove /var/lib/docker by default)
 - Purge tmux
+- Remove imap-mcp-server repo at ~/imap-mcp-server and its config at ~/.imap-mcp
 
 You can skip confirmations by running with '-y' or setting FORCE=yes in the environment.
 EOF
@@ -290,6 +291,11 @@ if command -v tmux >/dev/null 2>&1 || dpkg -s tmux >/dev/null 2>&1; then
 else
   INFO "tmux not installed; skipping"
 fi
+
+# 13) Remove imap-mcp-server repo and config
+IMAP_MCP_DIR="${HOME_DIR}/imap-mcp-server"
+safe_remove_user_dir "$IMAP_MCP_DIR"
+safe_remove_user_dir "${HOME_DIR}/.imap-mcp"
 
 INFO "Final apt-get autoremove/autoclean to tidy packages"
 sudo apt-get autoremove -y || true

@@ -328,6 +328,17 @@ main() {
   configure_brave_container "$brave_api_key"
   INFO "$brave_container is configured and running"
 
+  IMAP_MCP_DIR="${HOME_DIR}/imap-mcp-server"
+  if [[ -d "$IMAP_MCP_DIR" ]] && [[ -f "$IMAP_MCP_DIR/dist/index.js" ]]; then
+    if prompt_yes_no "Launch IMAP email account setup wizard? (port 9998)" "N"; then
+      INFO "Starting IMAP setup wizard at http://localhost:9998"
+      INFO "Press Ctrl+C in the wizard terminal when done adding accounts."
+      (cd "$IMAP_MCP_DIR" && npx tsx src/setup.ts --skip-claude --port 9998)
+    fi
+  else
+    WARN "imap-mcp-server not found at $IMAP_MCP_DIR. Run ./install.sh first."
+  fi
+
   INFO "Current OpenCode provider status"
   opencode providers list
 

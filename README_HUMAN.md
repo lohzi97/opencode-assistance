@@ -43,6 +43,22 @@ Re-run `./config.sh` any time you need to update:
 - Telegram Ping bot token or chat ID
 - OpenCode provider login
 
+### Connect an IMAP Email Account (e.g. Yahoo Mail)
+
+The IMAP MCP server lets Sebastian read, send, and manage email. Accounts are configured through a browser-based wizard.
+
+1. Run `./config.sh` and answer **yes** to the IMAP setup wizard prompt, or run it directly:
+
+```bash
+cd ~/imap-mcp-server && npx tsx src/setup.ts --skip-claude --port 9998
+```
+
+2. The wizard opens at <http://localhost:9998>. Choose your provider (e.g. Yahoo Mail) and sign in with an **app-specific password** -- not your regular account password.
+
+3. For Yahoo Mail, generate an app password at <https://login.yahoo.com/account/security> under "App passwords".
+
+4. After adding your account, press `Ctrl+C` to stop the wizard. Account credentials are stored encrypted at `~/.imap-mcp/`.
+
 ### Start opencode-assistant
 
 ```bash

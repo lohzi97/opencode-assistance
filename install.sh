@@ -348,6 +348,9 @@ install_tmux() {
 WORKSPACE_MCP_REPO="https://github.com/taylorwilsdon/google_workspace_mcp.git"
 WORKSPACE_MCP_DIR="${PROJECT_ROOT}/../google_workspace_mcp"
 
+IMAP_MCP_REPO="https://github.com/nikolausm/imap-mcp-server.git"
+IMAP_MCP_DIR="${HOME_DIR}/imap-mcp-server"
+
 install_workspace_mcp() {
   if [ ! -d "$WORKSPACE_MCP_DIR/.git" ]; then
     INFO "Cloning google_workspace_mcp into $WORKSPACE_MCP_DIR"
@@ -363,6 +366,21 @@ install_workspace_mcp() {
     "cd '$WORKSPACE_MCP_DIR' && uv sync"
 }
 
+install_imap_mcp() {
+  if [ ! -d "$IMAP_MCP_DIR/.git" ]; then
+    INFO "Cloning imap-mcp-server into $IMAP_MCP_DIR"
+    git clone "$IMAP_MCP_REPO" "$IMAP_MCP_DIR"
+  else
+    INFO "imap-mcp-server already cloned at $IMAP_MCP_DIR; pulling latest"
+    git -C "$IMAP_MCP_DIR" pull --ff-only || \
+      WARN "Failed to pull latest imap-mcp-server. Continuing with existing version."
+  fi
+
+  INFO "Installing imap-mcp-server dependencies and building"
+  run_as_user env HOME="$HOME_DIR" PATH="${HOME_DIR}/.bun/bin:${PATH}" bash -lc \
+    "cd '$IMAP_MCP_DIR' && npm install && npm run build"
+}
+
 main() {
   ensure_sudo
   install_prereqs
@@ -375,6 +393,7 @@ main() {
   install_docker_engine
   install_tmux
   install_workspace_mcp
+  install_imap_mcp
   install_qmd
   setup_qmd
   print_warning_summary
