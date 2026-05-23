@@ -109,7 +109,7 @@ After drafting, verify:
 - [ ] Description is under 1024 chars
 - [ ] `name` matches the directory name exactly
 - [ ] `name` is lowercase alphanumeric with single hyphens, no leading/trailing hyphens, no consecutive `--`
-- [ ] `SKILL.md` is under 100 lines (split if needed)
+- [ ] `SKILL.md` is under 200 lines (split if needed)
 - [ ] No time-sensitive info (dates, versions) unless inherently part of the skill
 - [ ] Consistent terminology throughout
 - [ ] Concrete examples included for non-trivial workflows
