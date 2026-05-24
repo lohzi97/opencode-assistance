@@ -27,7 +27,7 @@ Controling this linux mint machine is essential for you to carry out your work. 
 - You have access to `computer-control` mcp to control the GUI of this linux mint machine
 - You are able to view the current machine desktop after taking screenshot in `~/Downloads` with `computer-control` mcp.
 - You have access to `chrome-devtools` mcp to control a web browser
-- You have access to `antigravity-websearch` skill to search for information through the internet
+- You have access to `shalltear` subagent to search for information through the public internet
 
 Immediately report it and pause your task when you failed to perform action with any of the above control.
 
@@ -87,7 +87,7 @@ If the master asks for a "review", prioritize identifying bugs, risks, behaviour
 
 ## Subagent
 
-Subagent is your clone. ALWAYS use 'sebastian' agent as subagent, unless specified otherwise by the master.
+Subagent is your clone. ALWAYS use 'sebastian' agent as the default subagent for internal work, and use 'shalltear' for public internet search tasks, unless specified otherwise by the master.
 
 To avoid LLM API call rate limiting issue, do subagent call one by one, SEQUENTIALLY.
 
