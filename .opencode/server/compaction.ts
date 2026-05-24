@@ -129,6 +129,17 @@ type DerivedHistory = {
   pendingRisks: string[];
 };
 
+export class CompactionRequestError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode: number,
+    readonly extras?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = "CompactionRequestError";
+  }
+}
+
 const stateFile = path.join(stateDir, "compaction-state.json");
 
 export class CompactionService {
@@ -202,6 +213,135 @@ export class CompactionService {
     }
   }
 
+  async manualCompact(sessionID: string): Promise<{
+    continuationSessionID: string;
+    groupID: string;
+    title: string;
+  }> {
+    if (!this.config.enabled) {
+      throw new CompactionRequestError("compaction is disabled", 403);
+    }
+
+    const session = await this.safeGetSession(sessionID);
+    if (!session) {
+      throw new CompactionRequestError("session not found", 400);
+    }
+    if (session.time.archived) {
+      throw new CompactionRequestError("session is archived", 400);
+    }
+    if (session.parentID) {
+      throw new CompactionRequestError("subagent sessions cannot be compacted", 400);
+    }
+    if (await this.isAnchorManagedSession(sessionID)) {
+      throw new CompactionRequestError("anchor-managed sessions cannot be compacted", 400);
+    }
+
+    return this.enqueueWithResult(sessionID, "manual", async () => {
+      const managed = this.state.sessions[sessionID];
+
+      // Check managed state
+      if (managed) {
+        if (managed.status === "complete") {
+          throw new CompactionRequestError("Session already compacted", 409, {
+            supersededBy: managed.superseded_by_session_id,
+          });
+        }
+        if (managed.status === "failed") {
+          throw new CompactionRequestError("compaction previously failed", 409, {
+            details: managed.error,
+          });
+        }
+        if (
+          managed.status === "threshold_reached" ||
+          managed.status === "aborting" ||
+          managed.status === "aborted" ||
+          managed.status === "summarizing" ||
+          managed.status === "creating_continuation"
+        ) {
+          throw new CompactionRequestError(`compaction already in progress: ${managed.status}`, 409, {
+            phase: managed.status,
+          });
+        }
+      }
+
+      const history = await this.fetchHistoryWithRetry(sessionID);
+      const derived = deriveHistory(history, this.config.carryover);
+      if (!derived.latestModel) {
+        throw new CompactionRequestError("session has no assistant history", 400);
+      }
+
+      const active = managed ?? this.createManagedSourceSession(session);
+      active.intervention_key = "manual";
+
+      active.agent = derived.latestAgent;
+      active.provider_id = derived.latestModel.providerID;
+      active.model_id = derived.latestModel.modelID;
+      active.variant = derived.latestModel.variant;
+
+      // Populate observability fields
+      const policy = await this.resolvePolicy(active.provider_id!, active.model_id!);
+      if (policy) {
+        active.threshold_ratio = policy.threshold;
+      }
+      const lastAssistant = findLastAssistant(history);
+      if (lastAssistant) {
+        const count = tokenCount(lastAssistant.info.tokens);
+        active.last_usage_ratio = policy ? count / policy.contextLimit : undefined;
+        active.last_tokens_total = count;
+        active.last_message_id = lastAssistant.info.id;
+      }
+      active.updated_at = Date.now();
+      await this.persist();
+
+      await this.client.log("info", "manual compaction triggered", {
+        sessionID,
+        groupID: active.group_id,
+      });
+
+      // Resolve idle state
+      let status = this.statuses.get(sessionID);
+      if (!status) {
+        const snapshot = await this.client.sessionStatus().catch(() => ({} as Record<string, SessionStatusInfo>));
+        for (const [id, s] of Object.entries(snapshot)) {
+          this.statuses.set(id, s);
+        }
+        status = snapshot[sessionID];
+      }
+
+      if (isActiveStatus(status)) {
+        active.status = "threshold_reached";
+      } else {
+        active.status = "aborted";
+        active.aborted_at = Date.now();
+      }
+      active.updated_at = Date.now();
+      await this.persist();
+
+      await this.continueIntervention(sessionID);
+
+      // Read result from managed state
+      const result = this.state.sessions[sessionID];
+      const continuationSessionID = result?.superseded_by_session_id;
+      if (!continuationSessionID) {
+        throw new Error("manual compaction completed but no continuation session found");
+      }
+
+      const continuationTitle = this.state.sessions[continuationSessionID]?.title;
+
+      await this.client.log("info", "manual compaction completed", {
+        sessionID,
+        continuationSessionID,
+        groupID: active.group_id,
+      });
+
+      return {
+        continuationSessionID,
+        groupID: active.group_id,
+        title: continuationTitle ?? "",
+      };
+    });
+  }
+
   private async handleBusEvent(event: BusEventPayload) {
     if (event.type === "session.status") {
       const sessionID = asString(event.properties.sessionID);
@@ -252,9 +392,35 @@ export class CompactionService {
     this.queues.set(sessionID, next);
   }
 
+  private enqueueWithResult<T>(sessionID: string, label: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.queues.get(sessionID) ?? Promise.resolve();
+    return new Promise<T>((resolve, reject) => {
+      const next = previous
+        .catch(() => undefined)
+        .then(fn)
+        .then(resolve, async (err) => {
+          console.error(`[compaction] ${label} failed for ${sessionID}`, err);
+          try {
+            if (!(err instanceof CompactionRequestError)) {
+              await this.failSession(sessionID, err);
+            }
+          } catch (failErr) {
+            console.error(`[compaction] failed to record ${label} failure for ${sessionID}`, failErr);
+          }
+          reject(err);
+        })
+        .finally(() => {
+          if (this.queues.get(sessionID) === next) {
+            this.queues.delete(sessionID);
+          }
+        });
+      this.queues.set(sessionID, next as Promise<void>);
+    });
+  }
+
   private async bootstrapBusySessions(statuses: Record<string, SessionStatusInfo>) {
     for (const [sessionID, status] of Object.entries(statuses)) {
-      if (status.type !== "busy") continue;
+      if (!isActiveStatus(status)) continue;
       if (this.isTempSession(sessionID)) continue;
       this.enqueue(sessionID, "bootstrap", async () => {
         await this.inspectBusySession(sessionID);
@@ -462,15 +628,15 @@ export class CompactionService {
 
   private async continuationPhase(managed: ManagedSession, group: ContinuationGroup) {
     const session = await this.client.getSession(managed.session_id);
-    const run = managed.summary_run_id ? this.state.temp_runs[managed.summary_run_id] : undefined;
-    if (!run?.summary_text) {
+    let resolvedRun = managed.summary_run_id ? this.state.temp_runs[managed.summary_run_id] : undefined;
+    if (!resolvedRun?.summary_text) {
       managed.status = "summarizing";
       managed.updated_at = Date.now();
       await this.persist();
       await this.summarizePhase(managed, group);
+      resolvedRun = managed.summary_run_id ? this.state.temp_runs[managed.summary_run_id] : undefined;
     }
 
-    const resolvedRun = managed.summary_run_id ? this.state.temp_runs[managed.summary_run_id] : undefined;
     const summaryText = resolvedRun?.summary_text;
     if (!summaryText) {
       throw new Error("summary text missing for continuation");
@@ -681,14 +847,14 @@ export class CompactionService {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const known = this.statuses.get(sessionID);
-      if (known && known.type !== "busy") return true;
+      if (known && !isActiveStatus(known)) return true;
       const snapshot = await this.client.sessionStatus().catch(() => undefined);
       if (snapshot) {
         for (const [id, status] of Object.entries(snapshot)) {
           this.statuses.set(id, status);
         }
         const current = snapshot[sessionID];
-        if (!current || current.type !== "busy") return true;
+        if (!isActiveStatus(current)) return true;
       }
       await sleep(500);
     }
@@ -1545,6 +1711,10 @@ function readStatus(input: unknown): SessionStatusInfo | undefined {
     };
   }
   return undefined;
+}
+
+function isActiveStatus(status: SessionStatusInfo | undefined) {
+  return status?.type === "busy" || status?.type === "retry";
 }
 
 function readErrorName(input: unknown) {

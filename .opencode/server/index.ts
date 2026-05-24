@@ -7,12 +7,16 @@
  * Current services:
  * - compaction management from `.opencode/server.jsonc#compaction`
  * - proactive automation from `.opencode/server.jsonc#proactive`
+ * - internal control server on port 4097 for manual compaction triggers
  *
  * The worker shares one OpenCode HTTP client and one `/global/event` listener
- * across both services.
+ * across all services. It connects outbound to the OpenCode backend on port
+ * 4096 as a client and accepts inbound HTTP requests on port 4097 for control
+ * operations.
  */
 
 import { CompactionService } from "./compaction";
+import { startControlServer } from "./control";
 import { ProactiveService } from "./proactive";
 import { OpenCodeClient, ensureStateDir, listenGlobalEvents, unwrapBusEvent } from "./shared";
 
@@ -31,6 +35,7 @@ async function main() {
 
   await compaction.start();
   await proactive.start();
+  void startControlServer(compaction);
 
   void listenGlobalEvents({
     onEvent: async (envelope) => {
