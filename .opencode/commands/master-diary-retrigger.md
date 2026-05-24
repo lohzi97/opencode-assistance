@@ -1,6 +1,7 @@
 ---
 description: Periodic check-in with the Master for the diary anchor session
 agent: sebastian
+model: zai-coding-plan/glm-4.7
 ---
 
 Check in with the Master to see if there is anything worth recording for the diary.

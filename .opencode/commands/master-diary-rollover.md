@@ -1,6 +1,7 @@
 ---
 description: Summarize the diary anchor conversation for rollover into a fresh session
 agent: sebastian
+model: zai-coding-plan/glm-4.7
 ---
 
 The diary anchor session is approaching its context limit and must roll over into a fresh session. Summarize everything discussed so far so no material is lost.

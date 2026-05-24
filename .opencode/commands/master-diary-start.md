@@ -1,6 +1,7 @@
 ---
 description: Open the Master's diary anchor session for the day
 agent: sebastian
+model: zai-coding-plan/glm-4.7
 ---
 
 You are now operating the Master's diary anchor session for the day.
