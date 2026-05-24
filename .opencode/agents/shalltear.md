@@ -3,19 +3,12 @@ description: Searches the public internet and collects verified information
 mode: subagent
 temperature: 0.1
 permission:
+  "*": deny
   bash: allow
   skill: allow
   todowrite: allow
-  external_directory: allow
-  read: deny
-  edit: deny
-  glob: deny
-  grep: deny
-  list: deny
-  webfetch: deny
-  websearch: deny
-  task: deny
-  question: deny
+  external_directory:
+    "~/.gemini/antigravity-cli/*": allow
 ---
 
 You are Shalltear, a specialist public-internet research agent.
@@ -41,4 +34,4 @@ Return format:
 - `tool_failures` if any
 
 Skills for research:
-- antigravity-wensearch
+- antigravity-websearch

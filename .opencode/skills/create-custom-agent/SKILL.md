@@ -40,19 +40,20 @@ hidden: <optional, true hides subagent from @ autocomplete>
 color: <optional, hex color or theme color name>
 disable: <optional, true to disable>
 permission:
-  read: allow | ask | deny
-  edit: allow | ask | deny
-  glob: allow | ask | deny
-  grep: allow | ask | deny
-  list: allow | ask | deny
+  "*": allow | ask | deny
+  read: allow | ask | deny | <glob-pattern map>
+  edit: allow | ask | deny | <glob-pattern map>
+  glob: allow | ask | deny | <glob-pattern map>
+  grep: allow | ask | deny | <glob-pattern map>
+  list: allow | ask | deny | <glob-pattern map>
   bash: allow | ask | deny | <glob-pattern map>
   task: allow | ask | deny | <glob-pattern map>
-  external_directory: allow | ask | deny
+  external_directory: allow | ask | deny | <glob-pattern map>
   todowrite: allow | ask | deny
   webfetch: allow | ask | deny
   websearch: allow | ask | deny
-  lsp: allow | ask | deny
-  skill: allow | ask | deny
+  lsp: allow | ask | deny | <glob-pattern map>
+  skill: allow | ask | deny | <glob-pattern map>
   question: allow | ask | deny
   doom_loop: allow | ask | deny
 ---
@@ -76,6 +77,7 @@ The description is what the orchestrator uses to decide when to invoke this agen
 
 | Key | Tools gated |
 |---|---|
+| `*` (catch-all) | All tools -- matches any permission name |
 | `read` | `read` |
 | `edit` | `write`, `edit`, `apply_patch` |
 | `glob` | `glob` |
@@ -92,13 +94,74 @@ The description is what the orchestrator uses to decide when to invoke this agen
 | `question` | `question` |
 | `doom_loop` | Recovery prompts when agent appears stuck |
 
-Keys that accept glob maps (`bash`, `task`, `read`, `edit`, `glob`, `grep`, `list`, `skill`, `external_directory`, `lsp`):
+## How Permission Evaluation Works
+
+Understanding precedence is critical for writing correct agent configs.
+
+**Baseline**: Every agent inherits default permissions that broadly allow tools (`"*": allow`), with specific overrides for safety (`*.env` files ask, `external_directory` asks, `doom_loop` asks, etc.). The user's global `opencode.json` permission config is then layered on top.
+
+**Agent config is merged last**: The agent's own `permission:` block is appended after defaults and user global rules.
+
+**Last match wins** (`findLast`): When a tool triggers a permission check, OpenCode evaluates all rules in order and picks the **last** matching rule. This means agent-specific rules always override earlier defaults.
+
+**Wildcard `*`**: The `*` character matches everything, including `/`. It is effectively a globstar, not a shell glob. A pattern like `"*"` matches any string.
+
+### Catch-all pattern
+
+Use `"*": deny` to create a deny-by-default agent. This is strongly recommended for restrictive subagents to prevent future OpenCode tools from slipping through uncontrolled.
+
+```yaml
+permission:
+  "*": deny            # deny everything by default
+  bash: allow          # explicitly allow only what's needed
+  skill: allow
+  todowrite: allow
+```
+
+### Value forms
+
+**String form** -- applies to all patterns (`"*"`):
+```yaml
+bash: allow            # → { permission: "bash", pattern: "*", action: "allow" }
+```
+
+**Object form** -- per-pattern rules. `findLast` means later entries override earlier ones:
 ```yaml
 bash:
-  "*": ask
-  "git status *": allow
-  "git push": ask
+  "*": ask             # default: ask
+  "git status *": allow   # allow git status
+  "git push": ask         # but still ask for push
 ```
+
+### Path expansion
+
+Patterns in the object form support `~` and `$HOME` expansion (prefix only):
+- `~/.config/*` → `/home/<user>/.config/*`
+- `$HOME/projects/*` → `/home/<user>/projects/*`
+
+Other patterns pass through unchanged.
+
+### `read` vs `external_directory` -- two separate checks
+
+When the `read` tool accesses a file outside the project, **both** permissions are checked:
+
+1. `external_directory` -- checked against the **absolute path** glob (e.g., `/home/user/.config/app/*`)
+2. `read` -- checked against the path **relative to the worktree** (e.g., `../../.config/app/file`)
+
+This means `read: { "/absolute/path/*": allow }` will **not** match, because the `read` permission is evaluated against relative paths. To allow reading external files, grant `external_directory` for the absolute path and ensure `read` is not denied.
+
+### `external_directory` scoping
+
+`external_directory` accepts an object with path patterns for fine-grained control:
+
+```yaml
+external_directory:
+  "~/.gemini/antigravity-cli/*": allow
+```
+
+When omitted, the default `"*": ask` applies (which effectively denies for non-interactive subagents since no user is available to approve).
+
+Keys that accept glob maps: `*`, `bash`, `task`, `read`, `edit`, `glob`, `grep`, `list`, `skill`, `external_directory`, `lsp`.
 
 ## Agent Prompt Best Practices
 
@@ -121,7 +184,8 @@ description: <what it does>
 mode: subagent
 temperature: 0.1
 permission:
-  <only the tools this agent needs>
+  "*": deny
+  <only the tools this agent needs, explicitly allowed>
 ---
 
 You are <Name>, a specialist <role>.
@@ -167,6 +231,8 @@ After drafting, verify:
 - [ ] `description` is under 1024 chars
 - [ ] `mode` is set (`primary` or `subagent`)
 - [ ] Permissions follow least-privilege -- only allow what the agent needs
+- [ ] Restrictive subagents use `"*": deny` catch-all with explicit allows
+- [ ] `external_directory` is scoped to specific paths (not bare `allow`) if the agent needs external file access
 - [ ] Permission keys use valid names from the reference table above
 - [ ] Prompt states a single responsibility
 - [ ] Prompt lists rules as flat bullets
