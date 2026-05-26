@@ -7,6 +7,6 @@ Write a handoff document summarising the current conversation so a fresh agent c
 
 Do not duplicate content already captured in other artifacts (PRDs, plans, ADRs, issues, commits, diffs). Reference them by path or URL instead.
 
-If the user describes what the next session should focus on, tailor the handoff document accordingly.
+If the master describes what the next session should focus on, tailor the handoff document accordingly.
 
-Ask the user where to write the handoff document if user didn't mention it explicitly.
+Ask the master where to write the handoff document if master didn't mention it explicitly.
