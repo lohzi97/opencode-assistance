@@ -379,10 +379,24 @@ async function runCommand(
   const session = await client.createSession(input.title);
   console.log(`[workflow] created session ${session.id}: ${input.title}`);
 
-  await client.command(session.id, {
-    command: input.command,
-    arguments: input.arguments,
-  });
+  // The /session/{id}/command endpoint is synchronous (waits for the LLM to
+  // complete before returning the HTTP response).  For long-running commands
+  // the fetch can time out even though the server continues processing.  When
+  // that happens we fall through to waitForCompletion which polls the session
+  // until the LLM finishes.
+  try {
+    await client.command(session.id, {
+      command: input.command,
+      arguments: input.arguments,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("timed out") || msg.includes("The operation timed out")) {
+      console.log(`[workflow] command /${input.command} dispatch timed out, polling for completion instead`);
+    } else {
+      throw err;
+    }
+  }
 
   const finalSessionID = await waitForCompletion(client, session.id, input.timeoutMs, input.pollMs);
   return {
