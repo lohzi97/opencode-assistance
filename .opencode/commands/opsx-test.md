@@ -170,7 +170,23 @@ This command replaces the human manual testing phase in the OpenSpec workflow. I
    - If the failure indicates a real issue, recommend `/opsx-fix <name> <issue>` with a concise issue description
    - If the implementation intentionally differs from the proposal, recommend `/opsx-align <name>` after user confirmation
 
-11. **Clean up test artifacts**
+11. **Persist findings to the change issue file**
+
+   Write actionable findings to `openspec/changes/<name>/issue.md` before the final report.
+
+   Include every confirmed failure, bug, proposal/spec mismatch, unresolved blocker, and noteworthy non-blocking issue found during E2E testing. For each issue include:
+   - Title and severity
+   - What happened vs. what was expected
+   - Exact reproduction steps, including commands, UI actions, API requests, payloads, fixtures, or test data
+   - Concrete evidence such as response bodies, logs, screenshots, DB rows, stack traces, file paths, or event payloads
+   - Affected requirement, scenario, proposal/design section, or task when identifiable
+   - Recommended follow-up such as `/opsx-fix <name> <issue>` or `/opsx-align <name>`
+
+   If `openspec/changes/<name>/issue.md` already exists, read it first and merge the new findings into the existing document. Do not overwrite the whole file. Preserve existing issues, update matching issues with new evidence or reproduction details, and append only genuinely new issues.
+
+   If no issues or blockers were found, either leave an existing `issue.md` unchanged or create/update it with a concise note such as `No issues found during E2E testing on <date>.` Do not create noisy duplicate no-issue entries.
+
+12. **Clean up test artifacts**
 
    Clean up only artifacts created by this test run:
    - Stop servers or background processes started for testing
@@ -179,7 +195,7 @@ This command replaces the human manual testing phase in the OpenSpec workflow. I
 
    If cleanup is unsafe or requires user confirmation, report exactly what remains.
 
-12. **Provide final E2E report**
+13. **Provide final E2E report**
 
    Use this structure:
 
@@ -209,6 +225,9 @@ This command replaces the human manual testing phase in the OpenSpec workflow. I
    ### Proposal Alignment Notes
    - [Any behavior that differs from proposal/design/spec]
    - [Whether `/opsx-align` is recommended]
+
+   ### Issue File
+   - [Whether `openspec/changes/<name>/issue.md` was created, updated, merged, left unchanged, or not needed]
 
    ### Cleanup
    - [What was cleaned]
