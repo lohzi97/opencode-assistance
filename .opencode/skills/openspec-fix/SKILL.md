@@ -234,8 +234,8 @@ Fix issues with an in-progress OpenSpec change implementation through iterative 
    - ✅ Tests: passed (if applicable)
 
    **Next Steps**:
-   - Manual testing recommended
-   - Consider running openspec-verify-change before archiving
+   - Run openspec-test before archiving
+   - Run openspec-align if testing reveals proposal drift
    - [other relevant suggestions]
    ```
 
@@ -262,9 +262,10 @@ Fix issues with an in-progress OpenSpec change implementation through iterative 
 
 **When NOT to Use This Skill**
 
-- Vague exploration (use openspec-explore)
-- Starting a new change (use openspec-new-change or openspec-ff-change)
-- Reviewing implementation before archiving (use openspec-verify-change)
+- Design or implementation discussion without fixing (use openspec-discuss)
+- Starting a new change (use openspec-propose)
+- Reviewing the proposal before implementation (use openspec-review-proposal)
+- End-to-end validation before archiving (use openspec-test)
 - Resuming implementation after partial work (use openspec-apply-resume)
 
 **Output Format**

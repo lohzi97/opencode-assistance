@@ -167,8 +167,7 @@ Review an OpenSpec change proposal against the codebase to verify it's valid, fe
 
    ### Next Steps
    If ready for implementation:
-   → Run openspec-ff-change to create all planning artifacts (if not already created)
-   → Or run openspec-apply-change to start implementation (if artifacts exist)
+   → Use openspec-apply-change to start implementation
 
    If more work needed:
    → Address remaining concerns
@@ -279,6 +278,5 @@ Use clear markdown with structured sections:
 - Remaining concerns: None / [list concerns]
 
 ### Next Steps
-→ Run openspec-ff-change to create all planning artifacts
-→ Or run openspec-apply-change to start implementation (if artifacts already exist)
+→ Use openspec-apply-change to start implementation
 ```

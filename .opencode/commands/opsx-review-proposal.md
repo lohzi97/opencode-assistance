@@ -160,8 +160,7 @@ Review an OpenSpec change proposal against the codebase to verify it's valid, fe
 
    ### Next Steps
    If ready for implementation:
-   → Run `/opsx-ff` to create all planning artifacts (if not already created)
-   → Or run `/opsx-apply` to start implementation (if artifacts exist)
+   → Run `/opsx-apply <name>` to start implementation
 
    If more work needed:
    → Address remaining concerns
@@ -273,6 +272,5 @@ Use clear markdown with structured sections:
 - Remaining concerns: None / [list concerns]
 
 ### Next Steps
-→ Run `/opsx-ff` to create all planning artifacts
-→ Or run `/opsx-apply` to start implementation (if artifacts already exist)
+→ Run `/opsx-apply <name>` to start implementation
 ```

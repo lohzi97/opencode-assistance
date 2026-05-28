@@ -38,7 +38,7 @@ Implement tasks from an OpenSpec change.
    - Dynamic instruction based on current state
 
    **Handle states:**
-   - If `state: "blocked"` (missing artifacts): show message, suggest using `/opsx-continue`
+   - If `state: "blocked"` (missing artifacts): show message, suggest using `/opsx-propose <name>` or `/opsx-review-proposal <name>` to complete/refine the planning artifacts
    - If `state: "all_done"`: congratulate, suggest archive
    - Otherwise: proceed to implementation
 
@@ -108,7 +108,7 @@ Working on task 4/7: <task description>
 - [x] Task 2
 ...
 
-All tasks complete! You can archive this change with `/opsx-archive`.
+All tasks complete! Run `/opsx-apply-resume <name>` to review the implementation, then `/opsx-test <name>` for end-to-end validation, then `/opsx-align <name>` if testing reveals proposal drift, then `/opsx-archive <name>`.
 ```
 
 **Output On Pause (Issue Encountered)**

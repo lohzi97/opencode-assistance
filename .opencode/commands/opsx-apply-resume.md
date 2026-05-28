@@ -38,8 +38,8 @@ Review an in-progress OpenSpec change implementation, run static analysis and va
    - Task list with status
 
    **Handle states:**
-   - If `state: "blocked"` (missing artifacts): show message, suggest using `/opsx-continue` or `/opsx-ff`
-   - If `state: "all_done"`: congratulate, suggest running `/opsx-verify` then `/opsx-archive`
+   - If `state: "blocked"` (missing artifacts): show message, suggest using `/opsx-propose <name>` or `/opsx-review-proposal <name>` to complete/refine the planning artifacts
+   - If `state: "all_done"`: congratulate, suggest running `/opsx-test <name>`, then `/opsx-align <name>` if testing reveals proposal drift, then `/opsx-archive <name>`
    - Otherwise: proceed to review and implementation
 
 4. **Read context files**
@@ -136,7 +136,7 @@ Review an in-progress OpenSpec change implementation, run static analysis and va
     - Tasks completed this session
     - Overall progress: "N/M tasks complete"
     - Remaining tasks that require manual action (testing, documentation, etc.)
-    - If all done: suggest running `/opsx-verify` then `/opsx-archive`
+    - If all done: suggest running `/opsx-test <name>`, then `/opsx-align <name>` if testing reveals proposal drift, then `/opsx-archive <name>`
 
 **Guardrails**
 
@@ -217,5 +217,5 @@ Use clear markdown with sections for each analysis step:
 **Remaining manual tasks:**
 - [ ] [task description requiring manual action]
 
-All tasks complete! Run `/opsx-verify` to validate the implementation, then `/opsx-archive` to finalize.
+All tasks complete! Run `/opsx-test <name>` to validate the implementation end-to-end, then `/opsx-align <name>` if testing reveals proposal drift, then `/opsx-archive <name>` to finalize.
 ```

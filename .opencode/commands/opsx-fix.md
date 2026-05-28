@@ -8,9 +8,9 @@ Fix issues with an in-progress OpenSpec change implementation through iterative 
 1. Change name (e.g., `macos-incoming-call-notification`)
 2. Detailed description of the issue (can include error messages, unexpected behavior, logs, etc.)
 
-**Syntax**: `/opsx:fix <change-name> <detailed-issue-description>`
+**Syntax**: `/opsx-fix <change-name> <detailed-issue-description>`
 
-Example: `/opsx:fix macos-incoming-call-notification Notification showing wrong caller name`
+Example: `/opsx-fix macos-incoming-call-notification Notification showing wrong caller name`
 
 **Steps**
 
@@ -231,8 +231,8 @@ Example: `/opsx:fix macos-incoming-call-notification Notification showing wrong 
    - ✅ Tests: passed (if applicable)
 
    **Next Steps**:
-   - Manual testing recommended
-   - Consider running `/opsx-verify` before archiving
+   - Run `/opsx-test <change-name>` before archiving
+   - Run `/opsx-align <change-name>` if testing reveals proposal drift
    - [other relevant suggestions]
    ```
 
@@ -302,7 +302,8 @@ Use clear markdown with sections:
 
 **When NOT to Use This Command**
 
-- Vague exploration (use `/opsx-explore`)
-- Starting a new change (use `/opsx-new` or `/opsx-ff`)
-- Reviewing implementation before archiving (use `/opsx-verify`)
-- Resuming implementation after partial work (use `/opsx-apply-resume`)
+- Design or implementation discussion without fixing (use `/opsx-discuss`)
+- Starting a new change (use `/opsx-propose`)
+- Reviewing the proposal before implementation (use `/opsx-review-proposal`)
+- Resuming implementation/status review after partial work (use `/opsx-apply-resume`)
+- End-to-end validation before archiving (use `/opsx-test`)

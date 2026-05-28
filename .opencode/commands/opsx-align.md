@@ -6,7 +6,7 @@ Align an OpenSpec change proposal with the actual completed implementation in th
 
 Use this after implementing and testing a change, when the implementation differs from the original proposal. The command will identify discrepancies and update the proposal to accurately reflect what was actually built.
 
-**Input**: Optionally specify a change name after `/opsx:align` (e.g., `/opsx:align add-auth`). If omitted, check if it can be inferred from conversation context. If vague or ambiguous you MUST prompt for available changes.
+**Input**: Optionally specify a change name after `/opsx-align` (e.g., `/opsx-align add-auth`). If omitted, check if it can be inferred from conversation context. If vague or ambiguous you MUST prompt for available changes.
 
 **Steps**
 

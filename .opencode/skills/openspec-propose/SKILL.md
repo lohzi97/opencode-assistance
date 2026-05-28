@@ -16,7 +16,7 @@ I'll create a change with artifacts:
 - design.md (how)
 - tasks.md (implementation steps)
 
-When ready to implement, run /opsx-apply
+After the proposal is created, use openspec-review-proposal to review it against the current codebase before implementation.
 
 ---
 
@@ -89,8 +89,8 @@ When ready to implement, run /opsx-apply
 After completing all artifacts, summarize:
 - Change name and location
 - List of artifacts created with brief descriptions
-- What's ready: "All artifacts created! Ready for implementation."
-- Prompt: "Run `/opsx-apply` or ask me to implement to start working on the tasks."
+- What's ready: "All artifacts created! Ready for proposal review."
+- Prompt: "Use openspec-review-proposal to review the proposal before implementation."
 
 **Artifact Creation Guidelines**
 
