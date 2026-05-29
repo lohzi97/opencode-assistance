@@ -35,6 +35,11 @@ export type SessionInfo = {
   };
 };
 
+export type CreateSessionInput = {
+  title?: string;
+  directory?: string;
+};
+
 export type UserMessageInfo = {
   id: string;
   sessionID: string;
@@ -243,6 +248,24 @@ export type GlobalEventEnvelope = {
   };
 };
 
+export type QuestionInfo = {
+  question: string;
+  header: string;
+  options: Array<{ label: string; description: string }>;
+  multiple?: boolean;
+  custom?: boolean;
+};
+
+export type QuestionRequest = {
+  id: string;
+  sessionID: string;
+  questions: QuestionInfo[];
+  tool?: {
+    messageID: string;
+    callID: string;
+  };
+};
+
 export type BusEventPayload = {
   type: string;
   properties: Record<string, unknown>;
@@ -278,6 +301,16 @@ export class OpenCodeClient {
     });
   }
 
+  async createSpawnSession(input: CreateSessionInput) {
+    return await this.req<SessionInfo>("/session", {
+      method: "POST",
+      body: JSON.stringify({
+        title: input.title,
+      }),
+      ...(input.directory ? { urlSearchParams: { directory: input.directory } } : {}),
+    });
+  }
+
   async updateSession(
     sessionID: string,
     body: {
@@ -305,6 +338,10 @@ export class OpenCodeClient {
 
   async sessionStatus() {
     return await this.req<Record<string, SessionStatusInfo>>("/session/status");
+  }
+
+  async pendingQuestions() {
+    return await this.req<QuestionRequest[]>("/question");
   }
 
   async sessionMessages(sessionID: string) {
@@ -436,13 +473,18 @@ export class OpenCodeClient {
 
   async req<T = unknown>(
     url: string,
-    init: RequestInit & { expect?: number } = {},
+    init: RequestInit & { expect?: number; urlSearchParams?: Record<string, string> } = {},
   ) {
-    const res = await fetch(`${base}${url}`, {
-      ...init,
+    const requestUrl = new URL(`${base}${url}`);
+    for (const [key, value] of Object.entries(init.urlSearchParams ?? {})) {
+      requestUrl.searchParams.set(key, value);
+    }
+    const { urlSearchParams: _urlSearchParams, ...requestInit } = init;
+    const res = await fetch(requestUrl, {
+      ...requestInit,
       headers: {
         ...jsonHeaders(),
-        ...(init.headers ?? {}),
+        ...(requestInit.headers ?? {}),
       },
     });
     if (!res.ok && res.status !== init.expect) {

@@ -159,9 +159,30 @@ export type ProactiveConfig = {
   tasks: ProactiveTaskConfig[];
 };
 
+export type CollabInstructionSource =
+  | {
+      text: string;
+    }
+  | {
+      file: string;
+    };
+
+export type CollabConfig = {
+  enabled: boolean;
+  host: string;
+  port: number;
+  db_path: string;
+  poll_interval_ms: number;
+  hard_abort_wait_ms: number;
+  hard_abort_wait_max_ms: number;
+  spawn_instruction?: CollabInstructionSource;
+  reply_instruction?: CollabInstructionSource;
+};
+
 export type WorkerConfig = {
   compaction: CompactionConfig;
   proactive: ProactiveConfig;
+  collab: CollabConfig;
 };
 
 export const workerConfigFile = path.resolve(root, ".opencode/server.jsonc");
@@ -208,22 +229,69 @@ const DEFAULT_PROACTIVE_CONFIG: ProactiveConfig = {
   tasks: [],
 };
 
+const DEFAULT_COLLAB_CONFIG: CollabConfig = {
+  enabled: false,
+  host: "127.0.0.1",
+  port: 9100,
+  db_path: path.resolve(root, ".opencode/server/state/collab.sqlite"),
+  poll_interval_ms: 5_000,
+  hard_abort_wait_ms: 15_000,
+  hard_abort_wait_max_ms: 60_000,
+};
+
 export async function loadWorkerConfig() {
   const raw = parseJsonc(await readText(workerConfigFile));
   return parseWorkerConfig(raw);
 }
 
-function parseWorkerConfig(input: unknown): WorkerConfig {
+export function parseWorkerConfig(
+  input: unknown,
+  env: Record<string, string | undefined> = process.env,
+): WorkerConfig {
   if (!record(input)) {
     throw new Error("server.jsonc must be an object");
   }
 
   const compactionSource = record(input.compaction) ? input.compaction : {};
   const proactiveSource = record(input.proactive) ? input.proactive : {};
+  const collabSource = record(input.collab) ? input.collab : {};
 
   return {
     compaction: parseCompactionConfig(compactionSource),
     proactive: parseProactiveConfig(proactiveSource),
+    collab: parseCollabConfig(collabSource, env),
+  };
+}
+
+export function parseCollabConfig(
+  input: unknown,
+  env: Record<string, string | undefined> = process.env,
+): CollabConfig {
+  const source = record(input) ? input : {};
+  const port = asEnvPositiveInt(env.AGENT_COLLAB_PORT) ?? asPositiveInt(source.port) ?? DEFAULT_COLLAB_CONFIG.port;
+  const dbPath = env.AGENT_COLLAB_DB_PATH ?? (typeof source.db_path === "string" ? source.db_path : DEFAULT_COLLAB_CONFIG.db_path);
+  const pollInterval =
+    asEnvPositiveInt(env.AGENT_COLLAB_POLL_INTERVAL) ??
+    asPositiveInt(source.poll_interval_ms) ??
+    DEFAULT_COLLAB_CONFIG.poll_interval_ms;
+  const hardAbortWait = asPositiveInt(source.hard_abort_wait_ms) ?? DEFAULT_COLLAB_CONFIG.hard_abort_wait_ms;
+  const hardAbortWaitMax =
+    asPositiveInt(source.hard_abort_wait_max_ms) ?? DEFAULT_COLLAB_CONFIG.hard_abort_wait_max_ms;
+
+  if (hardAbortWaitMax < hardAbortWait) {
+    throw new Error("collab.hard_abort_wait_max_ms must be greater than or equal to collab.hard_abort_wait_ms");
+  }
+
+  return {
+    enabled: source.enabled === true,
+    host: typeof source.host === "string" ? source.host : DEFAULT_COLLAB_CONFIG.host,
+    port,
+    db_path: resolveFromRoot(dbPath),
+    poll_interval_ms: pollInterval,
+    hard_abort_wait_ms: hardAbortWait,
+    hard_abort_wait_max_ms: hardAbortWaitMax,
+    spawn_instruction: parseInstructionSource(source.spawn_instruction),
+    reply_instruction: parseInstructionSource(source.reply_instruction),
   };
 }
 
@@ -524,8 +592,25 @@ function parseModelRef(input: unknown) {
   } satisfies ModelRef;
 }
 
+function parseInstructionSource(input: unknown): CollabInstructionSource | undefined {
+  if (!record(input)) return undefined;
+  if (typeof input.text === "string") return { text: input.text };
+  if (typeof input.file === "string") return { file: resolveFromRoot(input.file) };
+  return undefined;
+}
+
+function resolveFromRoot(input: string) {
+  return path.isAbsolute(input) ? input : path.resolve(root, input);
+}
+
 function defaultBoolean(input: unknown, fallback: boolean) {
   return typeof input === "boolean" ? input : fallback;
+}
+
+function asEnvPositiveInt(input: string | undefined) {
+  if (input === undefined) return undefined;
+  const value = Number(input);
+  return Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
 function asPositiveInt(input: unknown) {

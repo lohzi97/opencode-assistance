@@ -202,7 +202,7 @@
       {
         "id": "daily-diary-with-refresh",
         "name": "Daily Diary with Refresh",
-        "enabled": true,
+        "enabled": false,
         "purpose": "Summarize yesterday's sessions, write the daily diary, identify memorizable info, update memory, then refresh the qmd index.",
         "trigger": {
           "kind": "cron",

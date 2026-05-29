@@ -7,18 +7,21 @@
  * Current services:
  * - compaction management from `.opencode/server.jsonc#compaction`
  * - proactive automation from `.opencode/server.jsonc#proactive`
+ * - collaboration foundation from `.opencode/server.jsonc#collab`
  *
  * The worker shares one OpenCode HTTP client and one `/global/event` listener
- * across both services.
+ * across services.
  */
 
 import { CompactionService } from "./compaction";
+import { CollabService } from "./collab";
 import { ProactiveService } from "./proactive";
 import { OpenCodeClient, ensureStateDir, listenGlobalEvents, unwrapBusEvent } from "./shared";
 
 const client = new OpenCodeClient();
 const compaction = new CompactionService(client);
 const proactive = new ProactiveService(client);
+const collab = new CollabService(client);
 
 main().catch((err) => {
   console.error("project worker failed", err);
@@ -31,6 +34,7 @@ async function main() {
 
   await compaction.start();
   await proactive.start();
+  await collab.start();
 
   void listenGlobalEvents({
     onEvent: async (envelope) => {
@@ -39,6 +43,7 @@ async function main() {
         await proactive.handleEvent(bus);
       }
       await compaction.handleEnvelope(envelope);
+      await collab.handleDeliveryEvent();
     },
   });
 }
