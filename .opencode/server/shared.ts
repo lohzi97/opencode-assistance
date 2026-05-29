@@ -488,12 +488,24 @@ export class OpenCodeClient {
       },
     });
     if (!res.ok && res.status !== init.expect) {
-      throw new Error(`${url} failed: ${res.status} ${await res.text()}`);
+      const body = await res.text();
+      throw new OpenCodeRequestError(`${url} failed: ${res.status} ${body}`, res.status, body);
     }
     if (init.expect === 204 || res.status === 204) {
       return undefined as T;
     }
     return (await res.json()) as T;
+  }
+}
+
+export class OpenCodeRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly body: string,
+  ) {
+    super(message);
+    this.name = "OpenCodeRequestError";
   }
 }
 

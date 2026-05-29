@@ -5,6 +5,7 @@ import path from "node:path";
 import { loadWorkerConfig } from "./config";
 import type { CollabConfig, CollabInstructionSource } from "./config";
 import { sleep } from "./shared";
+import { OpenCodeRequestError } from "./shared";
 import type { ModelRef, OpenCodeClient, QuestionRequest, SessionStatusInfo } from "./shared";
 
 export const FALLBACK_SPAWN_INSTRUCTION =
@@ -118,6 +119,8 @@ type SpawnPromptOptions = {
   agent?: string;
   model?: ModelRef;
 };
+
+type DeliveryFailureClassification = "retryable" | "permanent";
 
 export class CollabService {
   private db?: CollabStorage;
@@ -454,7 +457,7 @@ export class CollabService {
       await Promise.all(targets.map((delivery) => this.client.abortSession(delivery.target_session_id)));
     } catch (error) {
       const reason = `hard abort failed: ${error instanceof Error ? error.message : String(error)}`;
-      this.db.markDeliveriesFailed(targets, reason);
+      this.db.markDeliveryFailure(targets, reason, classifyDeliveryFailure(error));
       return { flushed: false, reason: "abort_failed" };
     }
 
@@ -483,7 +486,7 @@ export class CollabService {
       }
     } catch (error) {
       const reason = `hard injection failed: ${error instanceof Error ? error.message : String(error)}`;
-      this.db.markDeliveriesFailed(targets, reason);
+      this.db.markDeliveryFailure(targets, reason, classifyDeliveryFailure(error));
       return { flushed: false, reason: "inject_failed" };
     }
 
@@ -496,7 +499,10 @@ export class CollabService {
     const deadline = Date.now() + timeoutMs;
     while (true) {
       const statuses = await this.client.sessionStatus();
-      const blocked = targetSessionIds.find((sessionId) => statuses[sessionId]?.type !== "idle");
+      const blocked = targetSessionIds.find((sessionId) => {
+        const status = statuses[sessionId];
+        return status !== undefined && status.type !== "idle";
+      });
       if (!blocked) return { ok: true as const };
       if (Date.now() >= deadline) return { ok: false as const, targetSessionId: blocked };
       await sleep(Math.min(100, Math.max(1, deadline - Date.now())));
@@ -516,7 +522,7 @@ export class CollabService {
       this.db.markDeliveriesInjected(selection.backlog, Date.now());
       return { flushed: true, count: selection.backlog.length };
     } catch (error) {
-      this.db.markDeliveryAttempt(selection.backlog, error instanceof Error ? error.message : String(error));
+      this.db.markDeliveryFailure(selection.backlog, error instanceof Error ? error.message : String(error), classifyDeliveryFailure(error));
       return { flushed: false, reason: "inject_failed" };
     }
   }
@@ -698,7 +704,8 @@ export class CollabStorage {
     this.requirePlanner(room.id, sessionId, from);
 
     const transaction = this.db.transaction(() => {
-      this.insertSystemMessage(room.id, `Room closed by ${from}.`, "room_closed", now);
+      const messageId = this.insertSystemMessage(room.id, `Room closed by ${from}.`, "room_closed", now);
+      this.insertDeliveries(messageId, this.activeMembersForDelivery(room.id, sessionId), "buffered", now);
       this.cancelPendingQuestionTargetsForRoom(room.id, now, "room closed");
       this.db.run("UPDATE rooms SET state = 'closed', closed_at = ? WHERE id = ?", [now, room.id]);
     });
@@ -965,6 +972,7 @@ export class CollabStorage {
          JOIN messages ON messages.id = deliveries.message_id
          JOIN rooms ON rooms.id = messages.room_id
          WHERE deliveries.state = 'pending'
+           AND (rooms.state = 'open' OR deliveries.created_at <= rooms.closed_at)
          ORDER BY deliveries.target_session_id ASC`,
       )
       .all()
@@ -976,10 +984,12 @@ export class CollabStorage {
       .query<{ message_id: string }, []>(
         `SELECT deliveries.message_id
          FROM deliveries
-         JOIN messages ON messages.id = deliveries.message_id
-         WHERE deliveries.state = 'pending'
-           AND deliveries.mode = 'hard'
-         GROUP BY deliveries.message_id
+          JOIN messages ON messages.id = deliveries.message_id
+          JOIN rooms ON rooms.id = messages.room_id
+          WHERE deliveries.state = 'pending'
+            AND deliveries.mode = 'hard'
+            AND (rooms.state = 'open' OR deliveries.created_at <= rooms.closed_at)
+          GROUP BY deliveries.message_id
          ORDER BY messages.created_at ASC, deliveries.created_at ASC, deliveries.message_id ASC`,
       )
       .all()
@@ -989,11 +999,14 @@ export class CollabStorage {
   pendingHardDeliveries(messageId: string) {
     return this.db
       .query<DeliveryRow, [string]>(
-        `SELECT * FROM deliveries
-         WHERE message_id = ?
-           AND mode = 'hard'
-           AND state = 'pending'
-         ORDER BY created_at ASC, rowid ASC`,
+        `SELECT deliveries.* FROM deliveries
+         JOIN messages ON messages.id = deliveries.message_id
+         JOIN rooms ON rooms.id = messages.room_id
+         WHERE deliveries.message_id = ?
+           AND deliveries.mode = 'hard'
+           AND deliveries.state = 'pending'
+           AND (rooms.state = 'open' OR deliveries.created_at <= rooms.closed_at)
+         ORDER BY deliveries.created_at ASC, deliveries.rowid ASC`,
       )
       .all(messageId);
   }
@@ -1019,8 +1032,9 @@ export class CollabStorage {
          JOIN messages ON messages.id = deliveries.message_id
          JOIN rooms ON rooms.id = messages.room_id
          LEFT JOIN members ON members.room_id = rooms.id AND members.session_id = deliveries.target_session_id
-         WHERE deliveries.target_session_id = ? AND deliveries.state = 'pending'
-         ORDER BY messages.created_at ASC, deliveries.created_at ASC, messages.id ASC`,
+          WHERE deliveries.target_session_id = ? AND deliveries.state = 'pending'
+            AND (rooms.state = 'open' OR deliveries.created_at <= rooms.closed_at)
+          ORDER BY messages.created_at ASC, deliveries.created_at ASC, messages.id ASC`,
       )
       .all(targetSessionId);
   }
@@ -1068,6 +1082,11 @@ export class CollabStorage {
       }
     });
     transaction();
+  }
+
+  markDeliveryFailure(deliveries: DeliveryRow[], error: string, classification: DeliveryFailureClassification) {
+    if (classification === "permanent") this.markDeliveriesFailed(deliveries, error);
+    else this.markDeliveryAttempt(deliveries, error);
   }
 
   markDeliveriesFailed(deliveries: DeliveryRow[], error: string) {
@@ -1182,8 +1201,38 @@ export class CollabStorage {
       public_message_updated_by: room.public_message_updated_by,
       created_at: room.created_at,
       closed_at: room.closed_at,
+      outstanding_failures: this.failedDeliveriesForRoom(room.id),
       ...extra,
     };
+  }
+
+  private failedDeliveriesForRoom(roomId: string) {
+    return this.db
+      .query<DeliveryRow & { message_kind: string; message_body: string; message_created_at: number }, [string]>(
+        `SELECT deliveries.*,
+                messages.kind AS message_kind,
+                messages.body AS message_body,
+                messages.created_at AS message_created_at
+         FROM deliveries
+         JOIN messages ON messages.id = deliveries.message_id
+         WHERE messages.room_id = ?
+           AND deliveries.state = 'failed'
+         ORDER BY messages.created_at ASC, deliveries.created_at ASC, deliveries.target_name ASC`,
+      )
+      .all(roomId)
+      .map((delivery) => ({
+        message_id: delivery.message_id,
+        message_kind: delivery.message_kind,
+        message_body: delivery.message_body,
+        message_created_at: delivery.message_created_at,
+        target_session_id: delivery.target_session_id,
+        target_name: delivery.target_name,
+        mode: delivery.mode,
+        state: delivery.state,
+        attempt_count: delivery.attempt_count,
+        last_error: delivery.last_error,
+        created_at: delivery.created_at,
+      }));
   }
 
   private insertMember(roomId: string, sessionId: string, name: string, role: string, joinedAt: number) {
@@ -1547,6 +1596,14 @@ export function planHardMessageTargets(body: string, activeMembers: DeliveryTarg
 
 export function hardAbortWaitMs(targetCount: number, baseMs: number, maxMs: number) {
   return Math.min(maxMs, Math.max(1, targetCount) * baseMs);
+}
+
+export function classifyDeliveryFailure(error: unknown): DeliveryFailureClassification {
+  if (error instanceof OpenCodeRequestError) {
+    if (error.status === 408 || error.status === 429 || error.status >= 500) return "retryable";
+    return "permanent";
+  }
+  return "retryable";
 }
 
 export function planQuestionTargets(body: string, activeMembers: DeliveryTarget[], senderSessionId: string): QuestionTargetPlan {

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   OpenCodeClient,
+  OpenCodeRequestError,
   type QuestionRequest,
   type SessionStatusInfo,
   type OpenCodeClient as OpenCodeClientType,
@@ -13,6 +14,7 @@ import {
   CollabService,
   CollabStorage,
   assertValidAlias,
+  classifyDeliveryFailure,
   hardAbortWaitMs,
   hashPlannerPassword,
   isValidAlias,
@@ -148,6 +150,13 @@ describe("opencode client delivery boundary", () => {
       "/session/ses_1/prompt_async failed: 503 temporary",
     );
     await expect(client.promptAsync("ses_1", { parts: [{ type: "text", text: "hello" }] })).resolves.toBeUndefined();
+  });
+
+  test("classifies retryable and permanent delivery failures", () => {
+    expect(classifyDeliveryFailure(new OpenCodeRequestError("backend", 503, "temporary"))).toBe("retryable");
+    expect(classifyDeliveryFailure(new OpenCodeRequestError("rate limited", 429, "retry later"))).toBe("retryable");
+    expect(classifyDeliveryFailure(new OpenCodeRequestError("bad request", 400, "invalid"))).toBe("permanent");
+    expect(classifyDeliveryFailure(new Error("network disconnected"))).toBe("retryable");
   });
 
   test("aborts sessions and classifies transport failure", async () => {
@@ -1632,9 +1641,126 @@ describe("collab service", () => {
           .get(closeQuestion.body.id);
         expect(closedTarget).toEqual({ state: "cancelled", cancelled_reason: "room closed" });
         expect(closeStorage.hasOpenPendingCollabQuestion("ses_worker")).toBe(false);
+        const closeDeliveries = closeStorage.db
+          .query<{ target_name: string; state: string }, []>(
+            `SELECT deliveries.target_name, deliveries.state
+             FROM deliveries
+             JOIN messages ON messages.id = deliveries.message_id
+             WHERE messages.kind = 'room_closed'
+             ORDER BY deliveries.target_name ASC`,
+          )
+          .all();
+        expect(closeDeliveries).toEqual([{ target_name: "worker", state: "pending" }]);
       } finally {
         closeStorage.close();
       }
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("closed room drains buffered, immediate, hard, and closure deliveries chronologically", async () => {
+    const client = mockClient({ statuses: { ses_worker: { type: "idle" } } });
+    const service = await startedService(client);
+    try {
+      const room = await roomWithMembers(service);
+      await markAllDeliveriesInjected();
+      await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "Closed drain buffered context",
+      });
+      await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "@worker Closed drain immediate context",
+      });
+      const hard = await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "@worker Closed drain hard stop",
+        hard: true,
+      });
+      await routeJson(service, "DELETE", `/room/${room.room_id}`, { session_id: "ses_planner", from: "planner" });
+
+      await expect(service.attemptHardFlush(hard.body.id)).resolves.toEqual({ flushed: true, count: 1 });
+      await expect(service.attemptFlush("ses_worker", { type: "idle" }, [])).resolves.toEqual({ flushed: true, count: 1 });
+
+      expect(client.prompts).toHaveLength(2);
+      expect(client.prompts[0].text.indexOf("Closed drain buffered context")).toBeLessThan(
+        client.prompts[0].text.indexOf("Closed drain immediate context"),
+      );
+      expect(client.prompts[0].text.indexOf("Closed drain immediate context")).toBeLessThan(
+        client.prompts[0].text.indexOf("Closed drain hard stop"),
+      );
+      expect(client.prompts[1].text).toContain("Room closed by planner.");
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("closed room hard drain treats absent session status as eligible", async () => {
+    const client = mockClient();
+    const service = await startedService(client);
+    try {
+      const room = await roomWithMembers(service);
+      await markAllDeliveriesInjected();
+      const hard = await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "@worker Hard after close should execute",
+        hard: true,
+      });
+      await routeJson(service, "DELETE", `/room/${room.room_id}`, { session_id: "ses_planner", from: "planner" });
+
+      await expect(service.attemptHardFlush(hard.body.id)).resolves.toEqual({ flushed: true, count: 1 });
+      expect(client.events).toEqual(["abort:ses_worker", "prompt:ses_worker"]);
+      expect(client.prompts).toHaveLength(1);
+      expect(client.prompts[0].text).toContain("Hard after close should execute");
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("close drain ignores collab questions but still respects session blockers", async () => {
+    const client = mockClient();
+    const service = await startedService(client);
+    try {
+      const room = await roomWithMembers(service);
+      await markAllDeliveriesInjected();
+      const question = await routeJson(service, "POST", `/room/${room.room_id}/ask`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "@worker Can this close drain?",
+      });
+      await markAllDeliveriesInjected();
+      await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "Closed drain after question.",
+      });
+      await routeJson(service, "DELETE", `/room/${room.room_id}`, { session_id: "ses_planner", from: "planner" });
+
+      const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+      try {
+        storage.db.run("UPDATE question_targets SET state = 'pending', cancelled_at = NULL, cancelled_reason = NULL WHERE message_id = ?", [
+          question.body.id,
+        ]);
+      } finally {
+        storage.close();
+      }
+
+      await expect(service.attemptFlush("ses_worker", { type: "busy" }, [])).resolves.toEqual({ flushed: false, reason: "busy" });
+      await expect(service.attemptFlush("ses_worker", { type: "retry", attempt: 1, message: "rate limit", next: 1 }, [])).resolves.toEqual({
+        flushed: false,
+        reason: "retry",
+      });
+      await expect(
+        service.attemptFlush("ses_worker", { type: "idle" }, [{ id: "q1", sessionID: "ses_worker", questions: [] }]),
+      ).resolves.toEqual({ flushed: false, reason: "pending_user_question" });
+      await expect(service.attemptFlush("ses_worker", { type: "idle" }, [])).resolves.toEqual({ flushed: true, count: 2 });
+      expect(client.prompts[0].text).toContain("Closed drain after question.");
+      expect(client.prompts[0].text).toContain("Room closed by planner.");
     } finally {
       await service.shutdown();
     }
@@ -2077,6 +2203,75 @@ describe("collab service", () => {
     }
   });
 
+  test("retryable failures persist attempts and can later inject", async () => {
+    const client = mockClient({ promptErrors: [new OpenCodeRequestError("temporary", 503, "temporary")] });
+    const service = await startedService(client);
+    try {
+      const room = await roomWithMembers(service);
+      await markAllDeliveriesInjected();
+      await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "Retryable delivery.",
+      });
+
+      await expect(service.attemptFlush("ses_worker", { type: "idle" }, [])).resolves.toEqual({ flushed: false, reason: "inject_failed" });
+      await expect(service.attemptFlush("ses_worker", { type: "idle" }, [])).resolves.toEqual({ flushed: true, count: 1 });
+
+      const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+      try {
+        const delivery = storage.db
+          .query<{ state: string; attempt_count: number; last_error: string | null }, []>(
+            "SELECT state, attempt_count, last_error FROM deliveries WHERE target_session_id = 'ses_worker' ORDER BY created_at DESC LIMIT 1",
+          )
+          .get();
+        expect(delivery).toEqual({ state: "injected", attempt_count: 1, last_error: null });
+      } finally {
+        storage.close();
+      }
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("permanent failures are visible after close without new failure messages", async () => {
+    const client = mockClient({ promptErrors: [new OpenCodeRequestError("invalid", 400, "invalid prompt")] });
+    const service = await startedService(client);
+    try {
+      const room = await roomWithMembers(service);
+      await markAllDeliveriesInjected();
+      await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "Permanent failure delivery.",
+      });
+
+      await expect(service.attemptFlush("ses_worker", { type: "idle" }, [])).resolves.toEqual({ flushed: false, reason: "inject_failed" });
+      await routeJson(service, "DELETE", `/room/${room.room_id}`, { session_id: "ses_planner", from: "planner" });
+
+      const status = await routeJson(service, "GET", `/room/${room.room_id}/status`);
+      expect(status.body.outstanding_failures).toEqual([
+        expect.objectContaining({
+          message_body: "Permanent failure delivery.",
+          target_name: "worker",
+          state: "failed",
+          attempt_count: 1,
+          last_error: "invalid",
+        }),
+      ]);
+
+      const messages = await routeJson(service, "GET", `/room/${room.room_id}/messages`);
+      const failureMessage = messages.body.messages.find((message: { body: string }) => message.body === "Permanent failure delivery.");
+      expect(failureMessage.deliveries).toEqual([
+        expect.objectContaining({ target_name: "reviewer", state: "pending" }),
+        expect.objectContaining({ target_name: "worker", state: "failed", attempt_count: 1, last_error: "invalid" }),
+      ]);
+      expect(messages.body.messages.filter((message: { kind: string }) => message.kind === "delivery_failed")).toEqual([]);
+    } finally {
+      await service.shutdown();
+    }
+  });
+
   test("delivered records are not duplicated on idempotent retry", async () => {
     const client = mockClient();
     const service = await startedService(client);
@@ -2140,7 +2335,13 @@ async function markAllDeliveriesInjected() {
 }
 
 function mockClient(
-  input: { statuses?: Record<string, SessionStatusInfo>; questions?: QuestionRequest[]; failPrompt?: boolean; failAbort?: boolean } = {},
+  input: {
+    statuses?: Record<string, SessionStatusInfo>;
+    questions?: QuestionRequest[];
+    failPrompt?: boolean;
+    failAbort?: boolean;
+    promptErrors?: unknown[];
+  } = {},
 ) {
   const client = {
     prompts: [] as Array<{ sessionID: string; text: string; agent?: string; model?: { providerID: string; modelID: string; variant?: string } }>,
@@ -2166,6 +2367,8 @@ function mockClient(
       sessionID: string,
       body: { agent?: string; model?: { providerID: string; modelID: string; variant?: string }; parts: Array<{ type: "text"; text: string }> },
     ) => {
+      const promptError = input.promptErrors?.shift();
+      if (promptError) throw promptError;
       if (input.failPrompt) throw new Error("temporary failure");
       client.events.push(`prompt:${sessionID}`);
       client.prompts.push({ sessionID, text: body.parts.map((part) => part.text).join("\n"), agent: body.agent, model: body.model });
