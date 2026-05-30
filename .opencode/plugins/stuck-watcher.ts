@@ -8,6 +8,7 @@
  * - `message.part.delta`: streaming text deltas (text generation heartbeat)
  * - `message.part.updated`: visible part updates
  * - `session.status`: busy/idle transitions
+ * - running `question` tool parts: interactive user wait, never stuck
  *
  * When no activity events fire for `stuck_threshold_ms` while a session is
  * busy, the watcher considers it stuck, aborts the session, and sends the
@@ -166,6 +167,7 @@ type SessionState = {
   rescueCount: number
   lastRescueAt: number
   rescuing: boolean
+  activeQuestionParts: Set<string>
 }
 
 const GLOBAL_INSTANCE_KEY = Symbol.for("sebastian.stuck-watcher.instances")
@@ -231,6 +233,7 @@ export const StuckWatcherPlugin: Plugin = async ({ client, directory }) => {
         rescueCount: 0,
         lastRescueAt: 0,
         rescuing: false,
+        activeQuestionParts: new Set(),
       }
       sessions.set(sessionID, s)
     }
@@ -240,6 +243,53 @@ export const StuckWatcherPlugin: Plugin = async ({ client, directory }) => {
   function touchLLMActivity(sessionID: string) {
     const s = getSession(sessionID)
     s.lastLLMActivity = Date.now()
+  }
+
+  function isToolPart(part: unknown): part is {
+    id?: string
+    type: "tool"
+    tool?: string
+    state?: { status?: string }
+  } {
+    return typeof part === "object" && part !== null && (part as { type?: unknown }).type === "tool"
+  }
+
+  function trackQuestionPart(sessionID: string, part: unknown) {
+    if (!isToolPart(part) || part.tool !== "question" || !part.id) return
+    const s = getSession(sessionID)
+    if (part.state?.status === "running") {
+      s.activeQuestionParts.add(part.id)
+      return
+    }
+    s.activeQuestionParts.delete(part.id)
+  }
+
+  async function refreshActiveQuestionState(sessionID: string) {
+    const s = getSession(sessionID)
+    try {
+      const messages = await client.session.messages({
+        path: { id: sessionID },
+        throwOnError: true,
+      })
+      const active = new Set<string>()
+      for (const message of messages.data ?? []) {
+        for (const part of message.parts ?? []) {
+          if (isToolPart(part) && part.tool === "question" && part.id && part.state?.status === "running") {
+            active.add(part.id)
+          }
+        }
+      }
+      s.activeQuestionParts = active
+    } catch (err) {
+      await client.app.log({
+        body: {
+          service: PLUGIN_SERVICE,
+          level: "error",
+          message: `failed to inspect question state for ${sessionID}: ${err instanceof Error ? err.message : String(err)}`,
+        },
+      })
+    }
+    return s.activeQuestionParts.size > 0
   }
 
   async function sleep(ms: number) {
@@ -308,11 +358,15 @@ export const StuckWatcherPlugin: Plugin = async ({ client, directory }) => {
 
         if (state.rescueCount >= cfg.max_rescues_per_session) continue
 
+        if (state.activeQuestionParts.size > 0) continue
+
         const sinceLastRescue = now - state.lastRescueAt
         if (sinceLastRescue < cfg.cooldown_ms) continue
 
         const silenceMs = now - state.lastLLMActivity
         if (silenceMs < cfg.stuck_threshold_ms) continue
+
+        if (await refreshActiveQuestionState(sessionID)) continue
 
         state.rescuing = true
         state.lastRescueAt = Date.now()
@@ -403,6 +457,7 @@ export const StuckWatcherPlugin: Plugin = async ({ client, directory }) => {
           if (status?.type === "idle") {
             s.busy = false
             s.rescuing = false
+            s.activeQuestionParts.clear()
             s.lastLLMActivity = Date.now()
           } else if (status?.type === "busy") {
             s.busy = true
@@ -422,6 +477,7 @@ export const StuckWatcherPlugin: Plugin = async ({ client, directory }) => {
         case "message.part.updated": {
           const sid = props?.sessionID as string | undefined
           if (!sid) break
+          trackQuestionPart(sid, props?.part)
           touchLLMActivity(sid)
           break
         }
