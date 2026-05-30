@@ -1,6 +1,5 @@
 ---
 description: Searches the public internet and collects verified information
-mode: subagent
 temperature: 0.1
 permission:
   "*": deny

@@ -17,8 +17,25 @@ type RestartRecord = {
   completed_at?: string;
   server_url: string;
   reason?: string;
+  model?: ModelRef;
   helper_log_path?: string;
   error?: string;
+};
+
+type ModelRef = {
+  providerID: string;
+  modelID: string;
+  variant?: string;
+};
+
+type MessageWithInfo = {
+  info?: {
+    role?: string;
+    model?: ModelRef;
+    providerID?: string;
+    modelID?: string;
+    variant?: string;
+  };
 };
 
 const root = path.resolve(import.meta.dir, "../..");
@@ -36,6 +53,7 @@ async function main() {
   const requestID = timestamp();
   const requestFile = path.join(stateDir, `request-${requestID}.json`);
   const serverURL = resolveServerURL();
+  const model = await resolveLastModel(serverURL, sessionID);
 
   const record: RestartRecord = {
     request_id: requestID,
@@ -44,6 +62,7 @@ async function main() {
     requested_at: requestID,
     server_url: serverURL,
     reason: options.reason,
+    model,
     helper_log_path: helperLogPath,
   };
 
@@ -57,6 +76,7 @@ async function main() {
       serverURL,
       sessionID,
       reason: options.reason,
+      model,
     });
 
     record.status = "completed";
@@ -122,7 +142,7 @@ async function resolveSessionID(input?: string) {
 }
 
 function resolveServerURL() {
-  if (process.env.OPENCODE_SERVER_URL) return process.env.OPENCODE_SERVER_URL;
+  if (process.env.OPENCODE_SERVER_URL) return process.env.OPENCODE_SERVER_URL.replace(/\/$/, "");
   const host = process.env.OPENCODE_ASSISTANT_HOST || "127.0.0.1";
   const port = process.env.OPENCODE_ASSISTANT_PORT || "4096";
   return `http://${host}:${port}`;
@@ -147,24 +167,28 @@ async function sendCompletionPrompt(input: {
   serverURL: string;
   sessionID: string;
   reason?: string;
+  model?: ModelRef;
 }) {
   const lines = [
     "The requested OpenCode restart has completed successfully.",
     input.reason ? `Restart reason for context: ${input.reason}` : undefined,
   ].filter(Boolean);
 
-  const headers: Record<string, string> = {
+  const headers = authHeaders({
     "content-type": "application/json",
-  };
-  const password = process.env.OPENCODE_SERVER_PASSWORD;
-  if (password) {
-    headers.authorization = `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`;
-  }
+  });
 
   const response = await fetch(`${input.serverURL}/session/${input.sessionID}/prompt_async`, {
     method: "POST",
     headers,
     body: JSON.stringify({
+      model: input.model
+        ? {
+            providerID: input.model.providerID,
+            modelID: input.model.modelID,
+          }
+        : undefined,
+      variant: input.model?.variant,
       parts: [
         {
           type: "text",
@@ -178,6 +202,48 @@ async function sendCompletionPrompt(input: {
     const detail = await response.text().catch(() => response.statusText);
     throw new Error(`Failed to post restart completion prompt: ${response.status} ${detail}`);
   }
+}
+
+async function resolveLastModel(serverURL: string, sessionID: string): Promise<ModelRef | undefined> {
+  const messages = await request<MessageWithInfo[]>(serverURL, `/session/${encodeURIComponent(sessionID)}/message`).catch(
+    (error) => {
+      console.warn(`Unable to inspect session model before restart: ${formatError(error)}`);
+      return [];
+    },
+  );
+
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const info = messages[i]?.info;
+    if (!info) continue;
+    if (info.role === "user" && info.model?.providerID && info.model.modelID) return info.model;
+    if (info.role === "assistant" && info.providerID && info.modelID) {
+      return {
+        providerID: info.providerID,
+        modelID: info.modelID,
+        variant: info.variant,
+      };
+    }
+  }
+}
+
+async function request<T>(serverURL: string, route: string): Promise<T> {
+  const response = await fetch(`${serverURL}${route}`, {
+    headers: authHeaders({ accept: "application/json" }),
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => response.statusText);
+    throw new Error(`OpenCode request failed: ${route} ${response.status} ${detail}`);
+  }
+  return await response.json();
+}
+
+function authHeaders(extra: Record<string, string> = {}) {
+  const headers: Record<string, string> = { ...extra };
+  const password = process.env.OPENCODE_SERVER_PASSWORD;
+  if (password) {
+    headers.authorization = `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`;
+  }
+  return headers;
 }
 
 async function writeRecord(filePath: string, record: RestartRecord) {
