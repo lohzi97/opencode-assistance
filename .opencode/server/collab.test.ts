@@ -311,6 +311,64 @@ describe("collab storage", () => {
       storage.close();
     }
   });
+
+  test("adds member agent-model columns to existing member rows without data loss", async () => {
+    const dbPath = path.join(tempDir, "collab.sqlite");
+    const legacy = new Database(dbPath, { create: true });
+    legacy.exec(`
+      CREATE TABLE rooms (
+        id                         TEXT PRIMARY KEY,
+        base_name                  TEXT NOT NULL,
+        name                       TEXT NOT NULL,
+        state                      TEXT NOT NULL DEFAULT 'open',
+        planner_password_hash      TEXT NOT NULL,
+        created_at                 INTEGER NOT NULL
+      );
+
+      CREATE TABLE members (
+        room_id                    TEXT NOT NULL REFERENCES rooms(id),
+        session_id                 TEXT NOT NULL,
+        name                       TEXT NOT NULL,
+        role                       TEXT NOT NULL,
+        state                      TEXT NOT NULL DEFAULT 'active',
+        joined_at                  INTEGER NOT NULL,
+        PRIMARY KEY (room_id, session_id),
+        UNIQUE (room_id, name)
+      );
+    `);
+    legacy.run("INSERT INTO rooms (id, base_name, name, planner_password_hash, created_at) VALUES (?, ?, ?, ?, ?)", [
+      "room_1",
+      "base",
+      "base-20260527230000",
+      "hash",
+      1,
+    ]);
+    legacy.run("INSERT INTO members (room_id, session_id, name, role, joined_at) VALUES (?, ?, ?, ?, ?)", [
+      "room_1",
+      "ses_1",
+      "planner",
+      "planner",
+      1,
+    ]);
+    legacy.close();
+
+    const storage = await CollabStorage.open(dbPath);
+    try {
+      const columns = storage.db.query<{ name: string }, []>("PRAGMA table_info(members)").all().map((row) => row.name);
+      const row = storage.db
+        .query<{ session_id: string; agent: string | null; model_provider_id: string | null; model_id: string | null; model_variant: string | null }, []>(
+          "SELECT session_id, agent, model_provider_id, model_id, model_variant FROM members WHERE session_id = 'ses_1'",
+        )
+        .get();
+      expect(columns).toContain("agent");
+      expect(columns).toContain("model_provider_id");
+      expect(columns).toContain("model_id");
+      expect(columns).toContain("model_variant");
+      expect(row).toEqual({ session_id: "ses_1", agent: null, model_provider_id: null, model_id: null, model_variant: null });
+    } finally {
+      storage.close();
+    }
+  });
 });
 
 describe("collab password helpers", () => {
@@ -485,6 +543,49 @@ describe("collab service", () => {
           .query<{ role: string; state: string }, []>("SELECT role, state FROM members WHERE session_id = 'ses_creator'")
           .get();
         expect(member).toEqual({ role: "planner", state: "active" });
+      } finally {
+        storage.close();
+      }
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("room creation captures founder session agent and model", async () => {
+    const client = mockClient({
+      sessionMessages: {
+        ses_creator: [userMessage("ses_creator", "sebastian", { providerID: "openai", modelID: "gpt-5.5", variant: "high" })],
+      },
+    });
+    const service = await startedService(client);
+    try {
+      const response = await routeJson(service, "POST", "/room", {
+        name: "founder-agent",
+        session_id: "ses_creator",
+        from: "planner",
+      });
+
+      expect(response.status).toBe(201);
+
+      await routeJson(service, "POST", `/room/${response.body.room_id}/member`, {
+        session_id: "ses_creator",
+        from: "planner",
+        target_session_id: "ses_worker",
+        name: "worker",
+        role: "implementer",
+      });
+      await expect(service.attemptFlush("ses_creator", { type: "idle" }, [])).resolves.toEqual({ flushed: true, count: 1 });
+      expect(client.prompts[0].agent).toBe("sebastian");
+      expect(client.prompts[0].model).toEqual({ providerID: "openai", modelID: "gpt-5.5", variant: "high" });
+
+      const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+      try {
+        const row = storage.db
+          .query<{ agent: string | null; model_provider_id: string | null; model_id: string | null; model_variant: string | null }, []>(
+            "SELECT agent, model_provider_id, model_id, model_variant FROM members WHERE session_id = 'ses_creator'",
+          )
+          .get();
+        expect(row).toEqual({ agent: "sebastian", model_provider_id: "openai", model_id: "gpt-5.5", model_variant: "high" });
       } finally {
         storage.close();
       }
@@ -1044,6 +1145,39 @@ describe("collab service", () => {
     }
   });
 
+  test("planner member add captures target session agent and model", async () => {
+    const client = mockClient({
+      sessionMessages: {
+        ses_worker: [userMessage("ses_worker", "shalltear", { providerID: "google", modelID: "gemini-2.5-pro", variant: "thinking" })],
+      },
+    });
+    const service = await startedService(client);
+    try {
+      const created = await routeJson(service, "POST", "/room", { name: "add-agent", session_id: "ses_creator", from: "planner" });
+      await routeJson(service, "POST", `/room/${created.body.room_id}/member`, {
+        session_id: "ses_creator",
+        from: "planner",
+        target_session_id: "ses_worker",
+        name: "worker",
+        role: "implementer",
+      });
+
+      const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+      try {
+        const row = storage.db
+          .query<{ agent: string | null; model_provider_id: string | null; model_id: string | null; model_variant: string | null }, []>(
+            "SELECT agent, model_provider_id, model_id, model_variant FROM members WHERE session_id = 'ses_worker'",
+          )
+          .get();
+        expect(row).toEqual({ agent: "shalltear", model_provider_id: "google", model_id: "gemini-2.5-pro", model_variant: "thinking" });
+      } finally {
+        storage.close();
+      }
+    } finally {
+      await service.shutdown();
+    }
+  });
+
   test("planner spawn persists ownership and rejects non-planners without creating sessions", async () => {
     const client = mockClient();
     const service = await startedService(client);
@@ -1093,8 +1227,14 @@ describe("collab service", () => {
             "SELECT agent, model_provider_id, model_id FROM deliveries WHERE mode = 'spawn_initial'",
           )
           .get();
+        const member = storage.db
+          .query<{ agent: string | null; model_provider_id: string | null; model_id: string | null }, []>(
+            "SELECT agent, model_provider_id, model_id FROM members WHERE session_id = 'ses_spawned_1'",
+          )
+          .get();
         expect(row).toEqual({ room_id: created.body.room_id, session_id: "ses_spawned_1", spawned_by: "ses_planner" });
         expect(prompt).toEqual({ agent: "sebastian", model_provider_id: "provider-x", model_id: "model-y" });
+        expect(member).toEqual({ agent: "sebastian", model_provider_id: "provider-x", model_id: "model-y" });
       } finally {
         storage.close();
       }
@@ -1172,6 +1312,37 @@ describe("collab service", () => {
           .get();
         expect(bootstrap?.body).toContain("Self join planner-2/planner in join-room-");
         expect(bootstrap?.body).toContain("from system.");
+      } finally {
+        storage.close();
+      }
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("password self-join captures joining session agent and model", async () => {
+    const client = mockClient({
+      sessionMessages: {
+        ses_joiner: [userMessage("ses_joiner", "sebastian", { providerID: "zai-coding-plan", modelID: "glm-5.1" })],
+      },
+    });
+    const service = await startedService(client);
+    try {
+      const created = await routeJson(service, "POST", "/room", { name: "join-agent", session_id: "ses_creator", from: "planner" });
+      await routeJson(service, "POST", `/room/${created.body.room_id}/join`, {
+        session_id: "ses_joiner",
+        name: "planner-2",
+        password: created.body.planner_password,
+      });
+
+      const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+      try {
+        const row = storage.db
+          .query<{ agent: string | null; model_provider_id: string | null; model_id: string | null; model_variant: string | null }, []>(
+            "SELECT agent, model_provider_id, model_id, model_variant FROM members WHERE session_id = 'ses_joiner'",
+          )
+          .get();
+        expect(row).toEqual({ agent: "sebastian", model_provider_id: "zai-coding-plan", model_id: "glm-5.1", model_variant: null });
       } finally {
         storage.close();
       }
@@ -2041,6 +2212,74 @@ describe("collab service", () => {
     }
   });
 
+  test("buffered delivery passes target member agent and model", async () => {
+    const client = mockClient({
+      sessionMessages: {
+        ses_worker: [userMessage("ses_worker", "shalltear", { providerID: "google", modelID: "gemini-2.5-pro", variant: "pro" })],
+      },
+    });
+    const service = await startedService(client);
+    try {
+      const room = await roomWithMembers(service);
+      await markAllDeliveriesInjected();
+      await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "Buffered with member model.",
+      });
+
+      await expect(service.attemptFlush("ses_worker", { type: "idle" }, [])).resolves.toEqual({ flushed: true, count: 1 });
+      expect(client.prompts[0].agent).toBe("shalltear");
+      expect(client.prompts[0].model).toEqual({ providerID: "google", modelID: "gemini-2.5-pro", variant: "pro" });
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("immediate delivery passes target member agent and model", async () => {
+    const client = mockClient({
+      sessionMessages: {
+        ses_worker: [userMessage("ses_worker", "sebastian", { providerID: "zai-coding-plan", modelID: "glm-5.1" })],
+      },
+    });
+    const service = await startedService(client);
+    try {
+      const room = await roomWithMembers(service);
+      await markAllDeliveriesInjected();
+      await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "@worker Immediate with member model.",
+      });
+
+      await expect(service.attemptFlush("ses_worker", { type: "busy" }, [])).resolves.toEqual({ flushed: true, count: 1 });
+      expect(client.prompts[0].agent).toBe("sebastian");
+      expect(client.prompts[0].model).toEqual({ providerID: "zai-coding-plan", modelID: "glm-5.1" });
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("NULL member agent and model omit prompt overrides", async () => {
+    const client = mockClient();
+    const service = await startedService(client);
+    try {
+      const room = await roomWithMembers(service);
+      await markAllDeliveriesInjected();
+      await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "Buffered without member model.",
+      });
+
+      await expect(service.attemptFlush("ses_worker", { type: "idle" }, [])).resolves.toEqual({ flushed: true, count: 1 });
+      expect(client.prompts[0].agent).toBeUndefined();
+      expect(client.prompts[0].model).toBeUndefined();
+    } finally {
+      await service.shutdown();
+    }
+  });
+
   test("hard delivery aborts all targets before injecting any prompts", async () => {
     const client = mockClient({ statuses: { ses_worker: { type: "idle" }, ses_reviewer: { type: "idle" } } });
     const service = await startedService(client);
@@ -2089,6 +2328,32 @@ describe("collab service", () => {
       expect(client.prompts[0].text.indexOf("Older buffered context")).toBeLessThan(
         client.prompts[0].text.indexOf("@worker hard decision point"),
       );
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("hard delivery passes target member agent and model", async () => {
+    const client = mockClient({
+      statuses: { ses_worker: { type: "idle" } },
+      sessionMessages: {
+        ses_worker: [userMessage("ses_worker", "shalltear", { providerID: "deepseek", modelID: "deepseek-v4-pro", variant: "thinking" })],
+      },
+    });
+    const service = await startedService(client);
+    try {
+      const room = await roomWithMembers(service);
+      await markAllDeliveriesInjected();
+      const hard = await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "@worker hard with member model",
+        hard: true,
+      });
+
+      await expect(service.attemptHardFlush(hard.body.id)).resolves.toEqual({ flushed: true, count: 1 });
+      expect(client.prompts[0].agent).toBe("shalltear");
+      expect(client.prompts[0].model).toEqual({ providerID: "deepseek", modelID: "deepseek-v4-pro", variant: "thinking" });
     } finally {
       await service.shutdown();
     }
@@ -2615,6 +2880,7 @@ function mockClient(
     failPrompt?: boolean;
     failAbort?: boolean;
     promptErrors?: unknown[];
+    sessionMessages?: Record<string, any[]>;
   } = {},
 ) {
   const client = {
@@ -2623,7 +2889,7 @@ function mockClient(
     createdSessions: [] as Array<{ title?: string; directory?: string }>,
     nextSessionId: undefined as string | undefined,
     getSession: async (sessionID: string) => ({ id: sessionID, title: sessionID, directory: "/caller", time: { created: 1, updated: 1 } }),
-    sessionMessages: async () => [],
+    sessionMessages: async (sessionID: string) => input.sessionMessages?.[sessionID] ?? [],
     createSpawnSession: async (body: { title?: string; directory?: string }) => {
       client.createdSessions.push(body);
       const id = client.nextSessionId ?? `ses_spawned_${client.createdSessions.length}`;
@@ -2655,6 +2921,20 @@ function mockClient(
     nextSessionId?: string;
   };
   return client;
+}
+
+function userMessage(sessionID: string, agent?: string, model?: { providerID: string; modelID: string; variant?: string }) {
+  return {
+    info: {
+      id: `msg_${sessionID}`,
+      sessionID,
+      role: "user" as const,
+      time: { created: 1 },
+      agent,
+      model,
+    },
+    parts: [],
+  };
 }
 
 function configWithTemplates(input: Partial<CollabConfig>): CollabConfig {

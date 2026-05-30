@@ -44,6 +44,10 @@ type MemberRow = {
   role: string;
   state: string;
   joined_at: number;
+  agent: string | null;
+  model_provider_id: string | null;
+  model_id: string | null;
+  model_variant: string | null;
 };
 
 type DeliveryTarget = {
@@ -118,6 +122,13 @@ type SpawnInput = {
 type SpawnPromptOptions = {
   agent?: string;
   model?: ModelRef;
+};
+
+type AgentModelRow = {
+  agent: string | null;
+  model_provider_id: string | null;
+  model_id: string | null;
+  model_variant: string | null;
 };
 
 type DeliveryFailureClassification = "retryable" | "permanent";
@@ -267,6 +278,7 @@ export class CollabService {
       throw httpError(409, "founder session already belongs to an open room");
     }
 
+    const agentModel = await this.sessionAgentModel(sessionId);
     const password = generatePlannerPassword();
     const passwordHash = await hashPlannerPassword(password);
     const room = this.db!.createRoom({
@@ -276,7 +288,7 @@ export class CollabService {
       projectDir,
       plannerPasswordHash: passwordHash,
       createdAt: now,
-      founder: { sessionId, name: founderName, joinedAt: now },
+      founder: { sessionId, name: founderName, joinedAt: now, agentModel },
     });
 
     return {
@@ -309,6 +321,7 @@ export class CollabService {
     const role = requireString(input, "role");
     const room = this.db!.validateAddMember(roomRef, { sessionId, from, targetSessionId, name });
     const templates = await resolveCollabTemplates(this.config, { room: room.name, alias: name, role, from });
+    const agentModel = await this.sessionAgentModel(targetSessionId);
     return this.db!.addMember(room.id, {
       sessionId,
       from,
@@ -316,6 +329,7 @@ export class CollabService {
       name,
       role,
       roomJoinInstruction: templates.room_join_instruction,
+      agentModel,
       now: Date.now(),
     });
   }
@@ -328,7 +342,8 @@ export class CollabService {
     const room = this.db!.openRoom(roomRef);
     if (!(await verifyPlannerPassword(password, room.planner_password_hash))) throw httpError(403, "invalid planner password");
     const templates = await resolveCollabTemplates(this.config, { room: room.name, alias: name, role: "planner", from: "system" });
-    return this.db!.selfJoin(room.id, { sessionId, name, roomJoinInstruction: templates.room_join_instruction, now: Date.now() });
+    const agentModel = await this.sessionAgentModel(sessionId);
+    return this.db!.selfJoin(room.id, { sessionId, name, roomJoinInstruction: templates.room_join_instruction, agentModel, now: Date.now() });
   }
 
   private async spawnMember(roomRef: string, input: Record<string, unknown>) {
@@ -384,6 +399,14 @@ export class CollabService {
       }
     }
     return { directory: session?.directory };
+  }
+
+  private async sessionAgentModel(sessionId: string): Promise<SpawnPromptOptions> {
+    const messages = await this.client.sessionMessages(sessionId).catch(() => []);
+    for (const message of [...messages].reverse()) {
+      if (message.info.role === "user") return { agent: message.info.agent, model: message.info.model };
+    }
+    return {};
   }
 
   private leaveRoom(roomRef: string, input: Record<string, unknown>) {
@@ -517,6 +540,7 @@ export class CollabService {
       const replyInstructionTemplate = await this.replyInstructionTemplate();
       for (const batch of batches) {
         await this.client.promptAsync(batch.target.target_session_id, {
+          ...this.promptOptionsForMember(batch.backlog),
           parts: [{ type: "text", text: this.formatDeliveryPrompt(batch.backlog, replyInstructionTemplate) }],
         });
       }
@@ -554,7 +578,7 @@ export class CollabService {
 
     const prompt = this.formatDeliveryPrompt(selection.backlog, await this.replyInstructionTemplate());
     try {
-      await this.client.promptAsync(targetSessionId, { ...this.promptOptions(selection.backlog), parts: [{ type: "text", text: prompt }] });
+      await this.client.promptAsync(targetSessionId, { ...this.promptOptionsForMember(selection.backlog), parts: [{ type: "text", text: prompt }] });
       this.db.markDeliveriesInjected(selection.backlog, Date.now());
       return { flushed: true, count: selection.backlog.length };
     } catch (error) {
@@ -586,20 +610,10 @@ export class CollabService {
     return blocker ? { reason: blocker, backlog: [] } : { backlog };
   }
 
-  private promptOptions(backlog: PendingDeliveryRow[]): SpawnPromptOptions {
-    const spawnInitial = backlog.find((delivery) => delivery.mode === "spawn_initial");
-    if (!spawnInitial) return {};
-    return {
-      agent: spawnInitial.agent ?? undefined,
-      model:
-        spawnInitial.model_provider_id && spawnInitial.model_id
-          ? {
-              providerID: spawnInitial.model_provider_id,
-              modelID: spawnInitial.model_id,
-              variant: spawnInitial.model_variant ?? undefined,
-            }
-          : undefined,
-    };
+  private promptOptionsForMember(backlog: PendingDeliveryRow[]): SpawnPromptOptions {
+    const first = backlog[0];
+    if (!first || !this.db) return {};
+    return this.db.memberAgentModel(first.room_id, first.target_session_id);
   }
 
   private immediateDeliveryBlocker(targetSessionId: string, status?: SessionStatusInfo, questions: QuestionRequest[] = []) {
@@ -703,17 +717,14 @@ export class CollabStorage {
     projectDir?: string;
     plannerPasswordHash: string;
     createdAt: number;
-    founder: { sessionId: string; name: string; joinedAt: number };
+    founder: { sessionId: string; name: string; joinedAt: number; agentModel?: SpawnPromptOptions };
   }) {
     const transaction = this.db.transaction(() => {
       this.db.run(
         "INSERT INTO rooms (id, base_name, name, project_dir, planner_password_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)",
         [input.id, input.baseName, input.name, input.projectDir ?? null, input.plannerPasswordHash, input.createdAt],
       );
-      this.db.run(
-        "INSERT INTO members (room_id, session_id, name, role, joined_at) VALUES (?, ?, ?, 'planner', ?)",
-        [input.id, input.founder.sessionId, input.founder.name, input.founder.joinedAt],
-      );
+      this.insertMember(input.id, input.founder.sessionId, input.founder.name, "planner", input.founder.joinedAt, input.founder.agentModel);
       this.insertSystemMessage(input.id, `Founder ${input.founder.name} joined as planner.`, "founder_joined", input.createdAt);
     });
 
@@ -775,13 +786,14 @@ export class CollabStorage {
       name: string;
       role: string;
       roomJoinInstruction: string;
+      agentModel?: SpawnPromptOptions;
       now: number;
     },
   ) {
     const room = this.validateAddMember(roomRef, input);
 
     const transaction = this.db.transaction(() => {
-      this.insertMember(room.id, input.targetSessionId, input.name, input.role, input.now);
+      this.insertMember(room.id, input.targetSessionId, input.name, input.role, input.now, input.agentModel);
       this.insertJoinBootstrap({ room, target: { session_id: input.targetSessionId, name: input.name }, role: input.role, body: input.roomJoinInstruction, createdAt: input.now });
       const messageId = this.insertSystemMessage(room.id, `${input.name} joined as ${input.role}.`, "member_joined", input.now + 1);
       this.insertDeliveries(messageId, this.activeMembersForDelivery(room.id, input.targetSessionId), "buffered", input.now + 1);
@@ -799,13 +811,13 @@ export class CollabStorage {
     return room;
   }
 
-  selfJoin(roomRef: string, input: { sessionId: string; name: string; roomJoinInstruction: string; now: number }) {
+  selfJoin(roomRef: string, input: { sessionId: string; name: string; roomJoinInstruction: string; agentModel?: SpawnPromptOptions; now: number }) {
     const room = this.openRoom(roomRef);
     if (this.memberByName(room.id, input.name)) throw httpError(409, "alias already exists in room");
     if (this.openRoomForSession(input.sessionId)) throw httpError(409, "session already belongs to an open room");
 
     const transaction = this.db.transaction(() => {
-      this.insertMember(room.id, input.sessionId, input.name, "planner", input.now);
+      this.insertMember(room.id, input.sessionId, input.name, "planner", input.now, input.agentModel);
       this.insertJoinBootstrap({ room, target: { session_id: input.sessionId, name: input.name }, role: "planner", body: input.roomJoinInstruction, createdAt: input.now });
       const messageId = this.insertSystemMessage(room.id, `${input.name} joined as planner.`, "member_joined", input.now + 1);
       this.insertDeliveries(messageId, this.activeMembersForDelivery(room.id, input.sessionId), "buffered", input.now + 1);
@@ -832,7 +844,7 @@ export class CollabStorage {
     if (this.openRoomForSession(input.targetSessionId)) throw httpError(409, "target session already belongs to an open room");
 
     const transaction = this.db.transaction(() => {
-      this.insertMember(room.id, input.targetSessionId, input.name, input.role, input.now);
+      this.insertMember(room.id, input.targetSessionId, input.name, input.role, input.now, input.spawnPrompt);
       this.db.run("INSERT INTO spawned_sessions (room_id, session_id, spawned_by, created_at) VALUES (?, ?, ?, ?)", [
         room.id,
         input.targetSessionId,
@@ -1088,10 +1100,10 @@ export class CollabStorage {
                 messages.kind AS message_kind,
                 messages.created_at AS message_created_at,
                 members.role AS member_role,
-                deliveries.agent AS agent,
-                deliveries.model_provider_id AS model_provider_id,
-                deliveries.model_id AS model_id,
-                deliveries.model_variant AS model_variant
+                members.agent AS agent,
+                members.model_provider_id AS model_provider_id,
+                members.model_id AS model_id,
+                members.model_variant AS model_variant
          FROM deliveries
          JOIN messages ON messages.id = deliveries.message_id
          JOIN rooms ON rooms.id = messages.room_id
@@ -1101,6 +1113,18 @@ export class CollabStorage {
           ORDER BY messages.created_at ASC, deliveries.created_at ASC, messages.id ASC`,
       )
       .all(targetSessionId);
+  }
+
+  memberAgentModel(roomId: string, sessionId: string): SpawnPromptOptions {
+    const row = this.db
+      .query<AgentModelRow, [string, string]>(
+        `SELECT agent, model_provider_id, model_id, model_variant
+         FROM members
+         WHERE room_id = ? AND session_id = ? AND state = 'active'
+         LIMIT 1`,
+      )
+      .get(roomId, sessionId);
+    return promptOptionsFromRow(row);
   }
 
   hasOpenPendingCollabQuestion(targetSessionId: string) {
@@ -1308,14 +1332,22 @@ export class CollabStorage {
       }));
   }
 
-  private insertMember(roomId: string, sessionId: string, name: string, role: string, joinedAt: number) {
-    this.db.run("INSERT INTO members (room_id, session_id, name, role, joined_at) VALUES (?, ?, ?, ?, ?)", [
-      roomId,
-      sessionId,
-      name,
-      role,
-      joinedAt,
-    ]);
+  private insertMember(roomId: string, sessionId: string, name: string, role: string, joinedAt: number, prompt?: SpawnPromptOptions) {
+    this.db.run(
+      `INSERT INTO members (room_id, session_id, name, role, joined_at, agent, model_provider_id, model_id, model_variant)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        roomId,
+        sessionId,
+        name,
+        role,
+        joinedAt,
+        prompt?.agent ?? null,
+        prompt?.model?.providerID ?? null,
+        prompt?.model?.modelID ?? null,
+        prompt?.model?.variant ?? null,
+      ],
+    );
   }
 
   private insertSystemMessage(roomId: string, body: string, kind: string, createdAt: number) {
@@ -1508,6 +1540,10 @@ export class CollabStorage {
         left_at                    INTEGER,
         removed_at                 INTEGER,
         removed_by                 TEXT,
+        agent                      TEXT,
+        model_provider_id          TEXT,
+        model_id                   TEXT,
+        model_variant              TEXT,
         PRIMARY KEY (room_id, session_id),
         UNIQUE (room_id, name)
       );
@@ -1565,6 +1601,10 @@ export class CollabStorage {
     this.ensureColumn("rooms", "public_message_updated_at", "INTEGER");
     this.ensureColumn("rooms", "public_message_updated_by", "TEXT");
     this.ensureColumn("messages", "parent_id", "TEXT");
+    this.ensureColumn("members", "agent", "TEXT");
+    this.ensureColumn("members", "model_provider_id", "TEXT");
+    this.ensureColumn("members", "model_id", "TEXT");
+    this.ensureColumn("members", "model_variant", "TEXT");
     this.ensureColumn("deliveries", "agent", "TEXT");
     this.ensureColumn("deliveries", "model_provider_id", "TEXT");
     this.ensureColumn("deliveries", "model_id", "TEXT");
@@ -1599,6 +1639,21 @@ function formatTimestamp(ms: number) {
 
 function pad(value: number) {
   return String(value).padStart(2, "0");
+}
+
+function promptOptionsFromRow(row?: AgentModelRow): SpawnPromptOptions {
+  if (!row) return {};
+  return {
+    agent: row.agent ?? undefined,
+    model:
+      row.model_provider_id && row.model_id
+        ? {
+            providerID: row.model_provider_id,
+            modelID: row.model_id,
+            variant: row.model_variant ?? undefined,
+          }
+        : undefined,
+  };
 }
 
 async function readJsonObject(request: Request) {
