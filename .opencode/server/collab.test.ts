@@ -887,7 +887,7 @@ describe("collab service", () => {
 
       await expect(service.attemptFlush("ses_worker", { type: "busy" }, [])).resolves.toEqual({ flushed: true, count: 1 });
       expect(client.prompts).toHaveLength(1);
-      expect(client.prompts[0].text).toContain("[Room Public Message]\nPinned: finish the public-message change.");
+      expect(client.prompts[0].text).toContain("[Public Message]\nPinned: finish the public-message change.");
       expect(client.prompts[0].text).toContain("Public message updated by planner:\nPinned: finish the public-message change.");
 
       await markAllDeliveriesInjected();
@@ -897,7 +897,7 @@ describe("collab service", () => {
         body: "Buffered work item.",
       });
       await expect(service.attemptFlush("ses_worker", { type: "idle" }, [])).resolves.toEqual({ flushed: true, count: 1 });
-      expect(client.prompts[1].text).toContain("[Room Public Message]\nPinned: finish the public-message change.");
+      expect(client.prompts[1].text).toContain("[Public Message]\nPinned: finish the public-message change.");
       expect(client.prompts[1].text).toContain("Buffered work item.");
 
       await markAllDeliveriesInjected();
@@ -907,7 +907,7 @@ describe("collab service", () => {
         body: "@worker Immediate work item.",
       });
       await expect(service.attemptFlush("ses_worker", { type: "busy" }, [])).resolves.toEqual({ flushed: true, count: 1 });
-      expect(client.prompts[2].text).toContain("[Room Public Message]\nPinned: finish the public-message change.");
+      expect(client.prompts[2].text).toContain("[Public Message]\nPinned: finish the public-message change.");
       expect(client.prompts[2].text).toContain("@worker Immediate work item.");
     } finally {
       await service.shutdown();
@@ -1834,9 +1834,9 @@ describe("collab service", () => {
       await expect(service.attemptFlush("ses_worker", { type: "busy" }, [])).resolves.toEqual({ flushed: true, count: 1 });
       expect(client.prompts).toHaveLength(1);
       expect(client.prompts[0].text).toContain(`[Room: ${room.name}`);
-      expect(client.prompts[0].text).toContain("Delivery: immediate");
-      expect(client.prompts[0].text).toContain("From: planner");
-      expect(client.prompts[0].text).toContain("Kind: task_assignment");
+      expect(client.prompts[0].text).not.toContain("Delivery: immediate");
+      expect(client.prompts[0].text).toContain("[Message]");
+      expect(client.prompts[0].text).toContain("|task_assignment] planner:");
       expect(client.prompts[0].text).toContain("@worker please take this now");
       expect(client.prompts[0].text).toContain("Reply to the room with agent-collab as worker");
 
@@ -1946,6 +1946,7 @@ describe("collab service", () => {
       await expect(service.attemptFlush("ses_worker", { type: "idle" }, [])).resolves.toEqual({ flushed: true, count: 2 });
       expect(client.prompts[0].text).toContain("Join Bootstrap");
       expect(client.prompts[0].text).toContain(`Custom reply for worker/implementer in ${room.name} from system.`);
+      expect(client.prompts[0].text.match(/Custom reply for worker\/implementer/g)).toHaveLength(1);
       expect(client.prompts[0].text).not.toContain("Reply to the room with agent-collab as worker");
 
       await markAllDeliveriesInjected();
@@ -1964,7 +1965,7 @@ describe("collab service", () => {
         body: "@worker Immediate configured reply.",
       });
       await expect(service.attemptFlush("ses_worker", { type: "busy" }, [])).resolves.toEqual({ flushed: true, count: 1 });
-      expect(client.prompts[2].text).toContain("Delivery: immediate");
+      expect(client.prompts[2].text).not.toContain("Delivery: immediate");
       expect(client.prompts[2].text).toContain(`Custom reply for worker/implementer in ${room.name} from planner.`);
 
       await markAllDeliveriesInjected();
@@ -1975,7 +1976,7 @@ describe("collab service", () => {
         hard: true,
       });
       await expect(service.attemptHardFlush(hard.body.id)).resolves.toEqual({ flushed: true, count: 1 });
-      expect(client.prompts[3].text).toContain("Delivery: hard");
+      expect(client.prompts[3].text).not.toContain("Delivery: hard");
       expect(client.prompts[3].text).toContain(`Custom reply for worker/implementer in ${room.name} from planner.`);
 
       await markAllDeliveriesInjected();
@@ -1992,7 +1993,7 @@ describe("collab service", () => {
       await expect(service.attemptFlush("ses_worker", { type: "busy" }, [])).resolves.toEqual({ flushed: true, count: 2 });
       expect(client.prompts[4].text).toContain("Older configured backlog.");
       expect(client.prompts[4].text).toContain("@worker Combined configured backlog.");
-      expect(client.prompts[4].text.match(/Custom reply for worker\/implementer/g)).toHaveLength(2);
+      expect(client.prompts[4].text.match(/Custom reply for worker\/implementer/g)).toHaveLength(1);
     } finally {
       await service.shutdown();
     }
@@ -2014,7 +2015,10 @@ describe("collab service", () => {
       await expect(service.attemptHardFlush(hard.body.id)).resolves.toEqual({ flushed: true, count: 2 });
       expect(client.events).toEqual(["abort:ses_worker", "abort:ses_reviewer", "prompt:ses_worker", "prompt:ses_reviewer"]);
       expect(client.prompts).toHaveLength(2);
-      expect(client.prompts.map((prompt) => prompt.text)).toEqual([expect.stringContaining("Delivery: hard"), expect.stringContaining("Delivery: hard")]);
+      expect(client.prompts.map((prompt) => prompt.text)).toEqual([
+        expect.not.stringContaining("Delivery: hard"),
+        expect.not.stringContaining("Delivery: hard"),
+      ]);
     } finally {
       await service.shutdown();
     }
@@ -2107,6 +2111,45 @@ describe("collab service", () => {
         ["reviewer", "buffered"],
         ["worker", "buffered"],
       ]);
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("combined buffered prompt uses one compact room transcript", async () => {
+    const client = mockClient();
+    const service = await startedService(client);
+    try {
+      const room = await roomWithMembers(service);
+      await routeJson(service, "POST", `/room/${room.room_id}/public-message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "Pinned compact context.",
+      });
+      await markAllDeliveriesInjected();
+      await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "First compact update",
+      });
+      await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_reviewer",
+        from: "reviewer",
+        body: "Second compact update",
+      });
+
+      await expect(service.attemptFlush("ses_worker", { type: "idle" }, [])).resolves.toEqual({ flushed: true, count: 2 });
+      expect(client.prompts).toHaveLength(1);
+      const prompt = client.prompts[0].text;
+      expect(prompt.match(/\[Room: /g)).toHaveLength(1);
+      expect(prompt.match(/\[Public Message\]/g)).toHaveLength(1);
+      expect(prompt.match(/\[Message\]/g)).toHaveLength(1);
+      expect(prompt.match(/Reply to the room with agent-collab as worker/g)).toHaveLength(1);
+      expect(prompt).toContain("[Public Message]\nPinned compact context.");
+      expect(prompt).toMatch(/\[\d{14}\|note\] planner:\n\nFirst compact update/);
+      expect(prompt).toMatch(/\[\d{14}\|note\] reviewer:\n\nSecond compact update/);
+      expect(prompt.indexOf("First compact update")).toBeLessThan(prompt.indexOf("Second compact update"));
+      expect(prompt).not.toContain("Delivery: buffered");
     } finally {
       await service.shutdown();
     }
@@ -2235,7 +2278,8 @@ describe("collab service", () => {
       expect(client.prompts[0].text).toContain("[Room: bootstrap-order-");
       expect(client.prompts[0].text.indexOf("Join Bootstrap")).toBeLessThan(client.prompts[0].text.indexOf("Later room traffic"));
       expect(client.prompts[0].text).toContain("Reply with ready to confirm your availability");
-      expect(client.prompts[0].text).toContain("Reply to the room with agent-collab as worker");
+      expect(client.prompts[0].text.match(/Reply to the room with agent-collab as worker/g)).toHaveLength(1);
+      expect(client.prompts[0].text).not.toContain("Delivery:");
     } finally {
       await service.shutdown();
     }

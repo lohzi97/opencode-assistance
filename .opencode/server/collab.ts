@@ -608,45 +608,55 @@ export class CollabService {
   }
 
   private formatDeliveryPrompt(backlog: PendingDeliveryRow[], replyInstructionTemplate: string) {
-    return backlog.map((delivery) => this.formatDeliverySection(delivery, replyInstructionTemplate)).join("\n\n---\n\n");
-  }
-
-  private formatDeliverySection(delivery: PendingDeliveryRow, replyInstructionTemplate: string) {
+    const bootstrap = backlog.filter((delivery) => this.isBootstrapDelivery(delivery));
+    const normal = backlog.filter((delivery) => !this.isBootstrapDelivery(delivery));
+    const first = backlog[0];
+    const lastNormal = normal.at(-1);
+    const replySource = lastNormal ?? bootstrap.at(-1) ?? first;
     const replyInstruction = renderTemplate(replyInstructionTemplate, {
-      room: delivery.room_name,
-      alias: delivery.target_name,
-      role: delivery.member_role ?? "member",
-      from: delivery.message_sender_name,
+      room: replySource.room_name,
+      alias: replySource.target_name,
+      role: replySource.member_role ?? "member",
+      from: replySource.message_sender_name,
     });
-    if (delivery.mode === "bootstrap" || delivery.message_kind === "join_bootstrap") {
-      return [
-        `[Room: ${delivery.room_name} | Join Bootstrap]`,
-        "",
-        `Alias: ${delivery.target_name}`,
-        `Role: ${delivery.member_role ?? "member"}`,
-        "",
-        delivery.public_message ? `[Room Public Message]\n${delivery.public_message}\n` : undefined,
-        "You have joined a room for discussion. Reply with ready to confirm your availability.",
-        "",
-        "---",
-        replyInstruction,
-      ]
-        .filter((line): line is string => line !== undefined)
-        .join("\n");
-    }
-
     return [
-      `[Room: ${delivery.room_name} | Delivery: ${delivery.mode} | From: ${delivery.message_sender_name} | Kind: ${delivery.message_kind}]`,
+      `[Room: ${first.room_name}]`,
       "",
-      delivery.public_message ? `[Room Public Message]\n${delivery.public_message}\n` : undefined,
-      "[Message]",
-      delivery.message_body,
-      "",
+      first.public_message ? `[Public Message]\n${first.public_message}\n` : undefined,
+      ...bootstrap.map((delivery) => this.formatBootstrapBlock(delivery)),
+      normal.length > 0 ? this.formatMessageBlock(normal) : undefined,
       "---",
       replyInstruction,
     ]
       .filter((line): line is string => line !== undefined)
       .join("\n");
+  }
+
+  private isBootstrapDelivery(delivery: PendingDeliveryRow) {
+    return delivery.mode === "bootstrap" || delivery.message_kind === "join_bootstrap";
+  }
+
+  private formatBootstrapBlock(delivery: PendingDeliveryRow) {
+    return [
+      "[Join Bootstrap]",
+      "",
+      `Alias: ${delivery.target_name}`,
+      `Role: ${delivery.member_role ?? "member"}`,
+      "",
+      "You have joined a room for discussion. Reply with ready to confirm your availability.",
+    ]
+      .join("\n");
+  }
+
+  private formatMessageBlock(deliveries: PendingDeliveryRow[]) {
+    return [
+      "[Message]",
+      "",
+      deliveries
+        .map((delivery) => [`[${formatTimestamp(delivery.message_created_at)}|${delivery.message_kind}] ${delivery.message_sender_name}:`, "", delivery.message_body].join("\n"))
+        .join("\n\n"),
+      "",
+    ].join("\n");
   }
 
   private async logDeliveryError(message: string, error: unknown) {
