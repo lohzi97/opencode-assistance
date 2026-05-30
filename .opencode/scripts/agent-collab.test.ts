@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_AGENT_COLLAB_URL, parseArgs, resolveBaseUrl, runAgentCollabCli } from "./agent-collab";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DEFAULT_AGENT_COLLAB_URL, parseArgs, readBody, resolveBaseUrl, runAgentCollabCli } from "./agent-collab";
 
 type RequestRecord = {
   url: string;
@@ -230,6 +233,139 @@ describe("agent-collab spawn command", () => {
       directory: "/tmp/project",
       initial_prompt: "Implement this.",
     });
+  });
+});
+
+describe("agent-collab body input helpers", () => {
+  test("reads direct text, files, explicit stdin, and rejects missing bodies", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-collab-cli-"));
+    try {
+      const file = join(dir, "body.txt");
+      await writeFile(file, "from file", "utf8");
+      const io = { stdin: { text: async () => "from stdin" } };
+
+      await expect(readBody(parseArgs(["--body", "from text"]), io, { text: "body", file: "body-file", stdinTextValue: "-" })).resolves.toBe(
+        "from text",
+      );
+      await expect(readBody(parseArgs(["--body-file", file]), io, { text: "body", file: "body-file", stdinTextValue: "-" })).resolves.toBe(
+        "from file",
+      );
+      await expect(readBody(parseArgs(["--body", "-"]), io, { text: "body", file: "body-file", stdinTextValue: "-" })).resolves.toBe(
+        "from stdin",
+      );
+      await expect(readBody(parseArgs([]), io, { text: "body", file: "body-file", stdinTextValue: "-" })).rejects.toThrow(
+        "provide exactly one body input source",
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("agent-collab public-message commands", () => {
+  test("set and clear send payloads and support human and JSON outputs", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-collab-cli-"));
+    try {
+      const file = join(dir, "public-message.txt");
+      await writeFile(file, "Pinned from file", "utf8");
+      const client = mockCli({ ok: true, body: { name: "r", state: "open", public_message: "Pinned from file" } });
+
+      expect(
+        await client.run(["room", "public-message", "set", "--room", "r", "--session", "ses_planner", "--from", "planner", "--file", file]),
+      ).toBe(0);
+      expect(await client.run(["room", "public-message", "clear", "--room", "r", "--session", "ses_planner", "--from", "planner", "--json"])).toBe(0);
+
+      expect(client.requests[0]).toMatchObject({
+        method: "POST",
+        url: "http://127.0.0.1:9100/room/r/public-message",
+        body: { session_id: "ses_planner", from: "planner", body: "Pinned from file" },
+      });
+      expect(client.requests[1]).toMatchObject({
+        method: "DELETE",
+        url: "http://127.0.0.1:9100/room/r/public-message",
+        body: { session_id: "ses_planner", from: "planner" },
+      });
+      expect(client.stdoutText()).toContain("Room r is open.");
+      expect(client.stdoutText()).toContain('"public_message": "Pinned from file"');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("agent-collab send command", () => {
+  test("send supports text, file, stdin, kind, hard flag, and server validation errors", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-collab-cli-"));
+    try {
+      const file = join(dir, "message.txt");
+      await writeFile(file, "Message from file", "utf8");
+      const client = mockCli({ ok: true, status: 201, body: { id: "msg_1", kind: "note" } }, "Message from stdin");
+
+      await client.run(["send", "--room", "r", "--session", "ses_worker", "--from", "worker", "--body", "Message from text", "--kind", "note"]);
+      await client.run(["send", "--room", "r", "--session", "ses_worker", "--from", "worker", "--body-file", file]);
+      await client.run(["send", "--room", "r", "--session", "ses_planner", "--from", "planner", "--body", "-", "--hard"]);
+
+      expect(client.requests[0].body).toEqual({ session_id: "ses_worker", from: "worker", body: "Message from text", kind: "note" });
+      expect(client.requests[1].body).toEqual({ session_id: "ses_worker", from: "worker", body: "Message from file" });
+      expect(client.requests[2].body).toEqual({ session_id: "ses_planner", from: "planner", body: "Message from stdin", hard: true });
+
+      const rejected = mockCli({ ok: false, status: 400, body: { error: "unknown mention: @missing" } });
+      expect(await rejected.run(["send", "--room", "r", "--session", "ses_planner", "--from", "planner", "--body", "@missing help"])).toBe(1);
+      expect(rejected.stderrText()).toContain("Error: unknown mention: @missing");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("agent-collab ask and answer commands", () => {
+  test("ask and answer send parent, body, options, and propagate non-2xx errors", async () => {
+    const client = mockCli({ ok: true, status: 201, body: { id: "msg_question", kind: "question" } });
+
+    await client.run([
+      "ask",
+      "--room",
+      "r",
+      "--session",
+      "ses_planner",
+      "--from",
+      "planner",
+      "--body",
+      "@worker Choose an option",
+      "--options",
+      "yes,no",
+    ]);
+    await client.run(["answer", "--room", "r", "--session", "ses_worker", "--from", "worker", "--parent", "msg_question", "--body", "yes"]);
+
+    expect(client.requests[0]).toMatchObject({
+      method: "POST",
+      url: "http://127.0.0.1:9100/room/r/ask",
+      body: { session_id: "ses_planner", from: "planner", body: "@worker Choose an option", options: ["yes", "no"] },
+    });
+    expect(client.requests[1]).toMatchObject({
+      method: "POST",
+      url: "http://127.0.0.1:9100/room/r/answer",
+      body: { session_id: "ses_worker", from: "worker", parent: "msg_question", body: "yes" },
+    });
+
+    const rejected = mockCli({ ok: false, status: 409, body: { error: "question already answered by target" } });
+    expect(await rejected.run(["answer", "--room", "r", "--session", "ses_worker", "--from", "worker", "--parent", "msg_question", "--body", "again"])).toBe(1);
+    expect(rejected.stderrText()).toContain("Error: question already answered by target");
+  });
+});
+
+describe("agent-collab messages command", () => {
+  test("messages sends room, session, member, since, limit, and supports JSON output", async () => {
+    const client = mockCli({ ok: true, body: { room_id: "room_r", messages: [{ id: "msg_1", body: "hello" }] } });
+
+    await client.run(["messages", "--room", "r"]);
+    await client.run(["messages", "--room", "r", "--session", "ses_worker"]);
+    await client.run(["messages", "--room", "r", "--session", "ses_worker", "--member", "worker", "--since", "msg_1", "--limit", "10", "--json"]);
+
+    expect(client.requests[0].url).toBe("http://127.0.0.1:9100/room/r/messages");
+    expect(client.requests[1].url).toBe("http://127.0.0.1:9100/room/r/messages?session_id=ses_worker");
+    expect(client.requests[2].url).toBe("http://127.0.0.1:9100/room/r/messages?session_id=ses_worker&from=worker&since=msg_1&limit=10");
+    expect(client.stdoutText()).toContain('"messages"');
   });
 });
 

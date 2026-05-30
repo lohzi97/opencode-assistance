@@ -1434,6 +1434,19 @@ describe("collab service", () => {
       expect(message.deliveries).toEqual([
         expect.objectContaining({ target_session_id: "ses_worker", target_name: "worker", mode: "immediate", state: "injected", injected_at: 123 }),
       ]);
+
+      const workerByName = await routeJson(service, "GET", `/room/${room.room_id}/messages?from=worker&since=${workerMessage.body.id}&limit=2`);
+      expect(workerByName.status).toBe(200);
+      expect(workerByName.body.member).toEqual({ session_id: "ses_worker", name: "worker" });
+      expect(workerByName.body.messages.map((entry: { body: string }) => entry.body)).toContain("@worker please implement");
+
+      const workerBySession = await routeJson(service, "GET", `/room/${room.room_id}/messages?session_id=ses_worker`);
+      expect(workerBySession.status).toBe(200);
+      expect(workerBySession.body.member).toEqual({ session_id: "ses_worker", name: "worker" });
+
+      const mismatchedView = await routeJson(service, "GET", `/room/${room.room_id}/messages?session_id=ses_worker&from=reviewer`);
+      expect(mismatchedView.status).toBe(403);
+      expect(mismatchedView.body.error).toBe("active member required");
     } finally {
       await service.shutdown();
     }

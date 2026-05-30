@@ -425,9 +425,6 @@ export class CollabService {
     const sessionId = params.get("session_id") ?? undefined;
     const from = params.get("from") ?? undefined;
     if (sessionId !== undefined || from !== undefined) {
-      if (!sessionId) throw httpError(400, "session_id is required for member message view");
-      if (!from) throw httpError(400, "from is required for member message view");
-      assertValidAlias(from, "from");
       return this.db!.memberMessages(roomRef, sessionId, from);
     }
     return this.db!.roomMessages(roomRef);
@@ -952,9 +949,9 @@ export class CollabStorage {
     return { room_id: room.id, messages: messages.map((message) => this.publicMessage(message, deliveries)) };
   }
 
-  memberMessages(roomRef: string, sessionId: string, from: string) {
+  memberMessages(roomRef: string, sessionId?: string, from?: string) {
     const room = this.getRoom(roomRef);
-    const member = this.requireActiveMember(room.id, sessionId, from);
+    const member = this.requireActiveMessageViewMember(room.id, sessionId, from);
     const deliveries = this.memberDeliveryRows(room.id, member.session_id);
     const messages = this.messageRowsById(deliveries.map((delivery) => delivery.message_id));
     return {
@@ -1169,6 +1166,15 @@ export class CollabStorage {
         "SELECT * FROM members WHERE room_id = ? AND session_id = ? AND name = ? AND state = 'active' LIMIT 1",
       )
       .get(roomId, sessionId, name);
+    if (!member) throw httpError(403, "active member required");
+    return member;
+  }
+
+  private requireActiveMessageViewMember(roomId: string, sessionId?: string, name?: string) {
+    if (name !== undefined) assertValidAlias(name, "from");
+
+    if (sessionId !== undefined && name !== undefined) return this.requireActiveMember(roomId, sessionId, name);
+    const member = sessionId !== undefined ? this.activeMemberBySession(roomId, sessionId) : name ? this.activeMemberByName(roomId, name) : undefined;
     if (!member) throw httpError(403, "active member required");
     return member;
   }

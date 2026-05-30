@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import { readFile } from "node:fs/promises";
 import { stdin as processStdin, stdout as processStdout, stderr as processStderr } from "node:process";
 
 type Env = Record<string, string | undefined>;
@@ -36,7 +37,7 @@ type RequestOptions = {
 
 export const DEFAULT_AGENT_COLLAB_URL = "http://127.0.0.1:9100";
 
-const BOOLEAN_FLAGS = new Set(["all", "closed", "json", "password-stdin"]);
+const BOOLEAN_FLAGS = new Set(["all", "closed", "hard", "json", "password-stdin", "stdin"]);
 
 class CliError extends Error {
   constructor(
@@ -144,9 +145,12 @@ async function dispatch(context: CommandContext) {
   if (group === "join") return joinRoom(context);
   if (group === "leave") return leaveRoom(context);
   if (group === "spawn") return spawnMember(context);
-  if (group === "room" && action === "public-message" && subaction) {
-    throw new CliError("room public-message commands are not implemented in this change");
-  }
+  if (group === "room" && action === "public-message" && subaction === "set") return setPublicMessage(context);
+  if (group === "room" && action === "public-message" && subaction === "clear") return clearPublicMessage(context);
+  if (group === "send") return sendMessage(context);
+  if (group === "ask") return askQuestion(context);
+  if (group === "answer") return answerQuestion(context);
+  if (group === "messages") return listMessages(context);
   throw new CliError("unknown command");
 }
 
@@ -237,6 +241,99 @@ function spawnMember({ args, client }: CommandContext) {
       initial_prompt: optional(args, "initial-prompt"),
     }),
   });
+}
+
+async function setPublicMessage({ args, client, io }: CommandContext) {
+  const body = await readBody(args, io, { text: "text", file: "file", stdin: "stdin" });
+  return client.request(`/room/${encodeURIComponent(required(args, "room"))}/public-message`, {
+    method: "POST",
+    body: {
+      session_id: required(args, "session"),
+      from: required(args, "from"),
+      body,
+    },
+  });
+}
+
+function clearPublicMessage({ args, client }: CommandContext) {
+  return client.request(`/room/${encodeURIComponent(required(args, "room"))}/public-message`, {
+    method: "DELETE",
+    body: {
+      session_id: required(args, "session"),
+      from: required(args, "from"),
+    },
+  });
+}
+
+async function sendMessage({ args, client, io }: CommandContext) {
+  const body = await readBody(args, io, { text: "body", file: "body-file", stdinTextValue: "-" });
+  return client.request(`/room/${encodeURIComponent(required(args, "room"))}/message`, {
+    method: "POST",
+    body: compact({
+      session_id: required(args, "session"),
+      from: required(args, "from"),
+      body,
+      kind: optional(args, "kind"),
+      hard: args.flags.hard ? true : undefined,
+    }),
+  });
+}
+
+async function askQuestion({ args, client, io }: CommandContext) {
+  const body = await readBody(args, io, { text: "body", stdinTextValue: "-" });
+  const options = optional(args, "options")
+    ?.split(",")
+    .map((option) => option.trim())
+    .filter(Boolean);
+  return client.request(`/room/${encodeURIComponent(required(args, "room"))}/ask`, {
+    method: "POST",
+    body: compact({
+      session_id: required(args, "session"),
+      from: required(args, "from"),
+      body,
+      options: options && options.length > 0 ? options : undefined,
+    }),
+  });
+}
+
+async function answerQuestion({ args, client, io }: CommandContext) {
+  const body = await readBody(args, io, { text: "body", stdinTextValue: "-" });
+  return client.request(`/room/${encodeURIComponent(required(args, "room"))}/answer`, {
+    method: "POST",
+    body: {
+      session_id: required(args, "session"),
+      from: required(args, "from"),
+      parent: required(args, "parent"),
+      body,
+    },
+  });
+}
+
+function listMessages({ args, client }: CommandContext) {
+  return client.request(`/room/${encodeURIComponent(required(args, "room"))}/messages`, {
+    search: compact({
+      session_id: optional(args, "session"),
+      from: optional(args, "member"),
+      since: optional(args, "since"),
+      limit: optional(args, "limit"),
+    }) as Record<string, string>,
+  });
+}
+
+export async function readBody(
+  args: ParsedArgs,
+  io: Pick<CliIO, "stdin">,
+  names: { text?: string; file?: string; stdin?: string; stdinTextValue?: string },
+) {
+  const text = names.text ? optional(args, names.text) : undefined;
+  const file = names.file ? optional(args, names.file) : undefined;
+  const explicitStdin = names.stdin ? Boolean(args.flags[names.stdin]) : false;
+  const textMeansStdin = text !== undefined && names.stdinTextValue !== undefined && text === names.stdinTextValue;
+  const selected = [text !== undefined && !textMeansStdin, file !== undefined, explicitStdin || textMeansStdin].filter(Boolean).length;
+  if (selected !== 1) throw new CliError("provide exactly one body input source");
+  if (text !== undefined && !textMeansStdin) return text;
+  if (file !== undefined) return readFile(file, "utf8");
+  return readStdinText(io.stdin);
 }
 
 async function readPassword(args: ParsedArgs, io: CliIO) {
