@@ -83,6 +83,37 @@ describe("agent-collab room commands", () => {
     expect(client.requests[0].url).toBe("http://127.0.0.1:9100/room/list?state=closed");
     expect(client.requests[1].url).toBe("http://127.0.0.1:9100/room/list?state=all");
   });
+
+  test("room close requires planner identity and sends delete payload", async () => {
+    const missing = mockCli({ ok: true, body: {} });
+    expect(await missing.run(["room", "close", "--room", "r", "--session", "ses_planner"])).toBe(1);
+    expect(missing.stderrText()).toContain("--from is required");
+
+    const client = mockCli({ ok: true, body: { name: "r", state: "closed" } });
+    expect(await client.run(["room", "close", "--room", "r", "--session", "ses_planner", "--from", "planner"])).toBe(0);
+
+    expect(client.requests[0]).toMatchObject({
+      method: "DELETE",
+      url: "http://127.0.0.1:9100/room/r",
+      body: { session_id: "ses_planner", from: "planner" },
+    });
+  });
+
+  test("room close supports human output, JSON passthrough, and server errors", async () => {
+    const client = mockCli({ ok: true, body: { room_id: "room_r", name: "r", state: "closed", closed_at: 1 } });
+
+    expect(await client.run(["room", "close", "--room", "r", "--session", "ses_planner", "--from", "planner"])).toBe(0);
+    expect(await client.run(["room", "close", "--room", "r", "--session", "ses_planner", "--from", "planner", "--json"])).toBe(0);
+
+    expect(client.stdoutText()).toContain("Room closed.");
+    expect(client.stdoutText()).toContain("Room: r");
+    expect(client.stdoutText()).toContain("State: closed");
+    expect(client.stdoutText()).toContain('"closed_at": 1');
+
+    const rejected = mockCli({ ok: false, status: 403, body: { error: "caller is not an active planner" } });
+    expect(await rejected.run(["room", "close", "--room", "r", "--session", "ses_worker", "--from", "worker"])).toBe(1);
+    expect(rejected.stderrText()).toContain("Error: caller is not an active planner");
+  });
 });
 
 describe("agent-collab membership commands", () => {

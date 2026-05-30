@@ -140,6 +140,7 @@ async function dispatch(context: CommandContext) {
   if (group === "room" && action === "create") return createRoom(context);
   if (group === "room" && action === "status") return roomStatus(context);
   if (group === "room" && action === "list") return roomList(context);
+  if (group === "room" && action === "close") return closeRoom(context);
   if (group === "member" && action === "add") return memberAdd(context);
   if (group === "member" && action === "remove") return memberRemove(context);
   if (group === "join") return joinRoom(context);
@@ -173,6 +174,16 @@ function roomStatus({ args, client }: CommandContext) {
 function roomList({ args, client }: CommandContext) {
   const state = args.flags.all ? "all" : args.flags.closed ? "closed" : undefined;
   return client.request("/room/list", state ? { search: { state } } : undefined);
+}
+
+function closeRoom({ args, client }: CommandContext) {
+  return client.request(`/room/${encodeURIComponent(required(args, "room"))}`, {
+    method: "DELETE",
+    body: {
+      session_id: required(args, "session"),
+      from: required(args, "from"),
+    },
+  });
 }
 
 function memberAdd({ args, client }: CommandContext) {
@@ -403,6 +414,9 @@ function formatHuman(positionals: string[], result: unknown) {
       `Planner password: ${String(result.planner_password)}`,
       "Warning: this planner password will not be shown again.",
     ].join("\n");
+  }
+  if (group === "room" && action === "close" && isRecord(result)) {
+    return ["Room closed.", `Room: ${String(result.name ?? result.room_id ?? "unknown")}`, `State: ${String(result.state ?? "closed")}`].join("\n");
   }
   if (isRecord(result) && typeof result.name === "string") return `Room ${result.name} is ${String(result.state ?? "unknown")}.`;
   if (isRecord(result) && Array.isArray(result.rooms)) return result.rooms.map((room) => formatRoomLine(room)).join("\n") || "No rooms.";
