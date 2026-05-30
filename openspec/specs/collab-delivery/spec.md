@@ -25,19 +25,31 @@ The engine SHALL deliver the join bootstrap before later room traffic for newly 
 - **THEN** the injected batch places the bootstrap content before the task message
 
 ### Requirement: Collaboration injections are self-contained
-Every injected delivery SHALL include room identity, message content or combined batch, current public message when present, and reply instructions rendered from the resolved `collab.reply_instruction` template for the target member.
+Every injected delivery SHALL include room identity, message content or combined batch, current public message when present, and reply instructions rendered from the resolved `collab.reply_instruction` template for the target member. Normal room-message deliveries SHALL render as one compact room transcript per injected prompt, with room-level context and reply guidance appearing once for the whole prompt rather than once per delivered message. Normal message entries SHALL be rendered chronologically as `[<YYYYMMDDHHmmss>|<kind>] <from>:` followed by the message body, where the timestamp is derived from the message creation time using the service timestamp formatter. Normal message prompt text SHALL NOT include delivery mode labels.
 
-#### Scenario: Buffered prompt format
-- **WHEN** buffered messages are injected
-- **THEN** the prompt contains room name, message content, separator, and reply instruction
+#### Scenario: Single buffered prompt format
+- **WHEN** one buffered room message is injected
+- **THEN** the prompt contains one room header, the message content as one timestamped sender/kind entry under `[Message]`, a separator, and one reply instruction
 
-#### Scenario: Configured reply instruction appears in delivered prompt
-- **WHEN** `collab.reply_instruction` is configured and a delivery is injected
-- **THEN** the prompt reply guidance is rendered from the configured template with target member variables
+#### Scenario: Combined buffered prompt format avoids repeated room context
+- **WHEN** multiple buffered room messages are injected in one chronological batch and a room public message is present
+- **THEN** the prompt contains the room name once, the public message once, one `[Message]` block, one chronological timestamped entry per delivered message, and one reply instruction at the end
+
+#### Scenario: Delivery mode is omitted from normal prompt text
+- **WHEN** buffered, immediate, or hard normal room messages are injected
+- **THEN** the prompt text does not include `Delivery: buffered`, `Delivery: immediate`, or `Delivery: hard`
+
+#### Scenario: Configured reply instruction appears once in combined prompt
+- **WHEN** `collab.reply_instruction` is configured and multiple normal room messages are injected in one prompt
+- **THEN** the prompt reply guidance is rendered once from the configured template with target member variables
 
 #### Scenario: Fallback reply instruction remains available
 - **WHEN** no `collab.reply_instruction` is configured and a delivery is injected
 - **THEN** the prompt reply guidance uses the built-in fallback template
+
+#### Scenario: Join bootstrap remains first in mixed prompt
+- **WHEN** a target receives a join bootstrap and later normal room traffic in the same injected prompt
+- **THEN** the bootstrap onboarding content appears before the normal `[Message]` transcript and the resolved reply instruction appears once at the end of the prompt
 
 ### Requirement: Immediate soft delivery respects soft blockers
 The engine SHALL deliver immediate messages during `busy` but SHALL block them during pending user question or `retry`.
