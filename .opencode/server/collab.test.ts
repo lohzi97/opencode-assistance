@@ -1838,6 +1838,7 @@ describe("collab service", () => {
       expect(client.prompts[0].text).toContain("From: planner");
       expect(client.prompts[0].text).toContain("Kind: task_assignment");
       expect(client.prompts[0].text).toContain("@worker please take this now");
+      expect(client.prompts[0].text).toContain("Reply to the room with agent-collab as worker");
 
       await routeJson(service, "POST", `/room/${room.room_id}/message`, {
         session_id: "ses_planner",
@@ -1929,6 +1930,69 @@ describe("collab service", () => {
       } finally {
         storage.close();
       }
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("configured reply instruction renders target variables across delivery modes", async () => {
+    const client = mockClient({ statuses: { ses_worker: { type: "idle" } } });
+    const service = await startedService(client, {
+      reply_instruction: { text: "Custom reply for {alias}/{role} in {room} from {from}." },
+    });
+    try {
+      const room = await roomWithMembers(service);
+
+      await expect(service.attemptFlush("ses_worker", { type: "idle" }, [])).resolves.toEqual({ flushed: true, count: 2 });
+      expect(client.prompts[0].text).toContain("Join Bootstrap");
+      expect(client.prompts[0].text).toContain(`Custom reply for worker/implementer in ${room.name} from system.`);
+      expect(client.prompts[0].text).not.toContain("Reply to the room with agent-collab as worker");
+
+      await markAllDeliveriesInjected();
+      await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "Buffered configured reply.",
+      });
+      await expect(service.attemptFlush("ses_worker", { type: "idle" }, [])).resolves.toEqual({ flushed: true, count: 1 });
+      expect(client.prompts[1].text).toContain(`Custom reply for worker/implementer in ${room.name} from planner.`);
+
+      await markAllDeliveriesInjected();
+      await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "@worker Immediate configured reply.",
+      });
+      await expect(service.attemptFlush("ses_worker", { type: "busy" }, [])).resolves.toEqual({ flushed: true, count: 1 });
+      expect(client.prompts[2].text).toContain("Delivery: immediate");
+      expect(client.prompts[2].text).toContain(`Custom reply for worker/implementer in ${room.name} from planner.`);
+
+      await markAllDeliveriesInjected();
+      const hard = await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "@worker Hard configured reply.",
+        hard: true,
+      });
+      await expect(service.attemptHardFlush(hard.body.id)).resolves.toEqual({ flushed: true, count: 1 });
+      expect(client.prompts[3].text).toContain("Delivery: hard");
+      expect(client.prompts[3].text).toContain(`Custom reply for worker/implementer in ${room.name} from planner.`);
+
+      await markAllDeliveriesInjected();
+      await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "Older configured backlog.",
+      });
+      await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "@worker Combined configured backlog.",
+      });
+      await expect(service.attemptFlush("ses_worker", { type: "busy" }, [])).resolves.toEqual({ flushed: true, count: 2 });
+      expect(client.prompts[4].text).toContain("Older configured backlog.");
+      expect(client.prompts[4].text).toContain("@worker Combined configured backlog.");
+      expect(client.prompts[4].text.match(/Custom reply for worker\/implementer/g)).toHaveLength(2);
     } finally {
       await service.shutdown();
     }

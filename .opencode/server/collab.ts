@@ -478,8 +478,11 @@ export class CollabService {
     }
 
     try {
+      const replyInstructionTemplate = await this.replyInstructionTemplate();
       for (const batch of batches) {
-        await this.client.promptAsync(batch.target.target_session_id, { parts: [{ type: "text", text: this.formatDeliveryPrompt(batch.backlog) }] });
+        await this.client.promptAsync(batch.target.target_session_id, {
+          parts: [{ type: "text", text: this.formatDeliveryPrompt(batch.backlog, replyInstructionTemplate) }],
+        });
       }
     } catch (error) {
       const reason = `hard injection failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -513,7 +516,7 @@ export class CollabService {
     const selection = this.deliverableBacklog(targetSessionId, backlog, status, questions);
     if (selection.reason) return { flushed: false, reason: selection.reason };
 
-    const prompt = this.formatDeliveryPrompt(selection.backlog);
+    const prompt = this.formatDeliveryPrompt(selection.backlog, await this.replyInstructionTemplate());
     try {
       await this.client.promptAsync(targetSessionId, { ...this.promptOptions(selection.backlog), parts: [{ type: "text", text: prompt }] });
       this.db.markDeliveriesInjected(selection.backlog, Date.now());
@@ -577,12 +580,21 @@ export class CollabService {
     return undefined;
   }
 
-  private formatDeliveryPrompt(backlog: PendingDeliveryRow[]) {
-    return backlog.map((delivery) => this.formatDeliverySection(delivery)).join("\n\n---\n\n");
+  private async replyInstructionTemplate() {
+    return await loadTemplate(this.config?.reply_instruction, FALLBACK_REPLY_INSTRUCTION);
   }
 
-  private formatDeliverySection(delivery: PendingDeliveryRow) {
-    const replyInstruction = FALLBACK_REPLY_INSTRUCTION.replace("{alias}", delivery.target_name);
+  private formatDeliveryPrompt(backlog: PendingDeliveryRow[], replyInstructionTemplate: string) {
+    return backlog.map((delivery) => this.formatDeliverySection(delivery, replyInstructionTemplate)).join("\n\n---\n\n");
+  }
+
+  private formatDeliverySection(delivery: PendingDeliveryRow, replyInstructionTemplate: string) {
+    const replyInstruction = renderTemplate(replyInstructionTemplate, {
+      room: delivery.room_name,
+      alias: delivery.target_name,
+      role: delivery.member_role ?? "member",
+      from: delivery.message_sender_name,
+    });
     if (delivery.mode === "bootstrap" || delivery.message_kind === "join_bootstrap") {
       return [
         `[Room: ${delivery.room_name} | Join Bootstrap]`,
@@ -1359,7 +1371,6 @@ export class CollabStorage {
       `You joined ${room.name} as ${target.name} (${role}).`,
       room.public_message ? `Room public message: ${room.public_message}` : undefined,
       "Reply with ready to confirm your availability.",
-      FALLBACK_REPLY_INSTRUCTION.replace("{alias}", target.name),
     ]
       .filter((line): line is string => Boolean(line))
       .join("\n");
