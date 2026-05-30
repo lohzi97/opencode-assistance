@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define the planner-managed session spawning capability for collaboration rooms: OpenCode session creation with explicit agent/model/directory selection, join bootstrap and initial prompt ordering, and template-rendered spawn instructions. This spec is layered on top of `collab-core` (room lifecycle, membership governance) and `collab-delivery` (bootstrap-first injection mechanics).
+Define the planner-managed session spawning capability for collaboration rooms: OpenCode session creation with explicit agent/model/directory selection, join bootstrap and initial prompt ordering. This spec is layered on top of `collab-core` (room lifecycle, membership governance) and `collab-delivery` (bootstrap-first injection mechanics).
 
 ## Requirements
 
@@ -29,31 +29,16 @@ The spawn operation SHALL use explicit `agent`, `model` (providerID, modelID, va
 - **THEN** defaults are derived from the planner's last assistant message in session history
 
 ### Requirement: Spawn prompt ordering is bootstrap first
-The spawned member SHALL receive join bootstrap before the spawn `initial_prompt`, as required by PRD lines 606-607.
+The spawned member SHALL receive join bootstrap before the spawn `initial_prompt`, as required by PRD lines 606-607. The join bootstrap SHALL use the resolved `collab.room_join_instruction` content, and the spawn `initial_prompt` SHALL remain a separate post-bootstrap `spawn_initial` delivery when present.
 
 #### Scenario: Bootstrap succeeds before initial prompt
 - **WHEN** a spawned member has both bootstrap and initial prompt pending
 - **THEN** delivery injects bootstrap first and initial prompt only after bootstrap is delivered
 
-#### Scenario: Spawn instruction and initial prompt are merged
-- **WHEN** both spawn instruction and initial prompt are present
-- **THEN** they are concatenated into a single `spawn_initial` message and delivery
+#### Scenario: Room join instruction and initial prompt are not merged
+- **WHEN** both room join instruction and spawn initial prompt are present
+- **THEN** the room join instruction is delivered in the `join_bootstrap` prompt and the initial prompt is delivered separately in the later `spawn_initial` prompt
 
-#### Scenario: Empty prompt body skips delivery
-- **WHEN** neither spawn instruction nor initial prompt produces content
+#### Scenario: Empty initial prompt skips spawn initial delivery
+- **WHEN** spawn has no `initial_prompt`
 - **THEN** no `spawn_initial` delivery is created
-
-### Requirement: Spawn instruction is template-rendered
-The spawn instruction SHALL be rendered from configured text or file template sources, falling back to a built-in template. Template variables include `{room}`, `{alias}`, `{role}`, and `{from}`.
-
-#### Scenario: Configured text template
-- **WHEN** spawn instruction is configured with `{ text: "..." }`
-- **THEN** the template is rendered with room, alias, role, and from variables
-
-#### Scenario: Configured file template
-- **WHEN** spawn instruction is configured with `{ file: "/path" }`
-- **THEN** the file contents are loaded and rendered as a template
-
-#### Scenario: Fallback template
-- **WHEN** no spawn instruction is configured
-- **THEN** the built-in fallback template is used with variable substitution

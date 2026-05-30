@@ -32,7 +32,7 @@ The persistence layer SHALL store planner passwords only as hashes and SHALL NOT
 - **THEN** the stored value differs from the plaintext and can verify the plaintext without returning it
 
 ### Requirement: Instruction templates resolve predictably
-The service SHALL load `spawn_instruction` and `reply_instruction` from either text or file config, with built-in fallback templates and no merge behavior. The resolved `reply_instruction` SHALL be used wherever collaboration prompt reply guidance is rendered.
+The service SHALL load `room_join_instruction` and `reply_instruction` from either text or file config, with built-in fallback templates and no merge behavior. The resolved `room_join_instruction` SHALL be used for join bootstrap content, and the resolved `reply_instruction` SHALL be used wherever collaboration prompt reply guidance is rendered.
 
 #### Scenario: Configured file replaces fallback
 - **WHEN** a template file is configured
@@ -41,6 +41,14 @@ The service SHALL load `spawn_instruction` and `reply_instruction` from either t
 #### Scenario: Configured reply instruction is operational
 - **WHEN** `collab.reply_instruction` is configured
 - **THEN** collaboration prompt reply guidance uses that configured template instead of the built-in fallback
+
+#### Scenario: Configured room join instruction is operational
+- **WHEN** `collab.room_join_instruction` is configured
+- **THEN** join bootstrap content uses that configured template instead of the built-in fallback
+
+#### Scenario: Legacy spawn instruction is not a room join template
+- **WHEN** only `collab.spawn_instruction` is configured
+- **THEN** the service does not use it as the join bootstrap template
 
 ### Requirement: Room creation establishes the first planner
 The system SHALL create rooms from an explicit base name and founder alias, persist a unique `{base_name}-{YYYYMMDDHHmmss}` full name, auto-join the founder as `planner`, and return the planner password once.

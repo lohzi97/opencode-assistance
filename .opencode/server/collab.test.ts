@@ -105,6 +105,19 @@ describe("collab config", () => {
       "collab.hard_abort_wait_max_ms must be greater than or equal to collab.hard_abort_wait_ms",
     );
   });
+
+  test("reads room join instruction and ignores legacy spawn instruction", () => {
+    const config = parseCollabConfig(
+      {
+        room_join_instruction: { text: "join template" },
+        spawn_instruction: { text: "legacy spawn template" },
+      },
+      {},
+    );
+
+    expect(config.room_join_instruction).toEqual({ text: "join template" });
+    expect("spawn_instruction" in config).toBe(false);
+  });
 });
 
 describe("opencode client delivery boundary", () => {
@@ -202,38 +215,39 @@ describe("collab templates", () => {
   test("uses text templates and preserves unknown placeholders", async () => {
     const templates = await resolveCollabTemplates(
       configWithTemplates({
-        spawn_instruction: { text: "spawn {room} {alias} {unknown}" },
+        room_join_instruction: { text: "join {room} {alias} {unknown}" },
         reply_instruction: { text: "reply {from} {role}" },
       }),
       { room: "r", alias: "a", role: "implementer", from: "planner" },
     );
 
-    expect(templates.spawn_instruction).toBe("spawn r a {unknown}");
+    expect(templates.room_join_instruction).toBe("join r a {unknown}");
     expect(templates.reply_instruction).toBe("reply planner implementer");
   });
 
   test("uses file templates instead of fallbacks", async () => {
-    const spawnPath = path.join(tempDir, "spawn.md");
+    const joinPath = path.join(tempDir, "room-join.md");
     const replyPath = path.join(tempDir, "reply.md");
-    await writeFile(spawnPath, "file spawn {room}");
+    await writeFile(joinPath, "file join {room}");
     await writeFile(replyPath, "file reply {alias}");
 
     const templates = await resolveCollabTemplates(
       configWithTemplates({
-        spawn_instruction: { file: spawnPath },
+        room_join_instruction: { file: joinPath },
         reply_instruction: { file: replyPath },
       }),
       { room: "room-one", alias: "worker" },
     );
 
-    expect(templates.spawn_instruction).toBe("file spawn room-one");
+    expect(templates.room_join_instruction).toBe("file join room-one");
     expect(templates.reply_instruction).toBe("file reply worker");
   });
 
   test("uses fallback templates when templates are absent", async () => {
     const templates = await resolveCollabTemplates(configWithTemplates({}), { room: "r", alias: "a", role: "x" });
-    expect(templates.spawn_instruction).toContain("r");
-    expect(templates.spawn_instruction).toContain("a");
+    expect(templates.room_join_instruction).toContain("r");
+    expect(templates.room_join_instruction).toContain("a");
+    expect(templates.room_join_instruction).toContain("ready");
     expect(templates.reply_instruction).toContain("a");
   });
 });
@@ -974,7 +988,9 @@ describe("collab service", () => {
   });
 
   test("planner member add persists member, system message, and bootstrap delivery order", async () => {
-    const service = await startedService();
+    const service = await startedService(undefined, {
+      room_join_instruction: { text: "Room join for {alias}/{role} in {room} from {from}." },
+    });
     try {
       const created = await routeJson(service, "POST", "/room", { name: "add-member", session_id: "ses_creator", from: "planner" });
       const added = await routeJson(service, "POST", `/room/${created.body.room_id}/member`, {
@@ -994,8 +1010,8 @@ describe("collab service", () => {
       const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
       try {
         const rows = storage.db
-          .query<{ kind: string; target_session_id: string | null; mode: string | null; created_at: number }, []>(
-            `SELECT messages.kind, deliveries.target_session_id, deliveries.mode, messages.created_at
+          .query<{ kind: string; body: string; target_session_id: string | null; mode: string | null; created_at: number }, []>(
+            `SELECT messages.kind, messages.body, deliveries.target_session_id, deliveries.mode, messages.created_at
              FROM messages
              LEFT JOIN deliveries ON deliveries.message_id = messages.id
              WHERE messages.kind IN ('join_bootstrap', 'member_joined')
@@ -1003,9 +1019,22 @@ describe("collab service", () => {
           )
           .all();
         expect(rows).toEqual([
-          { kind: "join_bootstrap", target_session_id: "ses_worker", mode: "bootstrap", created_at: expect.any(Number) },
-          { kind: "member_joined", target_session_id: "ses_creator", mode: "buffered", created_at: expect.any(Number) },
+          {
+            kind: "join_bootstrap",
+            body: expect.stringContaining("Room join for worker/implementer in add-member-"),
+            target_session_id: "ses_worker",
+            mode: "bootstrap",
+            created_at: expect.any(Number),
+          },
+          {
+            kind: "member_joined",
+            body: "worker joined as implementer.",
+            target_session_id: "ses_creator",
+            mode: "buffered",
+            created_at: expect.any(Number),
+          },
         ]);
+        expect(rows[0].body).toContain("from planner.");
         expect(rows[0].created_at).toBeLessThan(rows[1].created_at);
       } finally {
         storage.close();
@@ -1106,7 +1135,9 @@ describe("collab service", () => {
   });
 
   test("password self-join grants planner and does not leak password on failures", async () => {
-    const service = await startedService();
+    const service = await startedService(undefined, {
+      room_join_instruction: { text: "Self join {alias}/{role} in {room} from {from}." },
+    });
     try {
       const created = await routeJson(service, "POST", "/room", { name: "join-room", session_id: "ses_creator", from: "planner" });
       const password = created.body.planner_password;
@@ -1133,6 +1164,17 @@ describe("collab service", () => {
       expect(joined.status).toBe(201);
       expect(joined.body.members).toContainEqual(expect.objectContaining({ session_id: "ses_joiner", name: "planner-2", role: "planner" }));
       expect(JSON.stringify(joined.body)).not.toContain(password);
+
+      const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+      try {
+        const bootstrap = storage.db
+          .query<{ body: string }, []>("SELECT body FROM messages WHERE kind = 'join_bootstrap' ORDER BY created_at DESC LIMIT 1")
+          .get();
+        expect(bootstrap?.body).toContain("Self join planner-2/planner in join-room-");
+        expect(bootstrap?.body).toContain("from system.");
+      } finally {
+        storage.close();
+      }
     } finally {
       await service.shutdown();
     }
@@ -2285,9 +2327,36 @@ describe("collab service", () => {
     }
   });
 
+  test("configured room join instruction fully replaces fallback bootstrap body", async () => {
+    const client = mockClient();
+    const service = await startedService(client, {
+      room_join_instruction: { text: "Configured-only welcome for {alias}." },
+    });
+    try {
+      const created = await routeJson(service, "POST", "/room", { name: "configured-bootstrap", session_id: "ses_planner", from: "planner" });
+      await routeJson(service, "POST", `/room/${created.body.room_id}/member`, {
+        session_id: "ses_planner",
+        from: "planner",
+        target_session_id: "ses_worker",
+        name: "worker",
+        role: "implementer",
+      });
+
+      await service.attemptFlush("ses_worker", { type: "idle" }, []);
+      expect(client.prompts).toHaveLength(1);
+      expect(client.prompts[0].text).toContain("Configured-only welcome for worker.");
+      expect(client.prompts[0].text).not.toContain("You are joining collaboration room");
+      expect(client.prompts[0].text).not.toContain("Reply with ready to confirm your availability");
+    } finally {
+      await service.shutdown();
+    }
+  });
+
   test("spawn queues bootstrap before initial prompt and flushes in separate turns", async () => {
     const client = mockClient();
-    const service = await startedService(client, { spawn_instruction: { text: "Spawn as {alias} in {room} from {from}." } });
+    const service = await startedService(client, {
+      room_join_instruction: { text: "Join as {alias} in {room} from {from}." },
+    });
     try {
       const created = await routeJson(service, "POST", "/room", { name: "spawn-order", session_id: "ses_planner", from: "planner" });
       await routeJson(service, "POST", `/room/${created.body.room_id}/spawn`, {
@@ -2323,14 +2392,49 @@ describe("collab service", () => {
       await expect(service.attemptFlush("ses_spawned_1", { type: "idle" }, [])).resolves.toEqual({ flushed: true, count: 1 });
       expect(client.prompts).toHaveLength(1);
       expect(client.prompts[0].text).toContain("Join Bootstrap");
+      expect(client.prompts[0].text).toContain("Join as worker in spawn-order-");
       expect(client.prompts[0].text).not.toContain("Start implementation now.");
 
       await expect(service.attemptFlush("ses_spawned_1", { type: "idle" }, [])).resolves.toEqual({ flushed: true, count: 1 });
       expect(client.prompts).toHaveLength(2);
-      expect(client.prompts[1].text).toContain("Spawn as worker in spawn-order-");
+      expect(client.prompts[1].text).not.toContain("Join as worker in spawn-order-");
       expect(client.prompts[1].text).toContain("Start implementation now.");
       expect(client.prompts[1].agent).toBe("sebastian");
       expect(client.prompts[1].model).toEqual({ providerID: "provider-x", modelID: "model-y", variant: "fast" });
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("spawn without initial prompt skips spawn initial delivery", async () => {
+    const client = mockClient();
+    const service = await startedService(client, {
+      room_join_instruction: { text: "Configured join only for {alias}." },
+    });
+    try {
+      const created = await routeJson(service, "POST", "/room", { name: "spawn-no-initial", session_id: "ses_planner", from: "planner" });
+      await routeJson(service, "POST", `/room/${created.body.room_id}/spawn`, {
+        session_id: "ses_planner",
+        from: "planner",
+        name: "worker",
+        role: "implementer",
+      });
+
+      const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+      try {
+        const rows = storage.db
+          .query<{ kind: string; body: string }, []>(
+            `SELECT messages.kind, messages.body
+             FROM messages
+             JOIN deliveries ON deliveries.message_id = messages.id
+             WHERE deliveries.target_session_id = 'ses_spawned_1'
+             ORDER BY deliveries.created_at ASC`,
+          )
+          .all();
+        expect(rows).toEqual([{ kind: "join_bootstrap", body: "Configured join only for worker." }]);
+      } finally {
+        storage.close();
+      }
     } finally {
       await service.shutdown();
     }

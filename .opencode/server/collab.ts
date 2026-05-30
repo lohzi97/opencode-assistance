@@ -8,8 +8,8 @@ import { sleep } from "./shared";
 import { OpenCodeRequestError } from "./shared";
 import type { ModelRef, OpenCodeClient, QuestionRequest, SessionStatusInfo } from "./shared";
 
-export const FALLBACK_SPAWN_INSTRUCTION =
-  "You are joining collaboration room {room} as {alias} ({role}). Coordinate through agent-collab and report progress clearly.";
+export const FALLBACK_ROOM_JOIN_INSTRUCTION =
+  "You are joining collaboration room {room} as {alias} ({role}). Coordinate through agent-collab. Reply with ready to confirm your availability.";
 
 export const FALLBACK_REPLY_INSTRUCTION =
   "Reply to the room with agent-collab as {alias}. Preserve room context and address relevant collaborators.";
@@ -17,7 +17,7 @@ export const FALLBACK_REPLY_INSTRUCTION =
 export type TemplateVars = Partial<Record<"room" | "alias" | "role" | "from", string>>;
 
 export type CollabTemplates = {
-  spawn_instruction: string;
+  room_join_instruction: string;
   reply_instruction: string;
 };
 
@@ -215,7 +215,7 @@ export class CollabService {
       }
 
       if (request.method === "POST" && parts.length === 3 && parts[0] === "room" && parts[2] === "member") {
-        return jsonResponse(this.addMember(parts[1], await readJsonObject(request)), 201);
+        return jsonResponse(await this.addMember(parts[1], await readJsonObject(request)), 201);
       }
 
       if (request.method === "POST" && parts.length === 3 && parts[0] === "room" && parts[2] === "join") {
@@ -300,22 +300,35 @@ export class CollabService {
     return this.db!.closeRoom(roomRef, sessionId, from, Date.now());
   }
 
-  private addMember(roomRef: string, input: Record<string, unknown>) {
+  private async addMember(roomRef: string, input: Record<string, unknown>) {
+    if (!this.config) throw httpError(503, "collab service disabled");
     const sessionId = requireString(input, "session_id");
     const from = requireAlias(input, "from");
     const targetSessionId = requireString(input, "target_session_id");
     const name = requireAlias(input, "name");
     const role = requireString(input, "role");
-    return this.db!.addMember(roomRef, { sessionId, from, targetSessionId, name, role, now: Date.now() });
+    const room = this.db!.validateAddMember(roomRef, { sessionId, from, targetSessionId, name });
+    const templates = await resolveCollabTemplates(this.config, { room: room.name, alias: name, role, from });
+    return this.db!.addMember(room.id, {
+      sessionId,
+      from,
+      targetSessionId,
+      name,
+      role,
+      roomJoinInstruction: templates.room_join_instruction,
+      now: Date.now(),
+    });
   }
 
   private async joinRoom(roomRef: string, input: Record<string, unknown>) {
+    if (!this.config) throw httpError(503, "collab service disabled");
     const sessionId = requireString(input, "session_id");
     const name = requireAlias(input, "name");
     const password = requireString(input, "password");
     const room = this.db!.openRoom(roomRef);
     if (!(await verifyPlannerPassword(password, room.planner_password_hash))) throw httpError(403, "invalid planner password");
-    return this.db!.selfJoin(room.id, { sessionId, name, now: Date.now() });
+    const templates = await resolveCollabTemplates(this.config, { room: room.name, alias: name, role: "planner", from: "system" });
+    return this.db!.selfJoin(room.id, { sessionId, name, roomJoinInstruction: templates.room_join_instruction, now: Date.now() });
   }
 
   private async spawnMember(roomRef: string, input: Record<string, unknown>) {
@@ -348,7 +361,7 @@ export class CollabService {
     return this.db!.addSpawnedMember(room.id, {
       ...spawn,
       targetSessionId: session.id,
-      spawnInstruction: templates.spawn_instruction,
+      roomJoinInstruction: templates.room_join_instruction,
       spawnPrompt: selectedPrompt,
     });
   }
@@ -640,10 +653,7 @@ export class CollabService {
     return [
       "[Join Bootstrap]",
       "",
-      `Alias: ${delivery.target_name}`,
-      `Role: ${delivery.member_role ?? "member"}`,
-      "",
-      "You have joined a room for discussion. Reply with ready to confirm your availability.",
+      delivery.message_body,
     ]
       .join("\n");
   }
@@ -758,16 +768,21 @@ export class CollabStorage {
 
   addMember(
     roomRef: string,
-    input: { sessionId: string; from: string; targetSessionId: string; name: string; role: string; now: number },
+    input: {
+      sessionId: string;
+      from: string;
+      targetSessionId: string;
+      name: string;
+      role: string;
+      roomJoinInstruction: string;
+      now: number;
+    },
   ) {
-    const room = this.openRoom(roomRef);
-    this.requirePlanner(room.id, input.sessionId, input.from);
-    if (this.memberByName(room.id, input.name)) throw httpError(409, "alias already exists in room");
-    if (this.openRoomForSession(input.targetSessionId)) throw httpError(409, "target session already belongs to an open room");
+    const room = this.validateAddMember(roomRef, input);
 
     const transaction = this.db.transaction(() => {
       this.insertMember(room.id, input.targetSessionId, input.name, input.role, input.now);
-      this.insertJoinBootstrap(room, { session_id: input.targetSessionId, name: input.name }, input.role, input.now);
+      this.insertJoinBootstrap({ room, target: { session_id: input.targetSessionId, name: input.name }, role: input.role, body: input.roomJoinInstruction, createdAt: input.now });
       const messageId = this.insertSystemMessage(room.id, `${input.name} joined as ${input.role}.`, "member_joined", input.now + 1);
       this.insertDeliveries(messageId, this.activeMembersForDelivery(room.id, input.targetSessionId), "buffered", input.now + 1);
     });
@@ -776,14 +791,22 @@ export class CollabStorage {
     return this.roomStatus(room.id);
   }
 
-  selfJoin(roomRef: string, input: { sessionId: string; name: string; now: number }) {
+  validateAddMember(roomRef: string, input: { sessionId: string; from: string; targetSessionId: string; name: string }) {
+    const room = this.openRoom(roomRef);
+    this.requirePlanner(room.id, input.sessionId, input.from);
+    if (this.memberByName(room.id, input.name)) throw httpError(409, "alias already exists in room");
+    if (this.openRoomForSession(input.targetSessionId)) throw httpError(409, "target session already belongs to an open room");
+    return room;
+  }
+
+  selfJoin(roomRef: string, input: { sessionId: string; name: string; roomJoinInstruction: string; now: number }) {
     const room = this.openRoom(roomRef);
     if (this.memberByName(room.id, input.name)) throw httpError(409, "alias already exists in room");
     if (this.openRoomForSession(input.sessionId)) throw httpError(409, "session already belongs to an open room");
 
     const transaction = this.db.transaction(() => {
       this.insertMember(room.id, input.sessionId, input.name, "planner", input.now);
-      this.insertJoinBootstrap(room, { session_id: input.sessionId, name: input.name }, "planner", input.now);
+      this.insertJoinBootstrap({ room, target: { session_id: input.sessionId, name: input.name }, role: "planner", body: input.roomJoinInstruction, createdAt: input.now });
       const messageId = this.insertSystemMessage(room.id, `${input.name} joined as planner.`, "member_joined", input.now + 1);
       this.insertDeliveries(messageId, this.activeMembersForDelivery(room.id, input.sessionId), "buffered", input.now + 1);
     });
@@ -801,7 +824,7 @@ export class CollabStorage {
 
   addSpawnedMember(
     roomRef: string,
-    input: SpawnInput & { targetSessionId: string; spawnInstruction: string; spawnPrompt: SpawnPromptOptions },
+    input: SpawnInput & { targetSessionId: string; roomJoinInstruction: string; spawnPrompt: SpawnPromptOptions },
   ) {
     const room = this.openRoom(roomRef);
     this.requirePlanner(room.id, input.sessionId, input.from);
@@ -816,12 +839,11 @@ export class CollabStorage {
         input.sessionId,
         input.now,
       ]);
-      this.insertJoinBootstrap(room, { session_id: input.targetSessionId, name: input.name }, input.role, input.now);
+      this.insertJoinBootstrap({ room, target: { session_id: input.targetSessionId, name: input.name }, role: input.role, body: input.roomJoinInstruction, createdAt: input.now });
       const joinedId = this.insertSystemMessage(room.id, `${input.name} spawned by ${input.from} as ${input.role}.`, "member_joined", input.now + 1);
       this.insertDeliveries(joinedId, this.activeMembersForDelivery(room.id, input.targetSessionId), "buffered", input.now + 1);
-      const promptBody = [input.spawnInstruction, input.initialPrompt].filter((line): line is string => Boolean(line)).join("\n\n");
-      if (promptBody) {
-        const promptId = this.insertSystemMessage(room.id, promptBody, "spawn_initial", input.now + 2);
+      if (input.initialPrompt) {
+        const promptId = this.insertSystemMessage(room.id, input.initialPrompt, "spawn_initial", input.now + 2);
         this.insertDeliveries(promptId, [{ session_id: input.targetSessionId, name: input.name }], "spawn_initial", input.now + 2, input.spawnPrompt);
       }
     });
@@ -1399,14 +1421,8 @@ export class CollabStorage {
     };
   }
 
-  private insertJoinBootstrap(room: RoomRow, target: DeliveryTarget, role: string, createdAt: number) {
-    const body = [
-      `You joined ${room.name} as ${target.name} (${role}).`,
-      room.public_message ? `Room public message: ${room.public_message}` : undefined,
-      "Reply with ready to confirm your availability.",
-    ]
-      .filter((line): line is string => Boolean(line))
-      .join("\n");
+  private insertJoinBootstrap(input: { room: RoomRow; target: DeliveryTarget; role: string; body: string; createdAt: number }) {
+    const { room, target, body, createdAt } = input;
     const messageId = this.insertSystemMessage(room.id, body, "join_bootstrap", createdAt);
     this.insertDeliveries(messageId, [target], "bootstrap", createdAt);
   }
@@ -1750,8 +1766,8 @@ function errorResponse(error: unknown) {
 
 export async function resolveCollabTemplates(config: CollabConfig, vars: TemplateVars = {}): Promise<CollabTemplates> {
   return {
-    spawn_instruction: renderTemplate(
-      await loadTemplate(config.spawn_instruction, FALLBACK_SPAWN_INSTRUCTION),
+    room_join_instruction: renderTemplate(
+      await loadTemplate(config.room_join_instruction, FALLBACK_ROOM_JOIN_INSTRUCTION),
       vars,
     ),
     reply_instruction: renderTemplate(

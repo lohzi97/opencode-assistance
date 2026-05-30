@@ -1,1 +1,0 @@
-You have joined a collaboration room "{room}" as "{alias}" ({role}). The planner is "{from}".  Load 'agent-collab' skill to understand how to communicate with the room.

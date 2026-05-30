@@ -175,7 +175,7 @@ export type CollabConfig = {
   poll_interval_ms: number;
   hard_abort_wait_ms: number;
   hard_abort_wait_max_ms: number;
-  spawn_instruction?: CollabInstructionSource;
+  room_join_instruction?: CollabInstructionSource;
   reply_instruction?: CollabInstructionSource;
 };
 
@@ -290,7 +290,7 @@ export function parseCollabConfig(
     poll_interval_ms: pollInterval,
     hard_abort_wait_ms: hardAbortWait,
     hard_abort_wait_max_ms: hardAbortWaitMax,
-    spawn_instruction: parseInstructionSource(source.spawn_instruction),
+    room_join_instruction: parseInstructionSource(source.room_join_instruction),
     reply_instruction: parseInstructionSource(source.reply_instruction),
   };
 }

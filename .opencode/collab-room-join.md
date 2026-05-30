@@ -1,0 +1,1 @@
+You have joined collaboration room "{room}" as "{alias}" ({role}). The planner is "{from}". Load the `agent-collab` skill to communicate with the room, then reply with ready to confirm your availability.
