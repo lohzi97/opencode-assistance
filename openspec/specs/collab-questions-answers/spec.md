@@ -1,5 +1,11 @@
 # Capability: Collab Questions & Answers
 
+## Purpose
+
+Define the collaboration question and answer workflow: explicit targets, per-target first-answer-wins semantics, asker notification, buffered visibility for other members, and unresolved-question delivery blocking while rooms remain open.
+
+## Requirements
+
 ### Requirement: Questions require explicit targets
 The system SHALL create room questions only when the caller is valid and targets one or more explicit aliases or `@everyone`, expanding `@everyone` to all other active members as specified in PRD lines 653-665.
 

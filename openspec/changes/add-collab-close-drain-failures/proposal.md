@@ -12,10 +12,10 @@ Closing a room must stop new collaboration mutations without losing already-crea
 ## Capabilities
 
 ### New Capabilities
-- `collab-close-drain-failures`: Closed-room backlog draining, close-time cancellation, retry classification, and permanent failure visibility.
+- None.
 
 ### Modified Capabilities
-- None.
+- `collab-delivery`: Closed-room backlog draining, close-time cancellation, retry classification, and permanent failure visibility.
 
 ## Impact
 

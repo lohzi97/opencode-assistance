@@ -12,7 +12,7 @@ Agents need a thin bash-friendly interface to use room and membership APIs witho
 ## Capabilities
 
 ### New Capabilities
-- `agent-collab-cli-room-membership`: CLI commands for room lifecycle, membership governance, join/leave, and spawn workflows.
+- `agent-collab-cli`: CLI commands for room lifecycle, membership governance, join/leave, spawn workflows, base URL configuration, human-readable output, JSON output, and password-safe self-join.
 
 ### Modified Capabilities
 - None.

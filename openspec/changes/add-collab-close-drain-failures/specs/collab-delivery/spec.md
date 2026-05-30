@@ -12,11 +12,22 @@ After close, the system SHALL reject new send, ask, answer, join, leave, member 
 - **THEN** those deliveries and the closure message drain chronologically
 
 ### Requirement: Close drain adjusts blockers correctly
-During close drain, unresolved collab questions SHALL NOT block final buffered delivery, while busy, retry, and pending user-question blockers still apply, per PRD lines 867-870.
+During close drain, unresolved collab questions SHALL be cancelled and SHALL NOT block final buffered delivery, while busy, retry, and pending user-question blockers still apply, per PRD lines 867-870.
 
 #### Scenario: Unanswered collab question does not block close drain
 - **WHEN** a closed room has an unresolved collab question and pending buffered backlog
 - **THEN** the backlog may drain once other session blockers are clear
+
+#### Scenario: Room close cancels unresolved question targets
+- **WHEN** a room is closed with unresolved collab question targets
+- **THEN** those question targets are marked cancelled with a room-closure reason
+
+### Requirement: Existing hard deliveries may drain after close
+Hard delivery records created before room close SHALL be allowed to execute during close drain without reapplying the open-room precondition, while preserving hard interrupt validation, wait, and failure semantics.
+
+#### Scenario: Pre-close hard delivery drains after close
+- **WHEN** a hard delivery was created before room closure and remains pending during close drain
+- **THEN** the engine may execute it without rejecting it solely because the room is closed
 
 ### Requirement: Delivery failures are retried or surfaced
 The engine SHALL retry transient transport/backend failures, not retry validation failures, allow pre-close pending deliveries to retry after close, and surface permanent failures in status and message views per PRD lines 872-879.

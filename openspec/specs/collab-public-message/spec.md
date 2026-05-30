@@ -1,4 +1,10 @@
-## ADDED Requirements
+# collab-public-message Specification
+
+## Purpose
+
+Define the planner-owned room public message contract for collaboration rooms: set/clear authorization, update notifications, and inclusion in future collaboration deliveries. This capability is optional shared room context layered on top of `collab-core` and `collab-delivery`.
+
+## Requirements
 
 ### Requirement: Only planners manage the public message
 The system SHALL allow only active planners to set, replace, or clear the room public message while the room is open, per PRD lines 447-481.

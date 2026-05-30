@@ -12,10 +12,10 @@ Once the service APIs exist, agents need CLI access to the live collaboration ac
 ## Capabilities
 
 ### New Capabilities
-- `agent-collab-cli-messaging`: CLI commands for public messages, sending, asking, answering, and transcript inspection.
+- None.
 
 ### Modified Capabilities
-- None.
+- `agent-collab-cli`: CLI commands for public messages, sending, asking, answering, and transcript inspection.
 
 ## Impact
 
