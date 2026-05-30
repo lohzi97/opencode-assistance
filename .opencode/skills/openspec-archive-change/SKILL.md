@@ -11,6 +11,8 @@ metadata:
 
 Archive a completed change in the experimental workflow.
 
+This workflow is allowed to update main specs before archiving, but it MUST NOT sync delta specs blindly by capability folder name. Before changing `openspec/specs/`, run the architectural sync gate below and use [ARCHIVE_SYNC_RUBRIC.md](ARCHIVE_SYNC_RUBRIC.md) for placement decisions.
+
 **Input**: Optionally specify a change name. If omitted, check if it can be inferred from conversation context. If vague or ambiguous you MUST prompt for available changes.
 
 **Steps**
@@ -50,20 +52,42 @@ Archive a completed change in the experimental workflow.
 
    **If no tasks file exists:** Proceed without task-related warning.
 
-4. **Assess delta spec sync state**
+4. **Run architectural sync gate**
 
    Check for delta specs at `openspec/changes/<name>/specs/`. If none exist, proceed without sync prompt.
 
    **If delta specs exist:**
-   - Compare each delta spec with its corresponding main spec at `openspec/specs/<capability>/spec.md`
-   - Determine what changes would be applied (adds, modifications, removals, renames)
-   - Show a combined summary before prompting
+   - Read every delta spec under `openspec/changes/<name>/specs/**/*.md`
+   - Read existing main specs under `openspec/specs/*/spec.md`
+   - Decide whether each delta should CREATE a new main spec, MERGE into an existing main spec, UPDATE an existing requirement, or SPLIT across destinations
+   - Do not assume `openspec/changes/<name>/specs/<capability>/` is the correct destination
+   - Apply the rubric in [ARCHIVE_SYNC_RUBRIC.md](ARCHIVE_SYNC_RUBRIC.md)
+   - Inspect destination files for heading collisions and stale modified targets before editing
+
+   **Before mutating specs, present this proposal and ask for confirmation:**
+
+   ```markdown
+   ### Architectural Sync Proposal
+
+   1. **Change Summary:** <brief behavior summary>
+   2. **Target Domains Evaluated:** <existing specs inspected>
+   3. **Decision:** <CREATE / MERGE / UPDATE / SPLIT>
+   4. **Destination:** <openspec/specs/.../spec.md>
+   5. **Risks:** <heading collisions, stale modified targets, split requirements, external dependencies>
+   ```
 
    **Prompt options:**
    - If changes needed: "Sync now (recommended)", "Archive without syncing"
    - If already synced: "Archive now", "Sync anyway", "Cancel"
 
-   If user chooses sync, update the corresponding main spec files directly from the delta spec analysis before archiving. Proceed to archive after the sync decision is handled.
+   If user chooses sync, update the chosen main spec files from the confirmed architectural sync proposal before archiving.
+
+   After syncing, run:
+   ```bash
+   openspec validate --all
+   ```
+
+   If validation fails, stop and report the failing items. Do not archive until validation passes or the user explicitly decides to archive without a valid spec tree.
 
 5. **Perform the archive**
 
@@ -82,13 +106,21 @@ Archive a completed change in the experimental workflow.
    mv openspec/changes/<name> openspec/changes/archive/YYYY-MM-DD-<name>
    ```
 
-6. **Display summary**
+6. **Validate and display summary**
+
+   After moving the change to archive, run:
+   ```bash
+   openspec validate --all
+   ```
+
+   If validation fails after archive, report it clearly in the summary.
 
    Show archive completion summary including:
    - Change name
    - Schema that was used
    - Archive location
    - Whether specs were synced (if applicable)
+   - Which main spec destinations were created or modified
    - Note about any warnings (incomplete artifacts/tasks)
 
 **Output On Success**
@@ -110,5 +142,9 @@ All artifacts complete. All tasks complete.
 - Don't block archive on warnings - just inform and confirm
 - Preserve .openspec.yaml when moving to archive (it moves with the directory)
 - Show clear summary of what happened
-- If sync is requested, update main specs directly from the delta spec analysis before archiving
-- If delta specs exist, always run the sync assessment and show the combined summary before prompting
+- If delta specs exist, always run the architectural sync gate before prompting
+- Never assume delta capability name equals main spec destination
+- If sync is requested, update main specs only according to the confirmed Architectural Sync Proposal
+- Never leave delta headers such as `## ADDED Requirements` in a main spec; main specs require `## Purpose` and `## Requirements`
+- If a destination already has the same requirement heading, merge or refactor instead of duplicating it
+- If a `## MODIFIED Requirements` target cannot be found, stop and flag a structural sync conflict
