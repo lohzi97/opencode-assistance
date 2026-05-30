@@ -293,5 +293,20 @@
       }
 
     ]
+  },
+  "collab": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 9100,
+    "db_path": ".opencode/server/state/collab.sqlite",
+    "poll_interval_ms": 10000,
+    "hard_abort_wait_ms": 30000,
+    "hard_abort_wait_max_ms": 60000,
+    "spawn_instruction": {
+      "file": ".opencode/collab-spawn.md"
+    },
+    "reply_instruction": {
+      "file": ".opencode/collab-reply.md"
+    }
   }
 }
