@@ -2163,6 +2163,55 @@ describe("collab service", () => {
     }
   });
 
+  test("serializes concurrent delivery entry points to avoid duplicate injection", async () => {
+    let releasePrompt!: () => void;
+    let promptStarted!: () => void;
+    const promptBlocker = new Promise<void>((resolve) => {
+      releasePrompt = resolve;
+    });
+    const promptStartedSignal = new Promise<void>((resolve) => {
+      promptStarted = resolve;
+    });
+    const client = mockClient({ statuses: { ses_worker: { type: "idle" } } });
+    client.promptAsync = async (sessionID, body) => {
+      client.events.push(`prompt:${sessionID}`);
+      client.prompts.push({ sessionID, text: body.parts.map((part) => part.text).join("\n"), agent: body.agent, model: body.model });
+      promptStarted();
+      await promptBlocker;
+    };
+    const service = await startedService(client);
+    try {
+      const created = await routeJson(service, "POST", "/room", { name: "concurrent", session_id: "ses_planner", from: "planner" });
+      await routeJson(service, "POST", `/room/${created.body.room_id}/member`, {
+        session_id: "ses_planner",
+        from: "planner",
+        target_session_id: "ses_worker",
+        name: "worker",
+        role: "implementer",
+      });
+      const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+      try {
+        storage.db.run("UPDATE deliveries SET state = 'injected', injected_at = 1 WHERE target_session_id != 'ses_worker'");
+      } finally {
+        storage.close();
+      }
+
+      const tick = service.tickDelivery();
+      await promptStartedSignal;
+      const event = service.handleDeliveryEvent();
+      await Promise.resolve();
+      expect(client.prompts).toHaveLength(1);
+
+      releasePrompt();
+      await Promise.all([tick, event]);
+      expect(client.prompts).toHaveLength(1);
+      await expect(service.attemptFlush("ses_worker", { type: "idle" }, [])).resolves.toEqual({ flushed: false, reason: "empty" });
+    } finally {
+      releasePrompt();
+      await service.shutdown();
+    }
+  });
+
   test("join bootstrap is injected before later room traffic", async () => {
     const client = mockClient();
     const service = await startedService(client);

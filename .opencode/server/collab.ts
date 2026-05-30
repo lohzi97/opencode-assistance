@@ -127,6 +127,8 @@ export class CollabService {
   private config?: CollabConfig;
   private server?: { stop(force?: boolean): void };
   private deliveryTimer?: ReturnType<typeof setInterval>;
+  private deliveryFlush?: Promise<void>;
+  private deliveryFlushRequested = false;
 
   constructor(
     private readonly client: OpenCodeClient,
@@ -175,11 +177,11 @@ export class CollabService {
   }
 
   async handleDeliveryEvent() {
-    await this.flushPendingDeliveries();
+    await this.flushPendingDeliveriesOnce();
   }
 
   async tickDelivery() {
-    await this.flushPendingDeliveries();
+    await this.flushPendingDeliveriesOnce();
   }
 
   async handleRequest(request: Request): Promise<Response> {
@@ -443,6 +445,27 @@ export class CollabService {
     for (const targetSessionId of targetSessionIds) {
       await this.attemptFlush(targetSessionId, statuses[targetSessionId], questions);
     }
+  }
+
+  private async flushPendingDeliveriesOnce() {
+    if (this.deliveryFlush) {
+      this.deliveryFlushRequested = true;
+      return await this.deliveryFlush;
+    }
+    // Coalesce overlapping SSE and poll triggers without dropping a request that arrives mid-flush.
+    let flush!: Promise<void>;
+    flush = (async () => {
+      try {
+        do {
+          this.deliveryFlushRequested = false;
+          await this.flushPendingDeliveries();
+        } while (this.deliveryFlushRequested);
+      } finally {
+        if (this.deliveryFlush === flush) this.deliveryFlush = undefined;
+      }
+    })();
+    this.deliveryFlush = flush;
+    await flush;
   }
 
   async attemptHardFlush(messageId: string) {
