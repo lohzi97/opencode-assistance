@@ -183,23 +183,41 @@ install_opencode() {
   fi
 }
 
+QMD_FORK_REPO="git@github.com:lohzi97/qmd.git"
+QMD_FORK_DIR="${HOME_DIR}/Projects/qmd"
+
 install_qmd() {
+  # Verify the current global qmd is the forked build.
   if [ -x "${HOME_DIR}/.bun/bin/qmd" ]; then
-    INFO "qmd already installed via bun at ${HOME_DIR}/.bun/bin/qmd"
-    return
+    local version
+    version="$("${HOME_DIR}/.bun/bin/qmd" --version 2>/dev/null)" || true
+    if [[ "$version" =~ ^qmd\ [0-9]+\.[0-9]+\.[0-9]+\ \([a-f0-9]+\) ]]; then
+      INFO "Forked qmd already installed: $version"
+      return
+    fi
+    WARN "Existing qmd is not the forked build ($version); reinstalling from fork."
   fi
+
   if ! user_has_command bun && [ ! -x "${HOME_DIR}/.bun/bin/bun" ]; then
     ERR "bun is required to install qmd. Run the script again after bun is installed."
   fi
-  if user_has_command qmd; then
-    WARN "qmd already exists at $(user_command_path qmd); installing a bun-managed copy as well."
-  fi
-  INFO "Installing qmd (global) with bun"
-  run_as_user env HOME="$HOME_DIR" PATH="${HOME_DIR}/.bun/bin:${PATH}" bash -lc 'bun add -g @tobilu/qmd'
-  if [ -x "${HOME_DIR}/.bun/bin/qmd" ]; then
-    INFO "qmd installed at ${HOME_DIR}/.bun/bin/qmd"
+
+  # Clone or update the fork
+  if [ ! -d "$QMD_FORK_DIR/.git" ]; then
+    INFO "Cloning qmd fork into $QMD_FORK_DIR"
+    run_as_user git clone "$QMD_FORK_REPO" "$QMD_FORK_DIR"
   else
-    WARN "qmd installation finished but bun-managed binary not found at ${HOME_DIR}/.bun/bin/qmd"
+    INFO "qmd fork already cloned at $QMD_FORK_DIR; pulling latest"
+    run_as_user git -C "$QMD_FORK_DIR" pull --ff-only || \
+      WARN "Failed to pull latest qmd fork. Continuing with existing version."
+  fi
+
+  INFO "Installing qmd globally from fork"
+  run_as_user env HOME="$HOME_DIR" PATH="${HOME_DIR}/.bun/bin:${PATH}" bash -lc "cd '$QMD_FORK_DIR' && npm install -g ."
+  if [ -x "${HOME_DIR}/.bun/bin/qmd" ]; then
+    INFO "qmd installed at ${HOME_DIR}/.bun/bin/qmd ($("${HOME_DIR}/.bun/bin/qmd" --version 2>/dev/null))"
+  else
+    WARN "qmd installation finished but binary not found at ${HOME_DIR}/.bun/bin/qmd"
   fi
 }
 

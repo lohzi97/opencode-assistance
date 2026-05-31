@@ -70,7 +70,8 @@ cat <<EOF
 Planned actions:
 - Stop & remove 'brave-search-mcp' docker container (if present) and remove its image
 - Remove opencode (bun package) and related sudoers file /etc/sudoers.d/opencode-assistant
-- Remove qmd (bun package) and qmd cache/config data under ~/.cache/qmd and ~/.config/qmd
+- Remove qmd (npm/bun global install) and qmd cache/config data under ~/.cache/qmd and ~/.config/qmd
+- Remove qmd fork repo at ~/Projects/qmd
 - Remove agent-tui (bun package) and agent-tui state data under ~/.agent-tui
 - Remove Antigravity CLI binary (~/.local/bin/agy) and config/data under ~/.antigravitycli
 - Remove OpenChamber (bun package or binary) and config/data under ~/.config/openchamber
@@ -144,12 +145,15 @@ else
   INFO "Sudoers entry not present; skipping"
 fi
 
-# 4) Remove qmd (bun global) and qmd binary if it's inside $HOME_DIR
-if user_has_command bun || [ -x "${HOME_DIR}/.bun/bin/bun" ]; then
+# 4) Remove qmd global install, cloned fork repo, and qmd binary
+if command -v npm >/dev/null 2>&1; then
+  INFO "Attempting to remove qmd via npm"
+  run_as_user npm uninstall -g qmd >/dev/null 2>&1 || true
+elif user_has_command bun || [ -x "${HOME_DIR}/.bun/bin/bun" ]; then
   INFO "Attempting to remove qmd via bun"
-  run_as_user env HOME="$HOME_DIR" PATH="$HOME_DIR/.bun/bin:$PATH" bash -lc 'bun remove -g @tobilu/qmd >/dev/null 2>&1 || true'
+  run_as_user env HOME="$HOME_DIR" PATH="$HOME_DIR/.bun/bin:$PATH" bash -lc 'bun remove -g qmd >/dev/null 2>&1 || true'
 else
-  INFO "bun not available; looking for qmd binary"
+  INFO "Neither npm nor bun available; looking for qmd binary"
 fi
 
 QMD_BIN="$(user_command_path qmd)"
@@ -167,6 +171,9 @@ if [ -n "$QMD_BIN" ]; then
 else
   INFO "No qmd binary found in PATH"
 fi
+
+QMD_FORK_DIR="${HOME_DIR}/Projects/qmd"
+safe_remove_user_dir "$QMD_FORK_DIR"
 
 # Helper: safely remove a directory only if it exists and is owned by the target user
 safe_remove_user_dir() {
