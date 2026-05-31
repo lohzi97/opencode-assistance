@@ -423,6 +423,35 @@ install_antigravity_cli() {
   fi
 }
 
+install_openchamber() {
+  if [ -x "${HOME_DIR}/.bun/bin/openchamber" ] || [ -x "${HOME_DIR}/.local/bin/openchamber" ]; then
+    INFO "OpenChamber already installed"
+    return
+  fi
+  if user_has_command openchamber; then
+    INFO "OpenChamber already in PATH: $(user_command_path openchamber)"
+    return
+  fi
+  # Verify Node.js 20+ is available
+  local node_version
+  node_version="$(run_as_user env HOME="$HOME_DIR" bash -lc 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; node -v 2>/dev/null || true')"
+  if [ -z "$node_version" ]; then
+    ERR "Node.js is required for OpenChamber but was not found. Ensure nvm and Node LTS are installed first."
+  fi
+  local major_version="${node_version#v}"
+  major_version="${major_version%%.*}"
+  if [ "$major_version" -lt 20 ]; then
+    ERR "OpenChamber requires Node.js 20+ but found $node_version. Update Node via nvm."
+  fi
+  INFO "Installing OpenChamber (requires Node.js $node_version)"
+  run_as_user env HOME="$HOME_DIR" bash -lc 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; curl -fsSL https://raw.githubusercontent.com/btriapitsyn/openchamber/main/scripts/install.sh | bash'
+  if [ -x "${HOME_DIR}/.bun/bin/openchamber" ] || [ -x "${HOME_DIR}/.local/bin/openchamber" ]; then
+    INFO "OpenChamber installed successfully"
+  else
+    WARN "OpenChamber installation finished but binary not found in expected locations"
+  fi
+}
+
 main() {
   ensure_sudo
   install_prereqs
@@ -440,6 +469,7 @@ main() {
   setup_qmd
   install_agent_tui
   install_antigravity_cli
+  install_openchamber
   print_warning_summary
 INFO "All done. Please log out and log back in before using Docker without sudo, then run ./config.sh."
 }

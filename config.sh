@@ -16,6 +16,9 @@ EXISTING_GOOGLE_DRIVE_OAUTH_CREDENTIALS=""
 EXISTING_OPENCODE_SERVER_PASSWORD=""
 EXISTING_TELEGRAM_BOT_TOKEN=""
 EXISTING_TELEGRAM_CHAT_ID=""
+EXISTING_OPENCHAMBER_PORT=""
+EXISTING_OPENCHAMBER_HOST=""
+EXISTING_OPENCHAMBER_UI_PASSWORD=""
 
 INFO() { printf "==> %s\n" "$*"; }
 WARN() { printf "!! %s\n" "$*" >&2; }
@@ -60,6 +63,18 @@ load_existing_config_values() {
       OPENCODE_SERVER_PASSWORD=*)
         EXISTING_OPENCODE_SERVER_PASSWORD="${line#OPENCODE_SERVER_PASSWORD=}"
         EXISTING_OPENCODE_SERVER_PASSWORD="${EXISTING_OPENCODE_SERVER_PASSWORD%$'\r'}"
+        ;;
+      OPENCHAMBER_PORT=*)
+        EXISTING_OPENCHAMBER_PORT="${line#OPENCHAMBER_PORT=}"
+        EXISTING_OPENCHAMBER_PORT="${EXISTING_OPENCHAMBER_PORT%$'\r'}"
+        ;;
+      OPENCHAMBER_HOST=*)
+        EXISTING_OPENCHAMBER_HOST="${line#OPENCHAMBER_HOST=}"
+        EXISTING_OPENCHAMBER_HOST="${EXISTING_OPENCHAMBER_HOST%$'\r'}"
+        ;;
+      OPENCHAMBER_UI_PASSWORD=*)
+        EXISTING_OPENCHAMBER_UI_PASSWORD="${line#OPENCHAMBER_UI_PASSWORD=}"
+        EXISTING_OPENCHAMBER_UI_PASSWORD="${EXISTING_OPENCHAMBER_UI_PASSWORD%$'\r'}"
         ;;
     esac
   done < "$config_env"
@@ -226,16 +241,28 @@ prompt_yes_no() {
 write_config_env() {
   local brave_api_key="$1"
   local opencode_server_password="$2"
+  local openchamber_port="$3"
+  local openchamber_host="$4"
+  local openchamber_ui_password="$5"
   local escaped_key
   local escaped_password
+  local escaped_chamber_port
+  local escaped_chamber_host
+  local escaped_chamber_password
   local tmp_file
 
   escaped_key="$(escape_sed_replacement "$brave_api_key")"
   escaped_password="$(escape_sed_replacement "$opencode_server_password")"
+  escaped_chamber_port="$(escape_sed_replacement "$openchamber_port")"
+  escaped_chamber_host="$(escape_sed_replacement "$openchamber_host")"
+  escaped_chamber_password="$(escape_sed_replacement "$openchamber_ui_password")"
   tmp_file="$(mktemp)"
   sed \
     -e "s|__BRAVE_API_KEY__|$escaped_key|g" \
     -e "s|__OPENCODE_SERVER_PASSWORD__|$escaped_password|g" \
+    -e "s|__OPENCHAMBER_PORT__|$escaped_chamber_port|g" \
+    -e "s|__OPENCHAMBER_HOST__|$escaped_chamber_host|g" \
+    -e "s|__OPENCHAMBER_UI_PASSWORD__|$escaped_chamber_password|g" \
     "$config_template" > "$tmp_file"
   mv "$tmp_file" "$config_env"
   chmod 600 "$config_env"
@@ -294,6 +321,9 @@ main() {
   local brave_api_key
   local google_drive_oauth_credentials_source
   local opencode_server_password
+  local openchamber_port
+  local openchamber_host
+  local openchamber_ui_password
   local telegram_bot_token
   local telegram_chat_id
 
@@ -312,11 +342,14 @@ main() {
   INFO "Updating opencode-assistant configuration"
   brave_api_key="$(prompt_secret "Brave Search API key" "$EXISTING_BRAVE_API_KEY")"
   opencode_server_password="$(prompt_optional_secret "OpenCode server password" "$EXISTING_OPENCODE_SERVER_PASSWORD")"
+  openchamber_port="$(prompt_value "OpenChamber port" "${EXISTING_OPENCHAMBER_PORT:-3000}")"
+  openchamber_host="$(prompt_value "OpenChamber host" "${EXISTING_OPENCHAMBER_HOST:-127.0.0.1}")"
+  openchamber_ui_password="$(prompt_optional_secret "OpenChamber UI password" "${EXISTING_OPENCHAMBER_UI_PASSWORD:-$EXISTING_OPENCODE_SERVER_PASSWORD}")"
   google_drive_oauth_credentials_source="$(prompt_file_path "Google Drive OAuth credentials JSON path" "$EXISTING_GOOGLE_DRIVE_OAUTH_CREDENTIALS")"
   telegram_bot_token="$(prompt_secret "Telegram bot token" "$EXISTING_TELEGRAM_BOT_TOKEN")"
   telegram_chat_id="$(prompt_value "Telegram chat ID" "$EXISTING_TELEGRAM_CHAT_ID")"
 
-  write_config_env "$brave_api_key" "$opencode_server_password"
+  write_config_env "$brave_api_key" "$opencode_server_password" "$openchamber_port" "$openchamber_host" "$openchamber_ui_password"
   INFO "Wrote $config_env"
 
   stage_google_drive_oauth_credentials "$google_drive_oauth_credentials_source"

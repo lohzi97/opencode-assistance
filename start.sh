@@ -11,9 +11,13 @@ port="${OPENCODE_ASSISTANT_PORT:-4096}"
 host="${OPENCODE_ASSISTANT_HOST:-127.0.0.1}"
 backend="opencode-assistant-backend"
 worker="opencode-assistant-worker"
+chamber="opencode-assistant-chamber"
 brave_container="brave-search-mcp"
 BRAVE_API_KEY=""
 OPENCODE_SERVER_PASSWORD=""
+OPENCHAMBER_PORT=""
+OPENCHAMBER_HOST=""
+OPENCHAMBER_UI_PASSWORD=""
 open_webui=1
 
 INFO() { printf "==> %s\n" "$*"; }
@@ -81,6 +85,18 @@ load_config_env() {
         OPENCODE_SERVER_PASSWORD="${line#OPENCODE_SERVER_PASSWORD=}"
         OPENCODE_SERVER_PASSWORD="${OPENCODE_SERVER_PASSWORD%$'\r'}"
         ;;
+      OPENCHAMBER_PORT=*)
+        OPENCHAMBER_PORT="${line#OPENCHAMBER_PORT=}"
+        OPENCHAMBER_PORT="${OPENCHAMBER_PORT%$'\r'}"
+        ;;
+      OPENCHAMBER_HOST=*)
+        OPENCHAMBER_HOST="${line#OPENCHAMBER_HOST=}"
+        OPENCHAMBER_HOST="${OPENCHAMBER_HOST%$'\r'}"
+        ;;
+      OPENCHAMBER_UI_PASSWORD=*)
+        OPENCHAMBER_UI_PASSWORD="${line#OPENCHAMBER_UI_PASSWORD=}"
+        OPENCHAMBER_UI_PASSWORD="${OPENCHAMBER_UI_PASSWORD%$'\r'}"
+        ;;
     esac
   done < "$config_env"
 }
@@ -97,6 +113,10 @@ curl_health_check() {
 mkdir -p "$dir" "$state"
 
 load_config_env
+
+# Apply OpenChamber defaults
+: "${OPENCHAMBER_PORT:=3000}"
+: "${OPENCHAMBER_HOST:=127.0.0.1}"
 
 if [[ -z "$OPENCODE_SERVER_PASSWORD" ]]; then
   WARN "OPENCODE_SERVER_PASSWORD is not configured in $config_env; the OpenCode server will run unsecured."
@@ -174,6 +194,24 @@ if ! tmux has-session -t "$worker" 2>/dev/null; then
   tmux new-session -d -s "$worker" "cd $root_q && OPENCODE_ASSISTANT_PORT=$port_q OPENCODE_ASSISTANT_HOST=$host_q OPENCODE_SERVER_PASSWORD=$password_q bun $dir_index_q"
 fi
 
+# Start OpenChamber if the binary is available
+if command -v openchamber >/dev/null 2>&1; then
+  chamber_port_q="$(shell_quote "$OPENCHAMBER_PORT")"
+  chamber_host_q="$(shell_quote "$OPENCHAMBER_HOST")"
+
+  chamber_cmd="OPENCODE_HOST=http://localhost:$port_q OPENCODE_SKIP_START=true openchamber --port $chamber_port_q --host $chamber_host_q"
+  if [[ -n "$OPENCHAMBER_UI_PASSWORD" ]]; then
+    chamber_password_q="$(shell_quote "$OPENCHAMBER_UI_PASSWORD")"
+    chamber_cmd="$chamber_cmd --ui-password $chamber_password_q"
+  fi
+
+  if ! tmux has-session -t "$chamber" 2>/dev/null; then
+    tmux new-session -d -s "$chamber" "$chamber_cmd"
+  fi
+else
+  WARN "openchamber not found in PATH; skipping OpenChamber session. Run ./install.sh to install it."
+fi
+
 url="http://$host:$port"
 INFO "Waiting for server at $url ..."
 elapsed=0
@@ -187,6 +225,24 @@ while ! curl_health_check >/dev/null 2>&1; do
 done
 INFO "Server ready (${elapsed}s)"
 INFO "Web UI: $url"
+
+# Health check for OpenChamber
+if command -v openchamber >/dev/null 2>&1; then
+  chamber_url="http://$OPENCHAMBER_HOST:$OPENCHAMBER_PORT"
+  INFO "Waiting for OpenChamber at $chamber_url ..."
+  chamber_elapsed=0
+  while ! curl -sf "$chamber_url" >/dev/null 2>&1; do
+    if (( chamber_elapsed >= 30 )); then
+      WARN "OpenChamber did not become ready within 30s"
+      break
+    fi
+    sleep 1
+    ((++chamber_elapsed))
+  done
+  if (( chamber_elapsed < 30 )); then
+    INFO "OpenChamber ready (${chamber_elapsed}s) at $chamber_url"
+  fi
+fi
 
 if (( open_webui == 0 )); then
   exit 0
