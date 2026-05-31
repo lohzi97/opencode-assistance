@@ -11,7 +11,6 @@ port="${OPENCODE_ASSISTANT_PORT:-4096}"
 host="${OPENCODE_ASSISTANT_HOST:-127.0.0.1}"
 backend="opencode-assistant-backend"
 worker="opencode-assistant-worker"
-chamber="opencode-assistant-chamber"
 brave_container="brave-search-mcp"
 BRAVE_API_KEY=""
 OPENCODE_SERVER_PASSWORD=""
@@ -194,22 +193,20 @@ if ! tmux has-session -t "$worker" 2>/dev/null; then
   tmux new-session -d -s "$worker" "cd $root_q && OPENCODE_ASSISTANT_PORT=$port_q OPENCODE_ASSISTANT_HOST=$host_q OPENCODE_SERVER_PASSWORD=$password_q bun $dir_index_q"
 fi
 
-# Start OpenChamber if the binary is available
+# Start OpenChamber if the binary is available (runs as a background daemon)
 if command -v openchamber >/dev/null 2>&1; then
   chamber_port_q="$(shell_quote "$OPENCHAMBER_PORT")"
   chamber_host_q="$(shell_quote "$OPENCHAMBER_HOST")"
 
-  chamber_cmd="OPENCODE_HOST=http://localhost:$port_q OPENCODE_SKIP_START=true openchamber --port $chamber_port_q --host $chamber_host_q"
+  chamber_cmd="OPENCODE_HOST=http://127.0.0.1:$port_q OPENCODE_SERVER_PASSWORD=$password_q OPENCODE_SKIP_START=true openchamber --port $chamber_port_q --host $chamber_host_q"
   if [[ -n "$OPENCHAMBER_UI_PASSWORD" ]]; then
     chamber_password_q="$(shell_quote "$OPENCHAMBER_UI_PASSWORD")"
     chamber_cmd="$chamber_cmd --ui-password $chamber_password_q"
   fi
 
-  if ! tmux has-session -t "$chamber" 2>/dev/null; then
-    tmux new-session -d -s "$chamber" "$chamber_cmd"
-  fi
+  eval "$chamber_cmd"
 else
-  WARN "openchamber not found in PATH; skipping OpenChamber session. Run ./install.sh to install it."
+  WARN "openchamber not found in PATH; skipping OpenChamber. Run ./install.sh to install it."
 fi
 
 url="http://$host:$port"
@@ -248,12 +245,18 @@ if (( open_webui == 0 )); then
   exit 0
 fi
 
+# Open the web UI -- prefer OpenChamber if available, otherwise raw OpenCode
+webui_url="$url"
+if command -v openchamber >/dev/null 2>&1; then
+  webui_url="http://$OPENCHAMBER_HOST:$OPENCHAMBER_PORT"
+fi
+
 if command -v xdg-open >/dev/null 2>&1; then
-  if xdg-open "$url" >/dev/null 2>&1; then
+  if xdg-open "$webui_url" >/dev/null 2>&1; then
     INFO "Opened web UI in default browser"
   else
-    WARN "Failed to open browser automatically; open $url manually"
+    WARN "Failed to open browser automatically; open $webui_url manually"
   fi
 else
-  WARN "xdg-open not found; open $url manually"
+  WARN "xdg-open not found; open $webui_url manually"
 fi

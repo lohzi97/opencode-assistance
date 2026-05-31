@@ -1,14 +1,14 @@
 ## ADDED Requirements
 
 ### Requirement: Install OpenChamber CLI
-The `install.sh` script SHALL install the OpenChamber CLI binary by running its official install script. The install function SHALL be idempotent -- if `openchamber` is already found at `~/.local/bin/openchamber`, it SHALL skip installation and log that it is already present. The install function SHALL verify that Node.js 20+ is available before attempting installation.
+The `install.sh` script SHALL install OpenChamber by running `bun add -g @openchamber/web`. The install function SHALL be idempotent -- if `openchamber` is already found in PATH, it SHALL skip installation and log the existing location. The install function follows the same pattern as `install_opencode()`.
 
 #### Scenario: Fresh installation
-- **WHEN** `./install.sh` is run and `openchamber` is not found at `~/.local/bin/openchamber`
-- **THEN** the official OpenChamber install script is executed and `openchamber` is available at `~/.local/bin/openchamber`
+- **WHEN** `./install.sh` is run and `openchamber` is not found in PATH
+- **THEN** `bun add -g @openchamber/web` is executed and `openchamber` is available in PATH
 
 #### Scenario: Already installed
-- **WHEN** `./install.sh` is run and `openchamber` is already present at `~/.local/bin/openchamber`
+- **WHEN** `./install.sh` is run and `openchamber` is already present in PATH
 - **THEN** a log message indicates OpenChamber is already installed and installation is skipped
 
 ### Requirement: Configure OpenChamber settings
@@ -23,40 +23,40 @@ The `config.sh` script SHALL prompt for three new configuration values: `OPENCHA
 - **THEN** the existing values are offered as defaults in the prompts
 
 ### Requirement: Start OpenChamber alongside OpenCode
-The `start.sh` script SHALL start OpenChamber as a third tmux session named `opencode-assistant-chamber`. The OpenChamber process SHALL be launched with `OPENCODE_HOST=http://localhost:<opencode_port> OPENCODE_SKIP_START=true openchamber --port <chamber_port> --host <chamber_host>` plus `--ui-password <password>` if configured. The script SHALL wait for OpenChamber to become healthy before reporting success.
+The `start.sh` script SHALL start OpenChamber by running the command directly (not in a tmux session). OpenChamber daemonizes itself. The OpenChamber process SHALL be launched with `OPENCODE_HOST=http://127.0.0.1:<opencode_port> OPENCODE_SERVER_PASSWORD=<password> OPENCODE_SKIP_START=true openchamber --port <chamber_port> --host <chamber_host>` plus `--ui-password <password>` if configured. The script SHALL wait for OpenChamber to become healthy before reporting success.
 
-#### Scenario: Fresh start with all three sessions
-- **WHEN** `./start.sh` is run and no tmux sessions exist
-- **THEN** three tmux sessions are created: `opencode-assistant-backend`, `opencode-assistant-worker`, and `opencode-assistant-chamber`
+#### Scenario: Fresh start with OpenChamber
+- **WHEN** `./start.sh` is run and `openchamber` is available in PATH
+- **THEN** two tmux sessions are created (`opencode-assistant-backend`, `opencode-assistant-worker`) and OpenChamber is started as a background daemon
 
 #### Scenario: OpenChamber session already running
-- **WHEN** `./start.sh` is run and `opencode-assistant-chamber` tmux session already exists
-- **THEN** the existing session is left as-is (same behavior as existing backend/worker sessions)
+- **WHEN** `./start.sh` is run and OpenChamber is already running
+- **THEN** the existing daemon is left as-is
 
 #### Scenario: OpenChamber password not configured
 - **WHEN** `OPENCHAMBER_UI_PASSWORD` is empty in `config.env`
 - **THEN** OpenChamber starts without the `--ui-password` flag (runs unsecured)
 
 ### Requirement: Stop OpenChamber session
-The `stop.sh` script SHALL kill the `opencode-assistant-chamber` tmux session in addition to the existing backend and worker sessions.
+The `stop.sh` script SHALL stop OpenChamber using the `openchamber stop` command.
 
-#### Scenario: All sessions running
-- **WHEN** `./stop.sh` is run and all three tmux sessions are active
-- **THEN** all three sessions (`opencode-assistant-chamber`, `opencode-assistant-worker`, `opencode-assistant-backend`) are killed
+#### Scenario: OpenChamber running
+- **WHEN** `./stop.sh` is run and `openchamber` is available in PATH
+- **THEN** `openchamber stop` is executed to gracefully stop the OpenChamber daemon
 
-#### Scenario: OpenChamber not running
-- **WHEN** `./stop.sh` is run and `opencode-assistant-chamber` does not exist
-- **THEN** the script proceeds without error (idempotent, same as existing sessions)
+#### Scenario: OpenChamber not available
+- **WHEN** `./stop.sh` is run and `openchamber` is not found
+- **THEN** the script proceeds without error (OpenChamber was never installed)
 
 ### Requirement: Uninstall OpenChamber
-The `uninstall.sh` script SHALL remove the `openchamber` binary from `~/.local/bin/openchamber` and remove the OpenChamber config/data directory at `~/.config/openchamber/`.
+The `uninstall.sh` script SHALL remove OpenChamber via `bun remove -g @openchamber/web`, remove the binary from the user's home directory (following the opencode uninstall pattern), and remove the OpenChamber config/data directory at `~/.config/openchamber/`.
 
-#### Scenario: OpenChamber installed
-- **WHEN** `./uninstall.sh` is run and `~/.local/bin/openchamber` exists
-- **THEN** the binary is removed and `~/.config/openchamber/` directory is removed
+#### Scenario: OpenChamber installed via bun
+- **WHEN** `./uninstall.sh` is run and OpenChamber was installed via `bun add -g @openchamber/web`
+- **THEN** `bun remove -g @openchamber/web` is executed, the binary is removed from `~/.bun/bin/`, and `~/.config/openchamber/` is removed
 
 #### Scenario: OpenChamber not installed
-- **WHEN** `./uninstall.sh` is run and `~/.local/bin/openchamber` does not exist
+- **WHEN** `./uninstall.sh` is run and `openchamber` binary is not found
 - **THEN** the script logs that OpenChamber was not found and continues
 
 ### Requirement: Start.sh reads OpenChamber config from config.env
@@ -69,3 +69,14 @@ The `start.sh` script SHALL read `OPENCHAMBER_PORT`, `OPENCHAMBER_HOST`, and `OP
 #### Scenario: OpenChamber config missing
 - **WHEN** `start.sh` reads `config.env` and finds none of the `OPENCHAMBER_*` variables
 - **THEN** OpenChamber starts with defaults: port 3000, host 127.0.0.1, no password
+
+### Requirement: Start.sh opens OpenChamber in browser
+When the `--no-webui` flag is not set, `start.sh` SHALL open the OpenChamber URL in the default browser if `openchamber` is available. If `openchamber` is not available, it SHALL fall back to opening the raw OpenCode web UI.
+
+#### Scenario: OpenChamber available
+- **WHEN** `start.sh` finishes starting and `openchamber` is in PATH
+- **THEN** `xdg-open` is called with `http://$OPENCHAMBER_HOST:$OPENCHAMBER_PORT`
+
+#### Scenario: OpenChamber not available
+- **WHEN** `start.sh` finishes starting and `openchamber` is not in PATH
+- **THEN** `xdg-open` is called with the raw OpenCode web UI URL

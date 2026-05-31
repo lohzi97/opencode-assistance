@@ -5,17 +5,17 @@
 
 ## 2. Install
 
-- [x] 2.1 Add `install_openchamber()` function to `install.sh` that runs the official OpenChamber install script, is idempotent (checks `~/.local/bin/openchamber`), and verifies Node.js 20+ is available
+- [x] 2.1 Add `install_openchamber()` function to `install.sh` that runs `bun add -g @openchamber/web`, is idempotent (checks `user_has_command openchamber`), and follows the opencode install pattern
 - [x] 2.2 Add `install_openchamber` call to the `main()` function in `install.sh` (after `install_nvm_and_node`)
 
 ## 3. Start
 
-- [x] 3.1 Add `opencode-assistant-chamber` tmux session to `start.sh` that runs `OPENCODE_HOST=http://localhost:$port OPENCODE_SKIP_START=true openchamber --port $chamber_port --host $chamber_host` (plus `--ui-password` if configured)
+- [x] 3.1 Run `openchamber` with `OPENCODE_HOST=http://127.0.0.1:$port OPENCODE_SERVER_PASSWORD=$password OPENCODE_SKIP_START=true openchamber --port $chamber_port --host $chamber_host` (plus `--ui-password` if configured); OpenChamber daemonizes itself, no tmux session needed
 - [x] 3.2 Add health check for OpenChamber in `start.sh` (curl the OpenChamber port after the existing OpenCode health check)
 
 ## 4. Stop
 
-- [x] 4.1 Add `tmux kill-session -t opencode-assistant-chamber` to `stop.sh`
+- [x] 4.1 Add `openchamber stop` to `stop.sh` (no tmux session to manage for chamber)
 
 ## 5. Config
 
@@ -29,8 +29,8 @@
 
 ## 7. Verification
 
-- [ ] 7.1 Run `./install.sh` and verify `openchamber` is available at `~/.local/bin/openchamber`
-- [ ] 7.2 Run `./config.sh` and verify the three new config values are written to `.opencode/config.env`
-- [ ] 7.3 Run `./start.sh` and verify all three tmux sessions are created and OpenChamber is accessible at the configured port
-- [ ] 7.4 Run `./stop.sh` and verify all three sessions are killed
-- [ ] 7.5 Run `./uninstall.sh -y` and verify `openchamber` binary and config directory are removed
+- [x] 7.1 Run `./install.sh` and verify `openchamber` is available via `bun add -g @openchamber/web` (binary at `~/.bun/bin/openchamber`)
+- [x] 7.2 Run `./config.sh` and verify the three new config values are written to `.opencode/config.env`
+- [x] 7.3 Run `./start.sh` and verify OpenChamber daemonizes and is accessible at the configured port, and browser opens the OpenChamber URL
+- [x] 7.4 Run `./stop.sh` and verify `openchamber stop` is called and the two tmux sessions (backend, worker) are killed
+- [x] 7.5 Run `./uninstall.sh -y` and verify `bun remove -g @openchamber/web` is executed, binary is removed from `~/.bun/bin/`, and `~/.config/openchamber/` is removed

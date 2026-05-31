@@ -235,37 +235,28 @@ fi
 
 safe_remove_user_dir "$HOME_DIR/.antigravitycli"
 
-# 5d) Remove OpenChamber binary and config
-# Try bun package removal first
+# 5d) Remove OpenChamber (bun global) and config
 if user_has_command bun || [ -x "${HOME_DIR}/.bun/bin/bun" ]; then
   INFO "Attempting to remove OpenChamber via bun"
   run_as_user env HOME="$HOME_DIR" PATH="$HOME_DIR/.bun/bin:$PATH" bash -lc 'bun remove -g @openchamber/web >/dev/null 2>&1 || true'
+else
+  INFO "bun not available; looking for OpenChamber binary"
 fi
 
-OPENCHAMBER_BIN=""
-for candidate in "${HOME_DIR}/.bun/bin/openchamber" "${HOME_DIR}/.local/bin/openchamber"; do
-  if [ -x "$candidate" ]; then
-    OPENCHAMBER_BIN="$candidate"
-    break
-  fi
-done
-OPENCHAMBER_BIN_PATH="$(user_command_path openchamber 2>/dev/null || true)"
-if [ -z "$OPENCHAMBER_BIN" ] && [ -n "$OPENCHAMBER_BIN_PATH" ]; then
-  OPENCHAMBER_BIN="$OPENCHAMBER_BIN_PATH"
+OPENCHAMBER_BIN="$(user_command_path openchamber)"
+if [ -z "$OPENCHAMBER_BIN" ] && [ -x "${HOME_DIR}/.bun/bin/openchamber" ]; then
+  OPENCHAMBER_BIN="${HOME_DIR}/.bun/bin/openchamber"
 fi
 if [ -n "$OPENCHAMBER_BIN" ]; then
   if echo "$OPENCHAMBER_BIN" | grep -q "$HOME_DIR"; then
     INFO "Removing OpenChamber binary at $OPENCHAMBER_BIN"
-    if [ -n "${SUDO_USER:-}" ] && command -v sudo >/dev/null 2>&1; then
-      sudo -u "$USER_NAME" rm -f "$OPENCHAMBER_BIN" || true
-    else
-      rm -f "$OPENCHAMBER_BIN" || true
-    fi
+    sudo rm -f "$OPENCHAMBER_BIN" || true
   else
     WARN "Found OpenChamber at $OPENCHAMBER_BIN which is outside $HOME_DIR; leaving it untouched."
+    INFO "If you want it removed, run: sudo rm -f $OPENCHAMBER_BIN"
   fi
 else
-  INFO "OpenChamber binary not found"
+  INFO "No OpenChamber binary found in PATH"
 fi
 
 safe_remove_user_dir "$HOME_DIR/.config/openchamber"

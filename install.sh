@@ -424,31 +424,19 @@ install_antigravity_cli() {
 }
 
 install_openchamber() {
-  if [ -x "${HOME_DIR}/.bun/bin/openchamber" ] || [ -x "${HOME_DIR}/.local/bin/openchamber" ]; then
-    INFO "OpenChamber already installed"
-    return
-  fi
   if user_has_command openchamber; then
-    INFO "OpenChamber already in PATH: $(user_command_path openchamber)"
+    INFO "OpenChamber already installed at $(user_command_path openchamber)"
     return
   fi
-  # Verify Node.js 20+ is available
-  local node_version
-  node_version="$(run_as_user env HOME="$HOME_DIR" bash -lc 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; node -v 2>/dev/null || true')"
-  if [ -z "$node_version" ]; then
-    ERR "Node.js is required for OpenChamber but was not found. Ensure nvm and Node LTS are installed first."
+  if ! user_has_command bun && [ ! -x "${HOME_DIR}/.bun/bin/bun" ]; then
+    ERR "bun is required to install OpenChamber. Run the script again after bun is installed."
   fi
-  local major_version="${node_version#v}"
-  major_version="${major_version%%.*}"
-  if [ "$major_version" -lt 20 ]; then
-    ERR "OpenChamber requires Node.js 20+ but found $node_version. Update Node via nvm."
-  fi
-  INFO "Installing OpenChamber (requires Node.js $node_version)"
-  run_as_user env HOME="$HOME_DIR" bash -lc 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; curl -fsSL https://raw.githubusercontent.com/btriapitsyn/openchamber/main/scripts/install.sh | bash'
-  if [ -x "${HOME_DIR}/.bun/bin/openchamber" ] || [ -x "${HOME_DIR}/.local/bin/openchamber" ]; then
-    INFO "OpenChamber installed successfully"
+  INFO "Installing OpenChamber (global) with bun"
+  run_as_user env HOME="$HOME_DIR" PATH="${HOME_DIR}/.bun/bin:${PATH}" bash -lc 'bun add -g @openchamber/web'
+  if user_has_command openchamber; then
+    INFO "OpenChamber installed at $(user_command_path openchamber)"
   else
-    WARN "OpenChamber installation finished but binary not found in expected locations"
+    WARN "OpenChamber installation finished but binary not found in PATH. It may be at ${HOME_DIR}/.bun/bin/openchamber"
   fi
 }
 

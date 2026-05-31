@@ -10,7 +10,7 @@ The project lifecycle is managed by four shell scripts: `install.sh`, `config.sh
 
 **Goals:**
 - Install OpenChamber CLI as an additional component via `./install.sh`
-- Run OpenChamber as a third tmux session in `./start.sh`, connecting to the existing OpenCode backend
+- Run OpenChamber as a background daemon in `./start.sh`, connecting to the existing OpenCode backend
 - Add OpenChamber-specific config (UI password, port, host) to `config.sh` / `config.env`
 - Clean teardown via `./stop.sh` and `./uninstall.sh`
 - Keep the existing OpenCode backend completely unchanged
@@ -23,24 +23,25 @@ The project lifecycle is managed by four shell scripts: `install.sh`, `config.sh
 
 ## Decisions
 
-### 1. Install method: OpenChamber official install script
+### 1. Install method: bun global package
 
-**Choice**: Use the official `curl -fsSL ... install.sh | bash` script.
+**Choice**: Install via `bun add -g @openchamber/web`.
 
 **Alternatives considered**:
-- `bun add -g openchamber` -- OpenChamber is not published as a bun/npm package. The official install script downloads a prebuilt binary or builds from source.
+- Official install script (`curl -fsSL ... install.sh | bash`) -- The script wraps Node.js detection and then installs via pnpm/bun/yarn/npm. Since bun is already a core dependency of this project, we cut out the middleman and install directly.
+- `npm add -g @openchamber/web` -- bun is already the project standard; using npm would introduce an unnecessary secondary package manager.
 - Docker -- OpenChamber supports Docker, but adding a second container alongside the existing brave-search container adds operational complexity for no real benefit in a single-user local setup.
 
-**Rationale**: The official script handles platform detection and PATH setup. It installs the `openchamber` binary to `~/.local/bin/`, which is already on PATH from the existing uv/nvm setup.
+**Rationale**: bun is already installed and used throughout the project. Installing OpenChamber as a bun global package keeps the dependency management consistent with opencode, qmd, and agent-tui (all installed via `bun add -g`). The install function follows the same idempotent pattern as `install_opencode()`.
 
 ### 2. Connection model: External OpenCode server
 
-**Choice**: Run OpenChamber with `OPENCODE_HOST=http://localhost:4096 OPENCODE_SKIP_START=true openchamber --port <port>`.
+**Choice**: Run OpenChamber with `OPENCODE_HOST=http://127.0.0.1:<port> OPENCODE_SERVER_PASSWORD=<password> OPENCODE_SKIP_START=true openchamber --port <chamber_port> --host <chamber_host>`.
 
 **Alternatives considered**:
 - Let OpenChamber start its own OpenCode instance -- would duplicate the backend and conflict with the existing tmux session.
 
-**Rationale**: OpenChamber connects to the already-running OpenCode backend. The `OPENCODE_SKIP_START=true` flag prevents OpenChamber from launching its own OpenCode process. This is the recommended pattern in the OpenChamber docs for connecting to an external server.
+**Rationale**: OpenChamber connects to the already-running OpenCode backend. The `OPENCODE_SKIP_START=true` flag prevents OpenChamber from launching its own OpenCode process. `OPENCODE_SERVER_PASSWORD` is passed so OpenChamber can authenticate with the backend. This is the recommended pattern in the OpenChamber docs for connecting to an external server.
 
 ### 3. Config storage: Extend config.env with new variables
 
@@ -64,25 +65,39 @@ The project lifecycle is managed by four shell scripts: `install.sh`, `config.sh
 
 **Rationale**: Users likely want the same password for both layers. Making it configurable separately allows for different passwords if desired, but the default suggestion reduces friction.
 
-### 6. Tmux session naming: `opencode-assistant-chamber`
+### 6. Stop mechanism: `openchamber stop`
 
-**Choice**: Name the OpenChamber tmux session `opencode-assistant-chamber`.
+**Choice**: Use the built-in `openchamber stop` command in `stop.sh`.
 
-**Rationale**: Follows the existing naming convention (`opencode-assistant-backend`, `opencode-assistant-worker`).
+**Alternatives considered**:
+- `tmux kill-session` -- not applicable since OpenChamber is not managed in a tmux session.
+
+**Rationale**: OpenChamber daemonizes itself; `openchamber stop` is its built-in graceful shutdown command.
+
+### 7. No tmux session for OpenChamber
+
+**Choice**: Run `openchamber` directly (not in a tmux session). OpenChamber daemonizes itself.
+
+**Rationale**: OpenChamber manages its own background process. Wrapping it in a tmux session is unnecessary. The backend and worker continue to use tmux as before.
+
+### 8. Browser open: prefer OpenChamber URL
+
+**Choice**: When `openchamber` is available, `start.sh` opens the OpenChamber URL in the browser instead of the raw OpenCode web UI.
+
+**Rationale**: The whole point of integrating OpenChamber is to use it as the primary frontend. Opening the raw UI defeats that purpose.
 
 ## Risks / Trade-offs
 
 - **OpenChamber is a third-party project** (not affiliated with OpenCode team) -> It is MIT-licensed, 4.8k stars, actively maintained (v1.11.7 as of May 2026). If it becomes unmaintained, the raw OpenCode web UI remains available as a fallback by simply pointing the tunnel back to port 4096.
-- **Additional Node.js dependency** -> OpenChamber requires Node.js 20+, which is already installed via nvm in `install.sh`. The install script will verify this.
-- **One more tmux session** -> Adds a third session to manage. Minimal operational overhead since `start.sh` and `stop.sh` handle all sessions.
-- **OpenChamber install script is fetched from GitHub** -> Same trust model as the other install scripts (bun, uv, nvm, agy). The installer will fail gracefully if the download fails.
+- **OpenChamber is installed via bun global package** -> Managed consistently with opencode, qmd, and agent-tui. If the npm registry package is removed, the raw OpenCode web UI remains available.
+- **OpenChamber runs as its own daemon** -> No tmux session needed; managed via `openchamber stop` for graceful shutdown.
 
 ## Migration Plan
 
 1. User pulls the updated scripts.
 2. Runs `./install.sh` (idempotent -- adds OpenChamber without touching existing components).
 3. Runs `./config.sh` (prompts for the new `OPENCHAMBER_UI_PASSWORD`, port, host).
-4. Runs `./start.sh` (now starts three tmux sessions instead of two).
+4. Runs `./start.sh` (starts OpenChamber daemon alongside the two existing tmux sessions).
 5. Updates the Cloudflare dashboard ingress rule for `sebastian.lohzi.com` from `http://localhost:4096` to `http://localhost:3000` (manual, one-time).
 6. Opens `sebastian.lohzi.com` in Chrome on Android and uses "Add to Home Screen" for PWA.
 
