@@ -212,8 +212,8 @@ install_qmd() {
       WARN "Failed to pull latest qmd fork. Continuing with existing version."
   fi
 
-  INFO "Installing qmd globally from fork"
-  run_as_user env HOME="$HOME_DIR" PATH="${HOME_DIR}/.bun/bin:${PATH}" bash -lc "cd '$QMD_FORK_DIR' && npm install -g ."
+  INFO "Installing qmd globally from fork via bun"
+  run_as_user env HOME="$HOME_DIR" PATH="${HOME_DIR}/.bun/bin:${PATH}" bash -lc "bun add -g '$QMD_FORK_DIR'"
   if [ -x "${HOME_DIR}/.bun/bin/qmd" ]; then
     INFO "qmd installed at ${HOME_DIR}/.bun/bin/qmd ($("${HOME_DIR}/.bun/bin/qmd" --version 2>/dev/null))"
   else
