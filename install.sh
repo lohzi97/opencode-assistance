@@ -184,7 +184,7 @@ install_opencode() {
 }
 
 QMD_FORK_REPO="git@github.com:lohzi97/qmd.git"
-QMD_FORK_DIR="${HOME_DIR}/Projects/qmd"
+QMD_FORK_DIR="${HOME_DIR}/qmd"
 
 install_qmd() {
   # Verify the current global qmd is the forked build.
