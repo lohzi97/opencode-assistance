@@ -115,8 +115,14 @@ qmd --index "$INDEX" collection exclude journals-session 2>/dev/null || true
 
 # --- Embeddings ---
 
-echo "==> Building embeddings (this may take several minutes on first run)..."
-qmd --index "$INDEX" embed
+if [[ -f "$HOME/.config/qmd/.env" ]]; then
+  echo "==> Building embeddings (this may take several minutes on first run)..."
+  qmd --index "$INDEX" embed
+else
+  echo "==> Skipping embeddings (no ~/.config/qmd/.env found)."
+  echo "    Run ./config.sh to configure Voyage cloud providers, then:"
+  echo "      qmd --index $INDEX embed"
+fi
 
 # --- Verify ---
 
@@ -124,4 +130,10 @@ echo "==> Verifying final state..."
 qmd --index "$INDEX" status
 
 echo ""
-echo "Setup complete."
+if [[ -f "$HOME/.config/qmd/.env" ]]; then
+  echo "Setup complete."
+else
+  echo "Setup complete (collections and contexts only)."
+  echo "Next step: run ./config.sh to configure cloud providers, then run:"
+  echo "  qmd --index $INDEX embed"
+fi
