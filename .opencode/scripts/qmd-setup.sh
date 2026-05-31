@@ -35,12 +35,19 @@ has_context() {
 
 # --- Preflight ---
 
-if ! command -v qmd &>/dev/null; then
-  echo "ERROR: qmd is not installed or not on PATH." >&2
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=qmd-verify.sh
+source "$SCRIPT_DIR/qmd-verify.sh"
+
+if ! verify_qmd; then
   exit 1
 fi
 
-echo "==> qmd found: $(qmd --version)"
+# Warn if cloud provider config is missing
+if [[ ! -f "$HOME/.config/qmd/.env" ]]; then
+  echo "WARNING: ~/.config/qmd/.env not found. qmd will use local GGUF models." >&2
+  echo "Run ./config.sh to configure Voyage and DeepSeek cloud providers." >&2
+fi
 
 # --- Collections (sequential — parallel writes corrupt SQLite) ---
 

@@ -19,6 +19,8 @@ EXISTING_TELEGRAM_CHAT_ID=""
 EXISTING_OPENCHAMBER_PORT=""
 EXISTING_OPENCHAMBER_HOST=""
 EXISTING_OPENCHAMBER_UI_PASSWORD=""
+EXISTING_VOYAGE_API_KEY=""
+EXISTING_DEEPSEEK_API_KEY=""
 
 INFO() { printf "==> %s\n" "$*"; }
 WARN() { printf "!! %s\n" "$*" >&2; }
@@ -90,6 +92,28 @@ load_existing_telegram_values() {
 
   EXISTING_TELEGRAM_BOT_TOKEN="$(sed -n '/"botToken"/{s/.*"botToken"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p;q;}' "$telegram_config")"
   EXISTING_TELEGRAM_CHAT_ID="$(sed -n '/"chatId"/{s/.*"chatId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p;q;}' "$telegram_config")"
+}
+
+load_existing_qmd_values() {
+  local qmd_env="$HOME/.config/qmd/.env"
+
+  if [[ ! -f "$qmd_env" ]]; then
+    return 0
+  fi
+
+  local line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      VOYAGE_API_KEY=*)
+        EXISTING_VOYAGE_API_KEY="${line#VOYAGE_API_KEY=}"
+        EXISTING_VOYAGE_API_KEY="${EXISTING_VOYAGE_API_KEY%$'\r'}"
+        ;;
+      DEEPSEEK_API_KEY=*)
+        EXISTING_DEEPSEEK_API_KEY="${line#DEEPSEEK_API_KEY=}"
+        EXISTING_DEEPSEEK_API_KEY="${EXISTING_DEEPSEEK_API_KEY%$'\r'}"
+        ;;
+    esac
+  done < "$qmd_env"
 }
 
 prompt_value() {
@@ -286,6 +310,43 @@ write_telegram_config() {
   chmod 600 "$telegram_config"
 }
 
+write_qmd_env() {
+  local voyage_api_key="$1"
+  local deepseek_api_key="$2"
+  local qmd_dir="$HOME/.config/qmd"
+  local qmd_env="$qmd_dir/.env"
+
+  mkdir -p "$qmd_dir"
+
+  cat > "$qmd_env" << 'ENVEOF'
+# QMD Cloud Provider Configuration
+# Loaded automatically by bin/qmd before any module initialization.
+# Shell-level exports and CLI overrides take precedence over values here.
+
+# Embedding: Voyage AI
+QMD_EMBED_PROVIDER=voyage
+VOYAGE_EMBED_MODEL=voyage-4-lite
+ENVEOF
+
+  # Append API keys (not heredoc to avoid expansion issues)
+  echo "VOYAGE_API_KEY=$voyage_api_key" >> "$qmd_env"
+  echo "" >> "$qmd_env"
+
+  cat >> "$qmd_env" << 'ENVEOF'
+# Reranking: Voyage AI
+QMD_RERANK_PROVIDER=voyage
+VOYAGE_RERANK_MODEL=rerank-2.5-lite
+
+# Query Expansion: DeepSeek
+QMD_GENERATE_PROVIDER=deepseek
+DEEPSEEK_GENERATE_MODEL=deepseek-v4-flash
+ENVEOF
+
+  echo "DEEPSEEK_API_KEY=$deepseek_api_key" >> "$qmd_env"
+
+  chmod 600 "$qmd_env"
+}
+
 stage_google_drive_oauth_credentials() {
   local source_path="$1"
 
@@ -335,6 +396,7 @@ main() {
 
   load_existing_config_values
   load_existing_telegram_values
+  load_existing_qmd_values
   if [[ -f "$google_drive_oauth_credentials" ]]; then
     EXISTING_GOOGLE_DRIVE_OAUTH_CREDENTIALS="$google_drive_oauth_credentials"
   fi
@@ -348,6 +410,8 @@ main() {
   google_drive_oauth_credentials_source="$(prompt_file_path "Google Drive OAuth credentials JSON path" "$EXISTING_GOOGLE_DRIVE_OAUTH_CREDENTIALS")"
   telegram_bot_token="$(prompt_secret "Telegram bot token" "$EXISTING_TELEGRAM_BOT_TOKEN")"
   telegram_chat_id="$(prompt_value "Telegram chat ID" "$EXISTING_TELEGRAM_CHAT_ID")"
+  voyage_api_key="$(prompt_secret "Voyage AI API key (for qmd cloud embeddings)" "$EXISTING_VOYAGE_API_KEY")"
+  deepseek_api_key="$(prompt_secret "DeepSeek API key (for qmd query expansion)" "$EXISTING_DEEPSEEK_API_KEY")"
 
   write_config_env "$brave_api_key" "$opencode_server_password" "$openchamber_port" "$openchamber_host" "$openchamber_ui_password"
   INFO "Wrote $config_env"
@@ -357,6 +421,9 @@ main() {
 
   write_telegram_config "$telegram_bot_token" "$telegram_chat_id"
   INFO "Wrote $telegram_config"
+
+  write_qmd_env "$voyage_api_key" "$deepseek_api_key"
+  INFO "Wrote ~/.config/qmd/.env with cloud provider configuration"
 
   configure_brave_container "$brave_api_key"
   INFO "$brave_container is configured and running"

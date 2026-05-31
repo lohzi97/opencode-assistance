@@ -27,9 +27,18 @@ cd "$BASE_DIR"
 
 log "=== qmd refresh start ==="
 
-if ! command -v qmd &>/dev/null; then
-  log "ERROR: qmd not found on PATH"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=qmd-verify.sh
+source "$SCRIPT_DIR/qmd-verify.sh"
+
+if ! verify_qmd; then
+  log "ERROR: forked qmd verification failed"
   exit 1
+fi
+
+# Warn if cloud provider config is missing
+if [[ ! -f "$HOME/.config/qmd/.env" ]]; then
+  log "WARNING: ~/.config/qmd/.env not found, using local GGUF models"
 fi
 
 # update
