@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -274,6 +275,9 @@ export type BusEventPayload = {
 export const root = path.resolve(import.meta.dir, "../..");
 export const serverDir = path.resolve(root, ".opencode/server");
 export const stateDir = path.join(serverDir, "state");
+
+loadConfigEnv();
+
 const host = process.env.OPENCODE_ASSISTANT_HOST ?? "127.0.0.1";
 const port = process.env.OPENCODE_ASSISTANT_PORT ?? "4096";
 const base = `http://${host}:${port}`;
@@ -281,17 +285,44 @@ const auth = process.env.OPENCODE_SERVER_PASSWORD
   ? `Basic ${Buffer.from(`${process.env.OPENCODE_SERVER_USERNAME ?? "opencode"}:${process.env.OPENCODE_SERVER_PASSWORD}`).toString("base64")}`
   : undefined;
 
+function loadConfigEnv() {
+  const configEnvPath = path.join(root, ".opencode/config.env");
+  if (!existsSync(configEnvPath)) return;
+  for (const rawLine of readFileSync(configEnvPath, "utf8").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!match) continue;
+    const [, key, rawValue] = match;
+    if (process.env[key] !== undefined) continue;
+    process.env[key] = unquoteEnvValue(rawValue);
+  }
+}
+
+function unquoteEnvValue(value: string) {
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
 export class OpenCodeClient {
   async health() {
+    let lastError: unknown;
     for (let i = 0; i < 30; i++) {
       try {
         await this.req("/global/health");
         return;
-      } catch {
+      } catch (err) {
+        lastError = err;
         await sleep(1_000);
       }
     }
-    throw new Error(`opencode server not reachable at ${base}`);
+    const detail = lastError instanceof Error ? ` (${lastError.message})` : "";
+    throw new Error(`opencode server not reachable at ${base}${detail}`);
   }
 
   async createSession(title: string) {
