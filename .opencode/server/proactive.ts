@@ -448,12 +448,18 @@ export class ProactiveService {
   }
 
   async getAllTasks() {
-    await this.ensureLoaded();
-    await this.requestConfigReload();
+    // Lightweight read-only path for CLI queries.
+    // Only loads config and state without acquiring locks or preparing runtime,
+    // avoiding contention with the worker process.
+    if (!this.config) {
+      const workerConfig = await loadWorkerConfig();
+      this.workerConfig = workerConfig;
+      this.config = workerConfig.proactive;
+    }
     const config = this.config!;
-    const { state } = await mutateProactiveState(async (inner) => {
-      this.syncTaskDefinitions(inner, false);
-    });
+    const state = await loadProactiveState();
+    // Preserve the previous output shape without persisting from the CLI.
+    this.syncTaskDefinitions(state, false);
     return {
       enabled: config.enabled,
       anchors: state.anchors,

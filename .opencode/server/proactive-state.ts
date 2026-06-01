@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, rmdir } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { readJsonc, record, stateDir, writeJsonFile, type ModelRef } from "./shared";
 
@@ -166,13 +166,85 @@ export async function loadProactiveState() {
   return await readJsonc(proactiveStateFile, parseProactiveState, emptyProactiveState());
 }
 
+const lockPidFile = path.join(proactiveStateLockDir, "owner.pid");
+const LOCK_ACQUIRE_TIMEOUT_MS = 10_000;
+const LOCK_OWNER_WRITE_GRACE_MS = 2_000;
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if (record(err) && err.code === "EPERM") return true;
+    return false;
+  }
+}
+
+function parseLockOwner(text: string) {
+  const [pidText, token] = text.trim().split(":", 2);
+  const pid = Number(pidText);
+  return Number.isInteger(pid) && pid > 0 ? { pid, token } : undefined;
+}
+
+async function readLockOwner(): Promise<{ pid: number; token?: string } | undefined> {
+  try {
+    const text = await readFile(lockPidFile, "utf8");
+    return parseLockOwner(text);
+  } catch {
+    return undefined;
+  }
+}
+
+async function lockAgeMs() {
+  try {
+    return Date.now() - (await stat(proactiveStateLockDir)).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+async function removeLockDir() {
+  await rm(proactiveStateLockDir, { recursive: true, force: true });
+}
+
+async function stealStaleLock(): Promise<boolean> {
+  const owner = await readLockOwner();
+  if (owner === undefined) {
+    // The owner file is written right after mkdir. Give a fresh lock a moment
+    // before treating no-owner legacy locks as stale.
+    if ((await lockAgeMs()) < LOCK_OWNER_WRITE_GRACE_MS) return false;
+    await removeLockDir();
+    return true;
+  }
+  if (!isProcessAlive(owner.pid)) {
+    await removeLockDir();
+    return true;
+  }
+  return false;
+}
+
 export async function withProactiveStateLock<T>(fn: () => Promise<T>): Promise<T> {
+  const deadline = Date.now() + LOCK_ACQUIRE_TIMEOUT_MS;
+  const lockOwner = `${process.pid}:${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
   while (true) {
     try {
       await mkdir(proactiveStateLockDir);
+      try {
+        await writeFile(lockPidFile, lockOwner);
+      } catch (err) {
+        await removeLockDir().catch(() => undefined);
+        throw err;
+      }
       break;
     } catch (err) {
       if (!record(err) || err.code !== "EEXIST") throw err;
+      if (Date.now() > deadline) {
+        const owner = await readLockOwner();
+        throw new Error(
+          `proactive state lock acquisition timed out after ${LOCK_ACQUIRE_TIMEOUT_MS}ms (holder PID ${owner?.pid ?? "unknown"})`,
+        );
+      }
+      if (await stealStaleLock()) continue;
       await Bun.sleep(50);
     }
   }
@@ -180,7 +252,10 @@ export async function withProactiveStateLock<T>(fn: () => Promise<T>): Promise<T
   try {
     return await fn();
   } finally {
-    await rmdir(proactiveStateLockDir).catch(() => undefined);
+    const owner = await readFile(lockPidFile, "utf8").catch(() => undefined);
+    if (owner?.trim() === lockOwner) {
+      await removeLockDir().catch(() => undefined);
+    }
   }
 }
 
