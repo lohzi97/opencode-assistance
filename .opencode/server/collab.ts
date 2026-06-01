@@ -44,6 +44,7 @@ type MemberRow = {
   role: string;
   state: string;
   joined_at: number;
+  directory: string | null;
   agent: string | null;
   model_provider_id: string | null;
   model_id: string | null;
@@ -101,6 +102,7 @@ type PendingDeliveryRow = DeliveryRow & {
   message_kind: string;
   message_created_at: number;
   member_role: string | null;
+  directory: string | null;
   agent: string | null;
   model_provider_id: string | null;
   model_id: string | null;
@@ -122,9 +124,11 @@ type SpawnInput = {
 type SpawnPromptOptions = {
   agent?: string;
   model?: ModelRef;
+  directory?: string;
 };
 
 type AgentModelRow = {
+  directory: string | null;
   agent: string | null;
   model_provider_id: string | null;
   model_id: string | null;
@@ -367,6 +371,10 @@ export class CollabService {
       model: spawn.model ?? defaults.model,
     };
     const session = await this.client.createSpawnSession({ title: `Collab: ${room.name}/${spawn.name}`, directory: spawn.directory });
+    const spawnPrompt = {
+      ...selectedPrompt,
+      directory: session.directory ?? spawn.directory,
+    };
     const templates = await resolveCollabTemplates(this.config, {
       room: room.name,
       alias: spawn.name,
@@ -377,7 +385,7 @@ export class CollabService {
       ...spawn,
       targetSessionId: session.id,
       roomJoinInstruction: templates.room_join_instruction,
-      spawnPrompt: selectedPrompt,
+      spawnPrompt,
     });
   }
 
@@ -402,11 +410,14 @@ export class CollabService {
   }
 
   private async sessionAgentModel(sessionId: string): Promise<SpawnPromptOptions> {
-    const messages = await this.client.sessionMessages(sessionId).catch(() => []);
+    const [session, messages] = await Promise.all([
+      this.client.getSession(sessionId).catch(() => undefined),
+      this.client.sessionMessages(sessionId).catch(() => []),
+    ]);
     for (const message of [...messages].reverse()) {
-      if (message.info.role === "user") return { agent: message.info.agent, model: message.info.model };
+      if (message.info.role === "user") return { agent: message.info.agent, model: message.info.model, directory: session?.directory };
     }
-    return {};
+    return { directory: session?.directory };
   }
 
   private leaveRoom(roomRef: string, input: Record<string, unknown>) {
@@ -510,7 +521,9 @@ export class CollabService {
     if (targets.length === 0) return { flushed: false, reason: "empty" };
 
     try {
-      await Promise.all(targets.map((delivery) => this.client.abortSession(delivery.target_session_id)));
+      await Promise.all(
+        targets.map((delivery) => this.client.abortSession(delivery.target_session_id, this.db!.memberRouteForSession(delivery.target_session_id))),
+      );
     } catch (error) {
       const reason = `hard abort failed: ${error instanceof Error ? error.message : String(error)}`;
       this.db.markDeliveryFailure(targets, reason, classifyDeliveryFailure(error));
@@ -613,7 +626,7 @@ export class CollabService {
   private promptOptionsForMember(backlog: PendingDeliveryRow[]): SpawnPromptOptions {
     const first = backlog[0];
     if (!first || !this.db) return {};
-    return this.db.memberAgentModel(first.room_id, first.target_session_id);
+    return this.db.memberPromptOptions(first.room_id, first.target_session_id);
   }
 
   private immediateDeliveryBlocker(targetSessionId: string, status?: SessionStatusInfo, questions: QuestionRequest[] = []) {
@@ -1100,6 +1113,7 @@ export class CollabStorage {
                 messages.kind AS message_kind,
                 messages.created_at AS message_created_at,
                 members.role AS member_role,
+                members.directory AS directory,
                 members.agent AS agent,
                 members.model_provider_id AS model_provider_id,
                 members.model_id AS model_id,
@@ -1115,15 +1129,28 @@ export class CollabStorage {
       .all(targetSessionId);
   }
 
-  memberAgentModel(roomId: string, sessionId: string): SpawnPromptOptions {
+  memberPromptOptions(roomId: string, sessionId: string): SpawnPromptOptions {
     const row = this.db
       .query<AgentModelRow, [string, string]>(
-        `SELECT agent, model_provider_id, model_id, model_variant
+        `SELECT directory, agent, model_provider_id, model_id, model_variant
          FROM members
          WHERE room_id = ? AND session_id = ? AND state = 'active'
          LIMIT 1`,
       )
       .get(roomId, sessionId);
+    return promptOptionsFromRow(row);
+  }
+
+  memberRouteForSession(sessionId: string): SpawnPromptOptions {
+    const row = this.db
+      .query<AgentModelRow, [string]>(
+        `SELECT directory, agent, model_provider_id, model_id, model_variant
+         FROM members
+         WHERE session_id = ? AND state = 'active'
+         ORDER BY joined_at DESC
+         LIMIT 1`,
+      )
+      .get(sessionId);
     return promptOptionsFromRow(row);
   }
 
@@ -1334,14 +1361,15 @@ export class CollabStorage {
 
   private insertMember(roomId: string, sessionId: string, name: string, role: string, joinedAt: number, prompt?: SpawnPromptOptions) {
     this.db.run(
-      `INSERT INTO members (room_id, session_id, name, role, joined_at, agent, model_provider_id, model_id, model_variant)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO members (room_id, session_id, name, role, joined_at, directory, agent, model_provider_id, model_id, model_variant)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         roomId,
         sessionId,
         name,
         role,
         joinedAt,
+        prompt?.directory ?? null,
         prompt?.agent ?? null,
         prompt?.model?.providerID ?? null,
         prompt?.model?.modelID ?? null,
@@ -1540,6 +1568,7 @@ export class CollabStorage {
         left_at                    INTEGER,
         removed_at                 INTEGER,
         removed_by                 TEXT,
+        directory                  TEXT,
         agent                      TEXT,
         model_provider_id          TEXT,
         model_id                   TEXT,
@@ -1601,6 +1630,7 @@ export class CollabStorage {
     this.ensureColumn("rooms", "public_message_updated_at", "INTEGER");
     this.ensureColumn("rooms", "public_message_updated_by", "TEXT");
     this.ensureColumn("messages", "parent_id", "TEXT");
+    this.ensureColumn("members", "directory", "TEXT");
     this.ensureColumn("members", "agent", "TEXT");
     this.ensureColumn("members", "model_provider_id", "TEXT");
     this.ensureColumn("members", "model_id", "TEXT");
@@ -1644,6 +1674,7 @@ function pad(value: number) {
 function promptOptionsFromRow(row?: AgentModelRow): SpawnPromptOptions {
   if (!row) return {};
   return {
+    directory: row.directory ?? undefined,
     agent: row.agent ?? undefined,
     model:
       row.model_provider_id && row.model_id

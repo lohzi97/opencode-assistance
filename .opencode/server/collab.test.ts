@@ -165,6 +165,24 @@ describe("opencode client delivery boundary", () => {
     await expect(client.promptAsync("ses_1", { parts: [{ type: "text", text: "hello" }] })).resolves.toBeUndefined();
   });
 
+  test("routes async prompts and aborts to the target directory", async () => {
+    const requests: Array<{ url: string; body?: unknown }> = [];
+    globalThis.fetch = async (url, init) => {
+      requests.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (String(url).includes("/prompt_async")) return new Response(null, { status: 204 });
+      if (String(url).includes("/abort")) return Response.json(true);
+      return new Response("not found", { status: 404 });
+    };
+
+    const client = new OpenCodeClient();
+    await client.promptAsync("ses_1", { directory: "/tmp/target", parts: [{ type: "text", text: "hello" }] });
+    await client.abortSession("ses_1", { directory: "/tmp/target" });
+
+    expect(new URL(requests[0].url).searchParams.get("directory")).toBe("/tmp/target");
+    expect(requests[0].body).toEqual({ parts: [{ type: "text", text: "hello" }] });
+    expect(new URL(requests[1].url).searchParams.get("directory")).toBe("/tmp/target");
+  });
+
   test("classifies retryable and permanent delivery failures", () => {
     expect(classifyDeliveryFailure(new OpenCodeRequestError("backend", 503, "temporary"))).toBe("retryable");
     expect(classifyDeliveryFailure(new OpenCodeRequestError("rate limited", 429, "retry later"))).toBe("retryable");
@@ -1228,13 +1246,13 @@ describe("collab service", () => {
           )
           .get();
         const member = storage.db
-          .query<{ agent: string | null; model_provider_id: string | null; model_id: string | null }, []>(
-            "SELECT agent, model_provider_id, model_id FROM members WHERE session_id = 'ses_spawned_1'",
+          .query<{ directory: string | null; agent: string | null; model_provider_id: string | null; model_id: string | null }, []>(
+            "SELECT directory, agent, model_provider_id, model_id FROM members WHERE session_id = 'ses_spawned_1'",
           )
           .get();
         expect(row).toEqual({ room_id: created.body.room_id, session_id: "ses_spawned_1", spawned_by: "ses_planner" });
         expect(prompt).toEqual({ agent: "sebastian", model_provider_id: "provider-x", model_id: "model-y" });
-        expect(member).toEqual({ agent: "sebastian", model_provider_id: "provider-x", model_id: "model-y" });
+        expect(member).toEqual({ directory: "/tmp/spawn", agent: "sebastian", model_provider_id: "provider-x", model_id: "model-y" });
       } finally {
         storage.close();
       }
@@ -2525,7 +2543,7 @@ describe("collab service", () => {
     const client = mockClient({ statuses: { ses_worker: { type: "idle" } } });
     client.promptAsync = async (sessionID, body) => {
       client.events.push(`prompt:${sessionID}`);
-      client.prompts.push({ sessionID, text: body.parts.map((part) => part.text).join("\n"), agent: body.agent, model: body.model });
+      client.prompts.push({ sessionID, text: body.parts.map((part) => part.text).join("\n"), directory: body.directory, agent: body.agent, model: body.model });
       promptStarted();
       await promptBlocker;
     };
@@ -2631,6 +2649,7 @@ describe("collab service", () => {
         role: "implementer",
         agent: "sebastian",
         model: { providerID: "provider-x", modelID: "model-y", variant: "fast" },
+        directory: "/tmp/spawn-order-worker",
         initial_prompt: "Start implementation now.",
       });
 
@@ -2659,13 +2678,24 @@ describe("collab service", () => {
       expect(client.prompts[0].text).toContain("Join Bootstrap");
       expect(client.prompts[0].text).toContain("Join as worker in spawn-order-");
       expect(client.prompts[0].text).not.toContain("Start implementation now.");
+      expect(client.prompts[0].directory).toBe("/tmp/spawn-order-worker");
 
       await expect(service.attemptFlush("ses_spawned_1", { type: "idle" }, [])).resolves.toEqual({ flushed: true, count: 1 });
       expect(client.prompts).toHaveLength(2);
       expect(client.prompts[1].text).not.toContain("Join as worker in spawn-order-");
       expect(client.prompts[1].text).toContain("Start implementation now.");
+      expect(client.prompts[1].directory).toBe("/tmp/spawn-order-worker");
       expect(client.prompts[1].agent).toBe("sebastian");
       expect(client.prompts[1].model).toEqual({ providerID: "provider-x", modelID: "model-y", variant: "fast" });
+
+      await routeJson(service, "POST", `/room/${created.body.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "@worker Continue with the next task.",
+      });
+      await expect(service.attemptFlush("ses_spawned_1", { type: "idle" }, [])).resolves.toEqual({ flushed: true, count: 1 });
+      expect(client.prompts[2].text).toContain("Continue with the next task.");
+      expect(client.prompts[2].directory).toBe("/tmp/spawn-order-worker");
     } finally {
       await service.shutdown();
     }
@@ -2884,7 +2914,7 @@ function mockClient(
   } = {},
 ) {
   const client = {
-    prompts: [] as Array<{ sessionID: string; text: string; agent?: string; model?: { providerID: string; modelID: string; variant?: string } }>,
+    prompts: [] as Array<{ sessionID: string; text: string; directory?: string; agent?: string; model?: { providerID: string; modelID: string; variant?: string } }>,
     events: [] as string[],
     createdSessions: [] as Array<{ title?: string; directory?: string }>,
     nextSessionId: undefined as string | undefined,
@@ -2894,7 +2924,7 @@ function mockClient(
       client.createdSessions.push(body);
       const id = client.nextSessionId ?? `ses_spawned_${client.createdSessions.length}`;
       client.nextSessionId = undefined;
-      return { id, title: body.title ?? id, directory: "/spawned", time: { created: 1, updated: 1 } };
+      return { id, title: body.title ?? id, directory: body.directory ?? "/spawned", time: { created: 1, updated: 1 } };
     },
     sessionStatus: async () => input.statuses ?? {},
     pendingQuestions: async () => input.questions ?? [],
@@ -2905,17 +2935,17 @@ function mockClient(
     },
     promptAsync: async (
       sessionID: string,
-      body: { agent?: string; model?: { providerID: string; modelID: string; variant?: string }; parts: Array<{ type: "text"; text: string }> },
+      body: { directory?: string; agent?: string; model?: { providerID: string; modelID: string; variant?: string }; parts: Array<{ type: "text"; text: string }> },
     ) => {
       const promptError = input.promptErrors?.shift();
       if (promptError) throw promptError;
       if (input.failPrompt) throw new Error("temporary failure");
       client.events.push(`prompt:${sessionID}`);
-      client.prompts.push({ sessionID, text: body.parts.map((part) => part.text).join("\n"), agent: body.agent, model: body.model });
+      client.prompts.push({ sessionID, text: body.parts.map((part) => part.text).join("\n"), directory: body.directory, agent: body.agent, model: body.model });
     },
     log: async () => {},
   } as OpenCodeClientType & {
-    prompts: Array<{ sessionID: string; text: string; agent?: string; model?: { providerID: string; modelID: string; variant?: string } }>;
+    prompts: Array<{ sessionID: string; text: string; directory?: string; agent?: string; model?: { providerID: string; modelID: string; variant?: string } }>;
     events: string[];
     createdSessions: Array<{ title?: string; directory?: string }>;
     nextSessionId?: string;

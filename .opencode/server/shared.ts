@@ -41,6 +41,10 @@ export type CreateSessionInput = {
   directory?: string;
 };
 
+export type WorkspaceRouteInput = {
+  directory?: string;
+};
+
 export type UserMessageInfo = {
   id: string;
   sessionID: string;
@@ -363,8 +367,10 @@ export class OpenCodeClient {
     });
   }
 
-  async getSession(sessionID: string) {
-    return await this.req<SessionInfo>(`/session/${sessionID}`);
+  async getSession(sessionID: string, route: WorkspaceRouteInput = {}) {
+    return await this.req<SessionInfo>(`/session/${sessionID}`, {
+      ...(route.directory ? { urlSearchParams: { directory: route.directory } } : {}),
+    });
   }
 
   async sessionStatus() {
@@ -375,8 +381,10 @@ export class OpenCodeClient {
     return await this.req<QuestionRequest[]>("/question");
   }
 
-  async sessionMessages(sessionID: string) {
-    return await this.req<MessageWithParts[]>(`/session/${sessionID}/message`);
+  async sessionMessages(sessionID: string, route: WorkspaceRouteInput = {}) {
+    return await this.req<MessageWithParts[]>(`/session/${sessionID}/message`, {
+      ...(route.directory ? { urlSearchParams: { directory: route.directory } } : {}),
+    });
   }
 
   async prompt(
@@ -421,6 +429,7 @@ export class OpenCodeClient {
       agent?: string;
       model?: ModelRef;
       variant?: string;
+      directory?: string;
       system?: string;
       parts: Array<
         | {
@@ -436,18 +445,20 @@ export class OpenCodeClient {
       >;
     },
   ) {
+    const { directory, ...payload } = body;
     await this.req<void>(`/session/${sessionID}/prompt_async`, {
       method: "POST",
       body: JSON.stringify({
-        ...body,
-        model: body.model
+        ...payload,
+        model: payload.model
           ? {
-              providerID: body.model.providerID,
-              modelID: body.model.modelID,
+              providerID: payload.model.providerID,
+              modelID: payload.model.modelID,
             }
           : undefined,
-        variant: body.variant ?? body.model?.variant,
+        variant: payload.variant ?? payload.model?.variant,
       }),
+      ...(directory ? { urlSearchParams: { directory } } : {}),
       expect: 204,
     });
   }
@@ -476,9 +487,10 @@ export class OpenCodeClient {
     });
   }
 
-  async abortSession(sessionID: string) {
+  async abortSession(sessionID: string, route: WorkspaceRouteInput = {}) {
     return await this.req<boolean>(`/session/${sessionID}/abort`, {
       method: "POST",
+      ...(route.directory ? { urlSearchParams: { directory: route.directory } } : {}),
     });
   }
 
