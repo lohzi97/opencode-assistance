@@ -21,7 +21,7 @@ Save the returned `name` as `<room>` and keep the one-time `planner_password` pr
 
 ## 2. Set Shared Context
 
-Set a concise public message before adding others:
+Set a public message before adding others. The public message is a planner-only, pinned blurb attached to the room. It is included in every future delivery to members, so each participant sees the current public message alongside each room message they receive.
 
 ```bash
 bun .opencode/scripts/agent-collab.ts room public-message set \
@@ -29,6 +29,30 @@ bun .opencode/scripts/agent-collab.ts room public-message set \
   --session <planner-session-id> \
   --from planner \
   --text "Topic: <topic>. Goal: discuss only, no edits unless explicitly assigned. Report findings, risks, and recommendation."
+```
+
+### Public Message Guidelines
+
+**Use as a standing room contract.** Define the scope, constraints, and rules of the collaboration. This ensures every participant is reminded of the ground rules on each delivery, even if they joined late or the discussion has drifted.
+
+**Use as an evolving task board.** As decisions are made and work progresses, update the public message to reflect the current state -- for example, switching from "discuss only" to specific assignments. Members receive the updated context on their next delivery without needing to read the full transcript.
+
+**Use as a scope guardrail.** If the room is discussion-only, the public message is the single source of truth that says "no edits." If someone starts editing despite that, the public message serves as the agreed-upon constraint that justifies corrective action.
+
+**Keep it concise.** The public message is prepended to every delivery. A verbose public message wastes context window on every single message a member receives. Keep it to a few sentences covering scope, goal, and current assignments.
+
+**Do not put transient discussion in the public message.** Questions, responses, and general discussion belong in regular `send` or `ask` messages. The public message should only contain high-signal, persistent context: rules, scope, and current assignment state.
+
+**Update at transition points.** Update the public message when the room transitions between phases (discussion to implementation, implementation to review) or when the scope changes. This keeps everyone aligned without the planner repeating instructions in every message.
+
+Clear the public message when it is no longer needed:
+
+```bash
+bun .opencode/scripts/agent-collab.ts room public-message clear \
+  --room <room> \
+  --session <planner-session-id> \
+  --from planner \
+  --json
 ```
 
 ## 3. Spawn Participants
