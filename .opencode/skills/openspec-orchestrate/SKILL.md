@@ -58,6 +58,30 @@ Ask workers to load and use the corresponding skill instead:
 
 If a corresponding skill is not available, stop and report the missing skill before spawning a worker for that phase.
 
+Newly created project skills may require restarting OpenCode before they appear in the available skills list for the planner or spawned workers. If a required skill exists on disk but is unavailable at runtime, stop and ask the user to restart OpenCode rather than improvising a replacement workflow.
+
+## Worker Model Routing
+
+Spawn each worker with the model assigned to its phase unless the user explicitly overrides it for the current run.
+
+| Worker phase | Skill | Provider | Model |
+| --- | --- | --- | --- |
+| Proposal creation | `openspec-propose` | `deepseek` | `deepseek-v4-pro` |
+| Proposal review | `openspec-review-proposal` | `deepseek` | `deepseek-v4-pro` |
+| PRD decomposition | `openspec-decompose-prd` | `deepseek` | `deepseek-v4-pro` |
+| PRD decomposition review | `openspec-review-prd-decomposition` | `deepseek` | `deepseek-v4-pro` |
+| Implementation | `openspec-apply-change` | `deepseek` | `deepseek-v4-pro` |
+| Implementation review/resume | `openspec-apply-resume` | `deepseek` | `deepseek-v4-pro` |
+| Testing | `openspec-test` | `deepseek` | `deepseek-v4-pro` |
+| Fixing | `openspec-fix` | `deepseek` | `deepseek-v4-pro` |
+| Code review | `openspec-code-review` | `openai` | `gpt-5.5` |
+| Design discussion | `openspec-discuss` | `openai` | `gpt-5.5` |
+| Alignment | `openspec-align` | `deepseek` | `deepseek-v4-flash` |
+| Archive | `openspec-archive-change` | `deepseek` | `deepseek-v4-pro` |
+| Commit checkpoint | commit worker | `deepseek` | `deepseek-v4-flash` |
+
+When spawning through `agent-collab`, pass both `--provider <provider>` and `--model <model>` from this table. Do not omit model routing and rely on planner defaults.
+
 ## Intake
 
 Before creating or using a room, establish the orchestration inputs. Ask the user only for missing details that cannot be safely inferred.
@@ -72,6 +96,9 @@ Required inputs:
 - Commit mode: `disabled`, `ask_each_checkpoint`, or `auto_at_checkpoints`.
 - Push mode: `disabled`, `ask_each_checkpoint`, or `auto_with_commit`.
 - Loop mode: `auto_continue_until_blocked` or `ask_after_each_phase`.
+- Optional model overrides, if the user wants to diverge from the Worker Model Routing table for this run.
+
+Infer the target project directory from the current workspace when safe. Ask only when the user names a different project or the workspace is ambiguous.
 
 Default to:
 
@@ -105,6 +132,8 @@ The worker does not need the project path, change id, phase, global workflow, re
 ## Worker Assignment Pattern
 
 Spawn a worker with a narrow alias and role for the current phase. Use the same project directory as the target project.
+
+Always select the worker's provider and model from the Worker Model Routing table and pass them to the `agent-collab spawn` command. For example, an `openspec-code-review` worker must be spawned with `--provider openai --model gpt-5.5`, while an `openspec-align` worker must be spawned with `--provider deepseek --model deepseek-v4-flash`.
 
 Example assignment prompts:
 
