@@ -175,6 +175,12 @@ export type CollabConfig = {
   poll_interval_ms: number;
   hard_abort_wait_ms: number;
   hard_abort_wait_max_ms: number;
+  inactivity_nudge: {
+    enabled: boolean;
+    threshold_ms: number;
+    repeat_ms: number;
+    message?: CollabInstructionSource;
+  };
   room_join_instruction?: CollabInstructionSource;
   reply_instruction?: CollabInstructionSource;
 };
@@ -237,6 +243,11 @@ const DEFAULT_COLLAB_CONFIG: CollabConfig = {
   poll_interval_ms: 5_000,
   hard_abort_wait_ms: 15_000,
   hard_abort_wait_max_ms: 60_000,
+  inactivity_nudge: {
+    enabled: false,
+    threshold_ms: 15 * 60 * 1000,
+    repeat_ms: 15 * 60 * 1000,
+  },
 };
 
 export async function loadWorkerConfig() {
@@ -281,6 +292,7 @@ export function parseCollabConfig(
   if (hardAbortWaitMax < hardAbortWait) {
     throw new Error("collab.hard_abort_wait_max_ms must be greater than or equal to collab.hard_abort_wait_ms");
   }
+  const inactivityNudge = parseCollabInactivityNudgeConfig(source.inactivity_nudge);
 
   return {
     enabled: source.enabled === true,
@@ -290,8 +302,30 @@ export function parseCollabConfig(
     poll_interval_ms: pollInterval,
     hard_abort_wait_ms: hardAbortWait,
     hard_abort_wait_max_ms: hardAbortWaitMax,
+    inactivity_nudge: inactivityNudge,
     room_join_instruction: parseInstructionSource(source.room_join_instruction),
     reply_instruction: parseInstructionSource(source.reply_instruction),
+  };
+}
+
+function parseCollabInactivityNudgeConfig(input: unknown): CollabConfig["inactivity_nudge"] {
+  const source = record(input) ? input : {};
+  const enabled = source.enabled === true;
+  const threshold = asPositiveInt(source.threshold_ms) ?? DEFAULT_COLLAB_CONFIG.inactivity_nudge.threshold_ms;
+  const repeat = asPositiveInt(source.repeat_ms) ?? DEFAULT_COLLAB_CONFIG.inactivity_nudge.repeat_ms;
+
+  if (enabled && source.threshold_ms !== undefined && asPositiveInt(source.threshold_ms) === undefined) {
+    throw new Error("collab.inactivity_nudge.threshold_ms must be a positive integer");
+  }
+  if (enabled && source.repeat_ms !== undefined && asPositiveInt(source.repeat_ms) === undefined) {
+    throw new Error("collab.inactivity_nudge.repeat_ms must be a positive integer");
+  }
+
+  return {
+    enabled,
+    threshold_ms: threshold,
+    repeat_ms: repeat,
+    message: parseInstructionSource(source.message),
   };
 }
 

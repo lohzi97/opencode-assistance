@@ -28,7 +28,10 @@ export const FALLBACK_ROOM_JOIN_INSTRUCTION =
 export const FALLBACK_REPLY_INSTRUCTION =
   "Reply to the room with agent-collab as {alias}. Preserve room context and address relevant collaborators.";
 
-export type TemplateVars = Partial<Record<"room" | "alias" | "role" | "from", string>>;
+export const FALLBACK_INACTIVITY_NUDGE_MESSAGE =
+  "Room {room} has had no meaningful collaboration activity for {duration}. As planner, consider sending a reminder, asking for status, closing the room if it is no longer needed, or taking no action if the silence is intentional.";
+
+export type TemplateVars = Partial<Record<"room" | "alias" | "role" | "from" | "duration", string>>;
 
 export type CollabTemplates = {
   room_join_instruction: string;
@@ -49,6 +52,7 @@ type RoomRow = {
   planner_password_hash: string;
   created_at: number;
   closed_at: number | null;
+  last_inactivity_nudge_at: number | null;
 };
 
 type MemberRow = {
@@ -251,11 +255,11 @@ export class CollabService {
       }
 
       if (request.method === "GET" && parts.length === 2 && parts[0] === "room" && parts[1] === "list") {
-        return jsonResponse({ rooms: this.db.listRooms(parseRoomListParams(url.searchParams)) });
+        return jsonResponse({ rooms: this.db.listRooms(parseRoomListParams(url.searchParams), this.config?.inactivity_nudge) });
       }
 
       if (request.method === "GET" && parts.length === 3 && parts[0] === "room" && parts[2] === "status") {
-        return jsonResponse(this.db.roomStatus(parts[1]));
+        return jsonResponse(this.db.roomStatus(parts[1], this.config?.inactivity_nudge));
       }
 
       if (request.method === "DELETE" && parts.length === 2 && parts[0] === "room") {
@@ -547,6 +551,7 @@ export class CollabService {
       try {
         do {
           this.deliveryFlushRequested = false;
+          await this.createDueInactivityNudges();
           await this.flushPendingDeliveries();
         } while (this.deliveryFlushRequested);
       } finally {
@@ -555,6 +560,19 @@ export class CollabService {
     })();
     this.deliveryFlush = flush;
     await flush;
+  }
+
+  private async createDueInactivityNudges() {
+    if (!this.db || !this.config?.inactivity_nudge.enabled) return;
+    const now = Date.now();
+    const template = await inactivityNudgeMessageTemplate(this.config);
+    for (const due of this.db.dueInactivityNudges(this.config.inactivity_nudge, now)) {
+      const body = renderTemplate(template, {
+        room: due.room.name,
+        duration: formatDuration(now - (due.last_meaningful_activity_at ?? due.room.created_at)),
+      });
+      this.db.createInactivityNudge(due.room.id, body, now);
+    }
   }
 
   async attemptHardFlush(messageId: string) {
@@ -808,12 +826,12 @@ export class CollabStorage {
     return room;
   }
 
-  roomStatus(roomRef: string) {
+  roomStatus(roomRef: string, inactivityNudge?: CollabConfig["inactivity_nudge"]) {
     const room = this.getRoom(roomRef);
-    return this.publicRoom(room, { members: this.activeMembers(room.id) });
+    return this.publicRoom(room, { members: this.activeMembers(room.id) }, inactivityNudge);
   }
 
-  listRooms(params: RoomListParams) {
+  listRooms(params: RoomListParams, inactivityNudge?: CollabConfig["inactivity_nudge"]) {
     const cursor = params.before ? this.resolveRoomCursor(params.before, params.state) : undefined;
 
     let rows: RoomRow[];
@@ -850,7 +868,7 @@ export class CollabStorage {
             .all(params.state, params.limit);
     }
 
-    return rows.map((room) => this.publicRoom(room));
+    return rows.map((room) => this.publicRoom(room, {}, inactivityNudge));
   }
 
   closeRoom(roomRef: string, sessionId: string, from: string, now: number) {
@@ -1251,6 +1269,28 @@ export class CollabStorage {
     return promptOptionsFromRow(row);
   }
 
+  dueInactivityNudges(config: CollabConfig["inactivity_nudge"], now: number) {
+    return this.openRooms().flatMap((room) => {
+      const targets = this.activePlannerMembersForDelivery(room.id);
+      if (targets.length === 0) return [];
+      const lastMeaningful = this.lastMeaningfulActivityAt(room.id);
+      if (this.nextInactivityNudgeAt(room, lastMeaningful, config) > now) return [];
+      return [{ room, last_meaningful_activity_at: lastMeaningful }];
+    });
+  }
+
+  createInactivityNudge(roomId: string, body: string, now: number) {
+    const transaction = this.db.transaction(() => {
+      const room = this.openRoom(roomId);
+      const targets = this.activePlannerMembersForDelivery(room.id);
+      if (targets.length === 0) return;
+      const messageId = this.insertSystemMessage(room.id, body, "inactivity_notice", now);
+      this.insertDeliveries(messageId, targets, "immediate", now);
+      this.db.run("UPDATE rooms SET last_inactivity_nudge_at = ? WHERE id = ?", [now, room.id]);
+    });
+    transaction();
+  }
+
   memberRouteForSession(sessionId: string): SpawnPromptOptions {
     const row = this.db
       .query<AgentModelRow, [string]>(
@@ -1551,6 +1591,28 @@ export class CollabStorage {
       .filter((member) => member.session_id !== exceptSessionId);
   }
 
+  private activePlannerMembersForDelivery(roomId: string) {
+    return this.db
+      .query<DeliveryTarget, [string]>(
+        "SELECT session_id, name FROM members WHERE room_id = ? AND state = 'active' AND role = 'planner' ORDER BY joined_at ASC",
+      )
+      .all(roomId);
+  }
+
+  private openRooms() {
+    return this.db.query<RoomRow, []>("SELECT * FROM rooms WHERE state = 'open' ORDER BY created_at ASC").all();
+  }
+
+  private lastMeaningfulActivityAt(roomId: string) {
+    return (
+      this.db
+        .query<{ created_at: number }, [string]>(
+          "SELECT created_at FROM messages WHERE room_id = ? AND kind != 'inactivity_notice' ORDER BY created_at DESC, id DESC LIMIT 1",
+        )
+        .get(roomId)?.created_at ?? null
+    );
+  }
+
   private activeMemberByName(roomId: string, name: string) {
     return this.db
       .query<MemberRow, [string, string]>("SELECT * FROM members WHERE room_id = ? AND name = ? AND state = 'active' LIMIT 1")
@@ -1602,7 +1664,10 @@ export class CollabStorage {
     if (!remaining) throw httpError(409, "room must retain at least one planner");
   }
 
-  private publicRoom(room: RoomRow, extra: Record<string, unknown> = {}) {
+  private publicRoom(room: RoomRow, extra: Record<string, unknown> = {}, inactivityNudge?: CollabConfig["inactivity_nudge"]) {
+    const lastMeaningfulActivityAt = this.lastMeaningfulActivityAt(room.id);
+    const activityBase = lastMeaningfulActivityAt ?? room.created_at;
+    const now = Date.now();
     return {
       room_id: room.id,
       base_name: room.base_name,
@@ -1614,9 +1679,21 @@ export class CollabStorage {
       public_message_updated_by: room.public_message_updated_by,
       created_at: room.created_at,
       closed_at: room.closed_at,
+      last_meaningful_activity_at: lastMeaningfulActivityAt,
+      last_inactivity_nudge_at: room.last_inactivity_nudge_at,
+      inactive_for_ms: Math.max(0, now - activityBase),
+      next_inactivity_nudge_at: inactivityNudge?.enabled ? this.nextInactivityNudgeAt(room, lastMeaningfulActivityAt, inactivityNudge) : null,
       outstanding_failures: this.failedDeliveriesForRoom(room.id),
       ...extra,
     };
+  }
+
+  private nextInactivityNudgeAt(room: RoomRow, lastMeaningfulActivityAt: number | null, config: CollabConfig["inactivity_nudge"]) {
+    const activityBase = lastMeaningfulActivityAt ?? room.created_at;
+    if (room.last_inactivity_nudge_at !== null && room.last_inactivity_nudge_at >= activityBase) {
+      return room.last_inactivity_nudge_at + config.repeat_ms;
+    }
+    return activityBase + config.threshold_ms;
   }
 
   private failedDeliveriesForRoom(roomId: string) {
@@ -1857,7 +1934,8 @@ export class CollabStorage {
         public_message_updated_by  TEXT,
         planner_password_hash      TEXT NOT NULL,
         created_at                 INTEGER NOT NULL,
-        closed_at                  INTEGER
+        closed_at                  INTEGER,
+        last_inactivity_nudge_at   INTEGER
       );
 
       CREATE TABLE IF NOT EXISTS members (
@@ -1941,6 +2019,7 @@ export class CollabStorage {
     this.ensureColumn("rooms", "public_message", "TEXT");
     this.ensureColumn("rooms", "public_message_updated_at", "INTEGER");
     this.ensureColumn("rooms", "public_message_updated_by", "TEXT");
+    this.ensureColumn("rooms", "last_inactivity_nudge_at", "INTEGER");
     this.ensureColumn("messages", "parent_id", "TEXT");
     this.ensureColumn("members", "directory", "TEXT");
     this.ensureColumn("members", "agent", "TEXT");
@@ -1981,6 +2060,21 @@ function formatTimestamp(ms: number) {
 
 function pad(value: number) {
   return String(value).padStart(2, "0");
+}
+
+function formatDuration(ms: number) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const units = [
+    { label: "day", seconds: 86_400 },
+    { label: "hour", seconds: 3_600 },
+    { label: "minute", seconds: 60 },
+    { label: "second", seconds: 1 },
+  ];
+  for (const unit of units) {
+    const value = Math.floor(totalSeconds / unit.seconds);
+    if (value > 0) return `${value} ${unit.label}${value === 1 ? "" : "s"}`;
+  }
+  return "0 seconds";
 }
 
 function promptOptionsFromRow(row?: AgentModelRow): SpawnPromptOptions {
@@ -2198,6 +2292,14 @@ export async function resolveCollabTemplates(config: CollabConfig, vars: Templat
       vars,
     ),
   };
+}
+
+export async function resolveInactivityNudgeMessage(config: CollabConfig, vars: TemplateVars = {}) {
+  return renderTemplate(await inactivityNudgeMessageTemplate(config), vars);
+}
+
+async function inactivityNudgeMessageTemplate(config: CollabConfig) {
+  return await loadTemplate(config.inactivity_nudge.message, FALLBACK_INACTIVITY_NUDGE_MESSAGE);
 }
 
 export async function loadTemplate(source: CollabInstructionSource | undefined, fallback: string) {

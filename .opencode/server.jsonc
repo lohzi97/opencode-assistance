@@ -307,6 +307,28 @@
     },
     "reply_instruction": {
       "file": ".opencode/collab-reply.md"
+    },
+    "inactivity_nudge": {
+      // Whether inactivity nudges are active. Defaults to false.
+      "enabled": true,
+
+      // How long (ms) a room must have no meaningful activity before the first nudge.
+      // Default: 900000 (15 minutes). Must be a positive integer when enabled.
+      "threshold_ms": 900000,
+
+      // Minimum gap (ms) between repeated nudges for the same room.
+      // Default: 900000 (15 minutes). Must be a positive integer when enabled.
+      "repeat_ms": 900000,
+
+      // Optional. The nudge message body. Supports {room} and {duration} variables.
+      // If omitted, a built-in fallback is used.
+      "message": {
+        // Use exactly one of "text" or "file":
+        // "text": "Room {room} has been inactive for {duration}. Consider checking in or closing the room."
+        // -- or --
+        "file": ".opencode/collab-inactivity-nudge.md"
+      }
     }
+
   }
 }

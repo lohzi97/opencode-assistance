@@ -24,6 +24,7 @@ import {
   planMessageTargets,
   planQuestionTargets,
   resolveCollabTemplates,
+  resolveInactivityNudgeMessage,
   verifyPlannerPassword,
 } from "./collab";
 import { parseCollabConfig, parseWorkerConfig } from "./config";
@@ -49,6 +50,7 @@ describe("collab config", () => {
     expect(config.poll_interval_ms).toBe(5_000);
     expect(config.hard_abort_wait_ms).toBe(15_000);
     expect(config.hard_abort_wait_max_ms).toBe(60_000);
+    expect(config.inactivity_nudge).toEqual({ enabled: false, threshold_ms: 900_000, repeat_ms: 900_000, message: undefined });
   });
 
   test("uses file config values", () => {
@@ -62,6 +64,12 @@ describe("collab config", () => {
           poll_interval_ms: 1234,
           hard_abort_wait_ms: 10,
           hard_abort_wait_max_ms: 20,
+          inactivity_nudge: {
+            enabled: true,
+            threshold_ms: 30_000,
+            repeat_ms: 60_000,
+            message: { text: "Room {room} idle for {duration}." },
+          },
         },
       },
       {},
@@ -74,6 +82,12 @@ describe("collab config", () => {
     expect(config.poll_interval_ms).toBe(1234);
     expect(config.hard_abort_wait_ms).toBe(10);
     expect(config.hard_abort_wait_max_ms).toBe(20);
+    expect(config.inactivity_nudge).toEqual({
+      enabled: true,
+      threshold_ms: 30_000,
+      repeat_ms: 60_000,
+      message: { text: "Room {room} idle for {duration}." },
+    });
   });
 
   test("environment overrides port, db path, and poll interval", () => {
@@ -106,6 +120,35 @@ describe("collab config", () => {
     expect(() => parseCollabConfig({ hard_abort_wait_ms: 200, hard_abort_wait_max_ms: 100 }, {})).toThrow(
       "collab.hard_abort_wait_max_ms must be greater than or equal to collab.hard_abort_wait_ms",
     );
+  });
+
+  test("rejects invalid enabled inactivity nudge intervals", () => {
+    expect(() => parseCollabConfig({ inactivity_nudge: { enabled: true, threshold_ms: 0 } }, {})).toThrow(
+      "collab.inactivity_nudge.threshold_ms must be a positive integer",
+    );
+    expect(() => parseCollabConfig({ inactivity_nudge: { enabled: true, repeat_ms: -1 } }, {})).toThrow(
+      "collab.inactivity_nudge.repeat_ms must be a positive integer",
+    );
+  });
+
+  test("resolves fallback, text, and file inactivity nudge messages", async () => {
+    await expect(resolveInactivityNudgeMessage(configWithTemplates({}), { room: "room-a", duration: "15 minutes" })).resolves.toContain(
+      "Room room-a has had no meaningful collaboration activity for 15 minutes",
+    );
+    await expect(
+      resolveInactivityNudgeMessage(configWithTemplates({ inactivity_nudge: { enabled: true, threshold_ms: 1, repeat_ms: 2, message: { text: "{room}/{duration}" } } }), {
+        room: "room-b",
+        duration: "1 hour",
+      }),
+    ).resolves.toBe("room-b/1 hour");
+    const templatePath = path.join(tempDir, "nudge.txt");
+    await writeFile(templatePath, "File {room} {duration}");
+    await expect(
+      resolveInactivityNudgeMessage(
+        configWithTemplates({ inactivity_nudge: { enabled: true, threshold_ms: 1, repeat_ms: 2, message: { file: templatePath } } }),
+        { room: "room-c", duration: "2 hours" },
+      ),
+    ).resolves.toBe("File room-c 2 hours");
   });
 
   test("reads room join instruction and ignores legacy spawn instruction", () => {
@@ -2775,6 +2818,159 @@ describe("collab service", () => {
     }
   });
 
+  test("inactivity tick creates a persisted planner-only notice with status metadata and public prompt context", async () => {
+    const client = mockClient({ statuses: { ses_planner: { type: "busy" }, ses_worker: { type: "busy" }, ses_reviewer: { type: "busy" } } });
+    const service = await startedService(client, {
+      inactivity_nudge: { enabled: true, threshold_ms: 1_000, repeat_ms: 60_000 },
+    });
+    try {
+      const room = await roomWithMembers(service);
+      await routeJson(service, "POST", `/room/${room.room_id}/public-message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "Public objective: finish the review.",
+      });
+      await markAllDeliveriesInjected();
+      const oldActivityAt = Date.now() - 10_000;
+      await rewriteRoomMessageTimes(room.room_id, oldActivityAt);
+
+      await service.tickDelivery();
+
+      expect(client.prompts).toHaveLength(1);
+      expect(client.prompts[0].sessionID).toBe("ses_planner");
+      expect(client.prompts[0].text).toContain(`[Room: ${room.name}]`);
+      expect(client.prompts[0].text).toContain("[Public Message]\nPublic objective: finish the review.");
+      expect(client.prompts[0].text).toContain("|inactivity_notice] system:");
+      expect(client.prompts[0].text).toContain("consider sending a reminder, asking for status, closing the room");
+      expect(client.prompts[0].text.match(/Reply to the room with agent-collab as planner/g)).toHaveLength(1);
+
+      const messages = await routeJson(service, "GET", `/room/${room.room_id}/messages`);
+      const notice = messages.body.messages.find((message: { kind: string }) => message.kind === "inactivity_notice");
+      expect(notice).toEqual(
+        expect.objectContaining({
+          sender_type: "system",
+          sender_name: "system",
+          deliveries: [expect.objectContaining({ target_name: "planner", mode: "immediate", state: "injected" })],
+        }),
+      );
+      expect(notice.deliveries.map((delivery: { target_name: string }) => delivery.target_name)).toEqual(["planner"]);
+
+      const status = await routeJson(service, "GET", `/room/${room.room_id}/status`);
+      expect(status.body.last_meaningful_activity_at).toBe(oldActivityAt);
+      expect(status.body.last_inactivity_nudge_at).toBe(notice.created_at);
+      expect(status.body.inactive_for_ms).toBeGreaterThanOrEqual(1_000);
+      expect(status.body.next_inactivity_nudge_at).toBe(notice.created_at + 60_000);
+
+      await service.tickDelivery();
+      const afterRepeat = await routeJson(service, "GET", `/room/${room.room_id}/messages`);
+      expect(afterRepeat.body.messages.filter((message: { kind: string }) => message.kind === "inactivity_notice")).toHaveLength(1);
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("inactivity tick suppresses recent activity and ignores closed rooms", async () => {
+    const client = mockClient({ statuses: { ses_planner: { type: "idle" } } });
+    const service = await startedService(client, {
+      inactivity_nudge: { enabled: true, threshold_ms: 60_000, repeat_ms: 60_000 },
+    });
+    try {
+      const active = await roomWithMembers(service);
+      await markAllDeliveriesInjected();
+      await rewriteRoomMessageTimes(active.room_id, Date.now());
+      await service.tickDelivery();
+      expect(client.prompts).toHaveLength(0);
+
+      const closed = await routeJson(service, "POST", "/room", { name: "closed-idle", session_id: "ses_closed_planner", from: "planner" });
+      await routeJson(service, "DELETE", `/room/${closed.body.room_id}`, { session_id: "ses_closed_planner", from: "planner" });
+      await markAllDeliveriesInjected();
+      await rewriteRoomMessageTimes(closed.body.room_id, Date.now() - 120_000);
+      await service.tickDelivery();
+
+      const messages = await routeJson(service, "GET", `/room/${closed.body.room_id}/messages`);
+      expect(messages.body.messages.filter((message: { kind: string }) => message.kind === "inactivity_notice")).toHaveLength(0);
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("inactivity notices target active planners only and preserve planner routing", async () => {
+    const client = mockClient({
+      statuses: { ses_planner: { type: "idle" }, ses_planner2: { type: "idle" } },
+      sessionMessages: {
+        ses_planner2: [userMessage("ses_planner2", "sebastian", { providerID: "zai-coding-plan", modelID: "glm-5.1", variant: "planner" })],
+      },
+    });
+    const service = await startedService(client, {
+      inactivity_nudge: { enabled: true, threshold_ms: 1_000, repeat_ms: 60_000 },
+    });
+    try {
+      const created = await routeJson(service, "POST", "/room", { name: "planner-targets", session_id: "ses_planner", from: "planner" });
+      await routeJson(service, "POST", `/room/${created.body.room_id}/member`, {
+        session_id: "ses_planner",
+        from: "planner",
+        target_session_id: "ses_planner2",
+        name: "planner2",
+        role: "planner",
+      });
+      await routeJson(service, "POST", `/room/${created.body.room_id}/member`, {
+        session_id: "ses_planner",
+        from: "planner",
+        target_session_id: "ses_worker",
+        name: "worker",
+        role: "implementer",
+      });
+      await markAllDeliveriesInjected();
+      await rewriteRoomMessageTimes(created.body.room_id, Date.now() - 10_000);
+
+      await service.tickDelivery();
+      expect(client.prompts.map((prompt) => prompt.sessionID).sort()).toEqual(["ses_planner", "ses_planner2"]);
+      expect(client.prompts.find((prompt) => prompt.sessionID === "ses_planner2")?.agent).toBe("sebastian");
+      expect(client.prompts.find((prompt) => prompt.sessionID === "ses_planner2")?.model).toEqual({
+        providerID: "zai-coding-plan",
+        modelID: "glm-5.1",
+        variant: "planner",
+      });
+      expect(client.prompts.map((prompt) => prompt.sessionID)).not.toContain("ses_worker");
+
+      await routeJson(service, "DELETE", `/room/${created.body.room_id}/member`, { session_id: "ses_planner", from: "planner", target: "planner2" });
+      await markAllDeliveriesInjected();
+      await rewriteRoomMessageTimes(created.body.room_id, Date.now() - 10_000);
+      await clearLastInactivityNudge(created.body.room_id);
+      client.prompts.length = 0;
+
+      await service.tickDelivery();
+      expect(client.prompts.map((prompt) => prompt.sessionID)).toEqual(["ses_planner"]);
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("inactivity notices use immediate soft blockers", async () => {
+    const client = mockClient({ statuses: { ses_planner: { type: "retry", attempt: 1, message: "retry", next: 1 } } });
+    const service = await startedService(client, {
+      inactivity_nudge: { enabled: true, threshold_ms: 1_000, repeat_ms: 60_000 },
+    });
+    try {
+      const room = await roomWithMembers(service);
+      await markAllDeliveriesInjected();
+      await rewriteRoomMessageTimes(room.room_id, Date.now() - 10_000);
+      await service.tickDelivery();
+
+      await expect(service.attemptFlush("ses_planner", { type: "retry", attempt: 1, message: "retry", next: 1 }, [])).resolves.toEqual({
+        flushed: false,
+        reason: "retry",
+      });
+      await expect(service.attemptFlush("ses_planner", { type: "idle" }, [{ id: "q1", sessionID: "ses_planner", questions: [] }])).resolves.toEqual({
+        flushed: false,
+        reason: "pending_user_question",
+      });
+      await expect(service.attemptFlush("ses_planner", { type: "busy" }, [])).resolves.toEqual({ flushed: true, count: 1 });
+    } finally {
+      await service.shutdown();
+    }
+  });
+
   test("retryable failures persist attempts and can later inject", async () => {
     const client = mockClient({ promptErrors: [new OpenCodeRequestError("temporary", 503, "temporary")] });
     const service = await startedService(client);
@@ -3214,6 +3410,30 @@ async function insertBulkRooms(count: number) {
   }
 }
 
+async function rewriteRoomMessageTimes(roomId: string, createdAt: number) {
+  const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+  try {
+    storage.db.run("UPDATE messages SET created_at = ? WHERE room_id = ? AND kind != 'inactivity_notice'", [createdAt, roomId]);
+    storage.db.run(
+      `UPDATE deliveries
+       SET created_at = ?
+       WHERE message_id IN (SELECT id FROM messages WHERE room_id = ? AND kind != 'inactivity_notice')`,
+      [createdAt, roomId],
+    );
+  } finally {
+    storage.close();
+  }
+}
+
+async function clearLastInactivityNudge(roomId: string) {
+  const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+  try {
+    storage.db.run("UPDATE rooms SET last_inactivity_nudge_at = NULL WHERE id = ?", [roomId]);
+  } finally {
+    storage.close();
+  }
+}
+
 function mockClient(
   input: {
     statuses?: Record<string, SessionStatusInfo>;
@@ -3287,6 +3507,11 @@ function userMessage(sessionID: string, agent?: string, model?: { providerID: st
     poll_interval_ms: 5_000,
     hard_abort_wait_ms: 15_000,
     hard_abort_wait_max_ms: 60_000,
+    inactivity_nudge: {
+      enabled: false,
+      threshold_ms: 900_000,
+      repeat_ms: 900_000,
+    },
     ...input,
   };
 }

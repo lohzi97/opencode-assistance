@@ -1,0 +1,1 @@
+Room {room} has been inactive for {duration}. Consider checking in or closing the room.
