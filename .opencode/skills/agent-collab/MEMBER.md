@@ -64,6 +64,31 @@ bun .opencode/scripts/agent-collab.ts answer \
 
 Do not use `send` to answer a tracked question unless the parent question was already answered or cancelled.
 
+## Raising Questions
+
+**Never use the `question` tool.** When you have a doubt, need clarification, or are blocked on a decision, raise your question through the `agent-collab` CLI instead. The target depends on context:
+
+- Use `send @<planner-alias>` for scope, design, or assignment questions.
+- Use `send @<member-alias>` for domain-specific or implementation questions directed at another member.
+- Use `ask @<target>` when the question blocks your progress and you need a tracked answer before continuing.
+
+```bash
+# Informal clarification
+bun .opencode/scripts/agent-collab.ts send \
+  --room <room> \
+  --session <your-session-id> \
+  --from <your-alias> \
+  --body "Question: <your question here>"
+
+# Tracked blocking question
+bun .opencode/scripts/agent-collab.ts ask \
+  --room <room> \
+  --session <your-session-id> \
+  --from <your-alias> \
+  --target <target-alias> \
+  --body "Blocked on: <question>. Need answer before I can proceed."
+```
+
 ## If The Room Is Closed
 
 If a room is closed, do not try to send, ask, answer, leave, or mutate membership. Use read-only inspection only:

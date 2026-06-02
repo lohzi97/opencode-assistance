@@ -1,0 +1,26 @@
+{
+  // Stuck Watcher Plugin Configuration
+  //
+  // Automatically detects sessions that stop making visible progress while
+  // still "busy", aborts them, and sends a "continue" prompt to resume work.
+
+  // Master switch. Set to false to disable the watcher.
+  "enabled": true,
+
+  // How long (ms) a busy session may stay silent before it is treated as stuck.
+  "stuck_threshold_ms": 300000, // 5 min
+
+  // How often (ms) the watcher polls for stuck sessions.
+  "check_interval_ms": 60000, // 1 min
+
+  // The prompt text sent after abort to resume the session.
+  "continue_prompt": "continue",
+
+  // Minimum time (ms) between two automatic rescues of the same session.
+  // Prevents rapid abort/retry loops.
+  "cooldown_ms": 360000, // 6 min
+
+  // Maximum number of times the watcher will rescue the same session
+  // within its lifetime. After this limit, the session is left alone.
+  "max_rescues_per_session": 50
+}

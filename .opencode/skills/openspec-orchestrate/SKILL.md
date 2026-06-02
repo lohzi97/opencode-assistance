@@ -35,34 +35,19 @@ The worker owns:
 
 Commit workers are also workers. They own git inspection, staging, commit-message selection, committing, and pushing when authorized by the planner assignment.
 
-## Important Command Mapping
+## Skill Assignment Rule
 
-Messages sent through `agent-collab` cannot trigger OpenCode slash commands. Do not ask workers to run `opsx-*` commands.
+Messages sent through `agent-collab` cannot trigger OpenCode slash commands or user command wrappers. Assign workers to load and use the relevant `openspec-*` skill directly.
 
-Ask workers to load and use the corresponding skill instead:
-
-| User command | Worker skill |
-| --- | --- |
-| `opsx-propose` | `openspec-propose` |
-| `opsx-review-proposal` | `openspec-review-proposal` |
-| `opsx-decompose-prd` | `openspec-decompose-prd` |
-| `opsx-review-prd-decomposition` | `openspec-review-prd-decomposition` |
-| `opsx-apply` | `openspec-apply-change` |
-| `opsx-apply-resume` | `openspec-apply-resume` |
-| `opsx-test` | `openspec-test` |
-| `opsx-fix` | `openspec-fix` |
-| `opsx-code-review` | `openspec-code-review` |
-| `opsx-discuss` | `openspec-discuss` |
-| `opsx-align` | `openspec-align` |
-| `opsx-archive` | `openspec-archive-change` |
-
-If a corresponding skill is not available, stop and report the missing skill before spawning a worker for that phase.
+If a required skill is not available, stop and report the missing `openspec-*` skill before spawning a worker for that phase.
 
 Newly created project skills may require restarting OpenCode before they appear in the available skills list for the planner or spawned workers. If a required skill exists on disk but is unavailable at runtime, stop and ask the user to restart OpenCode rather than improvising a replacement workflow.
 
 ## Worker Model Routing
 
 Spawn each worker with the model assigned to its phase unless the user explicitly overrides it for the current run.
+
+All workers must be spawned with `--agent levi`. Do not omit the agent flag or let it fall back to the planner default. If a future run requires a different agent, the user must explicitly override this for that run.
 
 | Worker phase | Skill | Provider | Model |
 | --- | --- | --- | --- |
@@ -80,7 +65,7 @@ Spawn each worker with the model assigned to its phase unless the user explicitl
 | Archive | `openspec-archive-change` | `deepseek` | `deepseek-v4-pro` |
 | Commit checkpoint | commit worker | `deepseek` | `deepseek-v4-flash` |
 
-When spawning through `agent-collab`, pass both `--provider <provider>` and `--model <model>` from this table. Do not omit model routing and rely on planner defaults.
+When spawning through `agent-collab`, pass both `--provider <provider>` and `--model <model>` from this table. Do not omit model routing and rely on planner defaults. If a configured provider/model pair is unavailable at spawn time, stop and ask the user for a model override instead of silently falling back to the planner default.
 
 ## Intake
 
@@ -113,6 +98,12 @@ For brownfield work, a proposal name is required only when starting from an exis
 
 For greenfield PRD work, capture the proposal queue from `prd-implementation-sequence.md` after PRD decomposition and decomposition review are complete. Process one proposal at a time through the brownfield state machine.
 
+## Resume Existing Orchestration
+
+When resuming an interrupted workflow, reconstruct state from the latest planner report, room status, worker reports, and proposal files only as needed. Do not rerun completed phases unless the previous result is missing, blocked, invalid, or explicitly superseded by the user.
+
+If the prior room or worker state is unclear, ask the user for the intended current phase or spawn a narrow review worker for the specific ambiguity. Do not infer implementation quality by inspecting diffs as the planner.
+
 ## Planner Setup
 
 1. Load the `agent-collab` skill before creating or managing rooms.
@@ -133,7 +124,9 @@ The worker does not need the project path, change id, phase, global workflow, re
 
 Spawn a worker with a narrow alias and role for the current phase. Use the same project directory as the target project.
 
-Always select the worker's provider and model from the Worker Model Routing table and pass them to the `agent-collab spawn` command. For example, an `openspec-code-review` worker must be spawned with `--provider openai --model gpt-5.5`, while an `openspec-align` worker must be spawned with `--provider deepseek --model deepseek-v4-flash`.
+Always select the worker's provider and model from the Worker Model Routing table and pass them to the `agent-collab spawn` command, along with `--agent levi`. For example, an `openspec-code-review` worker must be spawned with `--agent levi --provider openai --model gpt-5.5`, while an `openspec-align` worker must be spawned with `--agent levi --provider deepseek --model deepseek-v4-flash`.
+
+Worker assignment prompts must name the `openspec-*` skill to load and use. Do not phrase assignments as slash commands, shell commands, or user command wrappers.
 
 Example assignment prompts:
 
@@ -198,6 +191,7 @@ Use hard interrupts only when a worker is clearly stuck or running the wrong tas
 - Do not inspect implementation diffs after worker changes files.
 - Do not independently review changed files unless explicitly asked by the user.
 - Do not inspect git status or git diff as the planner for commit preparation; delegate that to the commit worker.
+- You may inspect high-level workflow artifacts only when needed for state routing, but must not inspect implementation diffs or stage files.
 - Do not personally stage, commit, or push. Use a commit worker whenever checkpoint commits are enabled.
 - Act on worker reports, not planner-side implementation analysis.
 - Do not let a worker choose the next phase; workers may recommend, but the planner decides.
@@ -223,8 +217,8 @@ proposal_needed
   -> fixing
   -> testing
   -> optional_code_review
-  -> quality_fix_if_needed
-  -> final_test_if_fixed
+  -> quality_fix
+  -> final_test
   -> alignment
   -> archive
   -> completed
@@ -244,17 +238,17 @@ Recommended transitions:
 - If testing passes and code review is disabled, trigger the tested-implementation commit checkpoint according to commit and push modes, then proceed to `alignment`.
 - If testing passes and code review is enabled, go to `optional_code_review`.
 - If code review is not applicable, proceed to `alignment`.
-- If code review finds new issues, repeat `optional_code_review` until no new issues are found.
-- If code review finds no new issues but unresolved code-review issues remain in `issue.md`, run one `quality_fix` with `openspec-fix` to address the accumulated issues.
-- After `quality_fix`, run `final_test` with `openspec-test`.
+- If code review finds issues, run `quality_fix` with `openspec-fix`, then run `final_test` with `openspec-test`.
 - If final test fails or updates `issue.md`, go to `fixing` with `openspec-fix`, then return to `testing` and re-enter the code-review decision from a passing test.
 - If final test passes after quality fix, trigger the post-quality-fix tested commit checkpoint according to commit and push modes, then proceed to `alignment`.
-- If code review finds no new issues and no unresolved code-review issues remain, proceed to `alignment` without a quality-fix pass.
+- If the quality fix was substantial, optionally run one more `optional_code_review`; if that review finds issues, return to `quality_fix`.
+- If code review finds no issues, proceed to `alignment` without a quality-fix pass.
 - After `alignment` reports complete, trigger the aligned-proposal commit checkpoint according to commit and push modes.
 - After alignment, run `archive` with `openspec-archive-change`.
 - After archive reports complete, trigger the archive-complete commit checkpoint according to commit and push modes.
 - If commit mode is `ask_each_checkpoint`, ask the user before spawning a commit worker at each checkpoint.
 - If commit mode is `auto_at_checkpoints`, spawn a commit worker at checkpoints without asking.
+- If commit mode is `disabled`, push mode is ignored and no commit worker is spawned.
 - If push mode is `disabled`, instruct commit workers not to push.
 - If push mode is `ask_each_checkpoint`, ask the user before allowing the commit worker to push.
 - If push mode is `auto_with_commit`, allow the commit worker to push after committing.
@@ -271,6 +265,8 @@ prd_decomposition
 
 Then process one proposal at a time through the brownfield workflow.
 
+Do not parallelize proposals unless the user explicitly requests it and dependency ordering in `prd-implementation-sequence.md` allows it.
+
 Run PRD decomposition review repeatedly until no material PRD coverage gaps remain.
 
 ## Optional Code Review Loop
@@ -282,10 +278,12 @@ When enabled, use this loop after `openspec-test` passes:
 ```text
 openspec-test PASS
   -> openspec-code-review
-  -> repeat openspec-code-review until no new quality issues are added to issue.md
-  -> if unresolved review issues exist, openspec-fix for accumulated code quality issues
-  -> if fixed, openspec-test final verification
+  -> if NOT_APPLICABLE, openspec-align
+  -> if issues are found, openspec-fix for accumulated code quality issues
+  -> openspec-test final verification
   -> if final test fails, openspec-fix and return to normal testing loop
+  -> optionally run one more openspec-code-review if the quality fix was substantial
+  -> if follow-up code review finds issues, return to openspec-fix
   -> openspec-align
 ```
 
@@ -318,7 +316,7 @@ The planner should not inspect the diff itself unless the user explicitly reques
 
 ## Worker Report Signal
 
-Do not override the detailed report format of each `openspec-*` skill. If the planner needs a compact orchestration signal, ask the worker to include this footer:
+Do not override the detailed report format of each `openspec-*` skill. Ask every worker to include this footer after the assigned skill's normal report:
 
 ```text
 Orchestration signal:
@@ -362,7 +360,7 @@ Do not include implementation-level details unless they are present in the worke
 
 - If a worker reports `blocked`, ask the user or spawn a discussion worker with `openspec-discuss`.
 - If a worker runs the wrong skill or changes unrelated files, stop the workflow and report the incident.
-- If a required skill is unavailable, stop and report which skill/command must be created.
+- If a required skill is unavailable, stop and report which `openspec-*` skill is missing.
 - If the collab service is unavailable, report the control failure and pause.
 - If commit/push fails, keep the workflow state unchanged and ask the commit worker or user to resolve the git issue before proceeding.
 
