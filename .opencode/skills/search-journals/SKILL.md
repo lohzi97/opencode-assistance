@@ -17,6 +17,7 @@ Use this skill when you need information from `journals/`, including prior conve
 
 - Run `qmd` from the repository root.
 - Always use `qmd --index sebastian`.
+- Run `qmd` commands sequentially, one at a time. Never launch multiple `qmd` searches in parallel or through `multi_tool_use.parallel`, because the shared SQLite index can report `database is locked` under concurrent access.
 - Always pin collections explicitly with `-c journals-daily` or `-c journals-session`.
 - Search `journals-daily` first. Use `journals-session` only when the daily summaries are insufficient for the required detail.
 - Only use search-related `qmd` commands in this workflow: `search`, `vsearch`, `query`, and `get`.
@@ -145,7 +146,7 @@ Good uses:
 
 ### Full journal search flow example
 
-Example goal: find the past discussion about `qmd`, local model setup, and `Vulkan`.
+Example goal: find the past discussion about `qmd`, local model setup, and `Vulkan`. Even when multiple commands are listed together, run them one by one rather than in parallel.
 
 1. Start with exact anchors in `journals-daily` using `search`:
 

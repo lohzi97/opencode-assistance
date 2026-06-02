@@ -17,6 +17,7 @@ Use this skill when you need information from `notes/`, including durable instru
 
 - Run `qmd` from the repository root.
 - Always use `qmd --index sebastian`.
+- Run `qmd` commands sequentially, one at a time. Never launch multiple `qmd` searches in parallel or through `multi_tool_use.parallel`, because the shared SQLite index can report `database is locked` under concurrent access.
 - Always pin the collection explicitly with `-c notes`.
 - `qmd` is the preferred retrieval method for `notes/`, but it does not forbid normal tools when they are clearly more appropriate.
 - Only use search-related `qmd` commands in this workflow: `search`, `vsearch`, `query`, and `get`.
@@ -116,7 +117,7 @@ Good uses:
 
 ### Full search flow example
 
-Example goal: find notes related to `qmd`, local model setup, and `vulkan`.
+Example goal: find notes related to `qmd`, local model setup, and `vulkan`. Even when multiple commands are listed together, run them one by one rather than in parallel.
 
 1. Start with exact anchors using `search`:
 
