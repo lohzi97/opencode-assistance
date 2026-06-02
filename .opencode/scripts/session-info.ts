@@ -130,8 +130,9 @@ async function main() {
   }
 
   const serverURL = resolveServerURL();
-  const session = options.sessionID
-    ? await request<SessionInfo>(serverURL, `/session/${encodeURIComponent(options.sessionID)}`)
+  const sessionID = options.sessionID || resolveEnvSessionID();
+  const session = sessionID
+    ? await request<SessionInfo>(serverURL, `/session/${encodeURIComponent(sessionID)}`)
     : await resolveLatestSession(serverURL, options.directory);
   const project = await request<ProjectInfo>(serverURL, "/project/current").catch(() => undefined);
   const messages = await request<MessageWithParts[]>(serverURL, `/session/${encodeURIComponent(session.id)}/message`).catch(() => []);
@@ -220,6 +221,13 @@ Options:
   --directory <path>   Directory used when auto-selecting the latest session.
   --json               Emit structured JSON instead of Markdown.
   -h, --help           Show this help text.`);
+}
+
+function resolveEnvSessionID() {
+  const sessionID = process.env.OPENCODE_SESSION_ID?.trim();
+  if (!sessionID || sessionID === "unknown-session" || sessionID.includes("{{")) return;
+  if (!sessionID.startsWith("ses_")) return;
+  return sessionID;
 }
 
 async function resolveLatestSession(serverURL: string, directory: string) {

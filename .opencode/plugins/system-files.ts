@@ -312,6 +312,14 @@ export const SystemFilesPlugin: Plugin = async ({ client, directory, project, wo
   };
 
   return {
+    "shell.env": async (input, output) => {
+      if (typeof input.sessionID === "string" && input.sessionID) {
+        output.env.OPENCODE_SESSION_ID ??= input.sessionID;
+      }
+      if (typeof input.callID === "string" && input.callID) {
+        output.env.OPENCODE_CALL_ID ??= input.callID;
+      }
+    },
     "experimental.chat.system.transform": async (input, output) => {
       const before = [...output.system];
       const list = await load();
