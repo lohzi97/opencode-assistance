@@ -2057,7 +2057,7 @@ describe("collab service", () => {
     try {
       const room = await roomWithMembers(service);
       await markAllDeliveriesInjected();
-      await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+      const message = await routeJson(service, "POST", `/room/${room.room_id}/message`, {
         session_id: "ses_planner",
         from: "planner",
         body: "@worker please take this now",
@@ -2069,7 +2069,7 @@ describe("collab service", () => {
       expect(client.prompts[0].text).toContain(`[Room: ${room.name}`);
       expect(client.prompts[0].text).not.toContain("Delivery: immediate");
       expect(client.prompts[0].text).toContain("[Message]");
-      expect(client.prompts[0].text).toContain("|task_assignment] planner:");
+      expect(client.prompts[0].text).toContain(`|task_assignment|id:${message.body.id}] planner:`);
       expect(client.prompts[0].text).toContain("@worker please take this now");
       expect(client.prompts[0].text).toContain("Reply to the room with agent-collab as worker");
 
@@ -2473,8 +2473,8 @@ describe("collab service", () => {
       expect(prompt.match(/\[Message\]/g)).toHaveLength(1);
       expect(prompt.match(/Reply to the room with agent-collab as worker/g)).toHaveLength(1);
       expect(prompt).toContain("[Public Message]\nPinned compact context.");
-      expect(prompt).toMatch(/\[\d{14}\|note\] planner:\n\nFirst compact update/);
-      expect(prompt).toMatch(/\[\d{14}\|note\] reviewer:\n\nSecond compact update/);
+      expect(prompt).toMatch(/\[\d{14}\|note\|id:msg_[^\]]+\] planner:\n\nFirst compact update/);
+      expect(prompt).toMatch(/\[\d{14}\|note\|id:msg_[^\]]+\] reviewer:\n\nSecond compact update/);
       expect(prompt.indexOf("First compact update")).toBeLessThan(prompt.indexOf("Second compact update"));
       expect(prompt).not.toContain("Delivery: buffered");
     } finally {

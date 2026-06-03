@@ -705,7 +705,11 @@ export class CollabService {
       "[Message]",
       "",
       deliveries
-        .map((delivery) => [`[${formatTimestamp(delivery.message_created_at)}|${delivery.message_kind}] ${delivery.message_sender_name}:`, "", delivery.message_body].join("\n"))
+        .map((delivery) =>
+          [`[${formatTimestamp(delivery.message_created_at)}|${delivery.message_kind}|id:${delivery.message_id}] ${delivery.message_sender_name}:`, "", delivery.message_body].join(
+            "\n",
+          ),
+        )
         .join("\n\n"),
       "",
     ].join("\n");
