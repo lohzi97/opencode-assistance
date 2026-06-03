@@ -13,6 +13,8 @@ import {
 import {
   CollabService,
   CollabStorage,
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_SIZE,
   assertValidAlias,
   classifyDeliveryFailure,
   hardAbortWaitMs,
@@ -1666,7 +1668,7 @@ describe("collab service", () => {
         expect.objectContaining({ target_session_id: "ses_worker", target_name: "worker", mode: "immediate", state: "injected", injected_at: 123 }),
       ]);
 
-      const workerByName = await routeJson(service, "GET", `/room/${room.room_id}/messages?from=worker&since=${workerMessage.body.id}&limit=2`);
+      const workerByName = await routeJson(service, "GET", `/room/${room.room_id}/messages?from=worker`);
       expect(workerByName.status).toBe(200);
       expect(workerByName.body.member).toEqual({ session_id: "ses_worker", name: "worker" });
       expect(workerByName.body.messages.map((entry: { body: string }) => entry.body)).toContain("@worker please implement");
@@ -2852,6 +2854,175 @@ describe("collab service", () => {
 
       expect(client.prompts).toHaveLength(1);
       await expect(service.attemptFlush("ses_worker", { type: "idle" }, [])).resolves.toEqual({ flushed: false, reason: "empty" });
+    } finally {
+      await service.shutdown();
+    }
+  });
+});
+
+describe("collab message pagination", () => {
+  test("room-wide default page is bounded by default page size", async () => {
+    const service = await startedService();
+    try {
+      const room = await roomWithMembers(service);
+
+      // Send enough messages to exceed default page size
+      for (let i = 0; i < DEFAULT_PAGE_SIZE + 5; i++) {
+        await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+          session_id: "ses_planner",
+          from: "planner",
+          body: `Message ${i}`,
+        });
+      }
+
+      const transcript = await routeJson(service, "GET", `/room/${room.room_id}/messages`);
+      expect(transcript.status).toBe(200);
+      // Should include system messages (founder_joined, member_joined x2, join_bootstrap x2) + up to DEFAULT_PAGE_SIZE messages
+      // Total system messages: 1 founder_joined + 2 member_joined + 2 join_bootstrap = 5, but join_bootstrap and member_joined pairs share timestamps
+      // The total should be exactly DEFAULT_PAGE_SIZE
+      expect(transcript.body.messages.length).toBe(DEFAULT_PAGE_SIZE);
+      // Should be in chronological order
+      const createdAts = transcript.body.messages.map((m: { created_at: number }) => m.created_at);
+      for (let i = 1; i < createdAts.length; i++) {
+        expect(createdAts[i]).toBeGreaterThanOrEqual(createdAts[i - 1]);
+      }
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("room-wide messages honor since cursor and limit", async () => {
+    const service = await startedService();
+    try {
+      const room = await roomWithMembers(service);
+      const msg1 = await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "First message",
+      });
+      const msg2 = await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "Second message",
+      });
+      const msg3 = await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "Third message",
+      });
+
+      // since=msg1, limit=1 should return only msg2
+      const page1 = await routeJson(service, "GET", `/room/${room.room_id}/messages?since=${msg1.body.id}&limit=1`);
+      expect(page1.status).toBe(200);
+      expect(page1.body.messages).toHaveLength(1);
+      expect(page1.body.messages[0].body).toBe("Second message");
+
+      // since=msg1, limit=2 should return msg2 and msg3
+      const page2 = await routeJson(service, "GET", `/room/${room.room_id}/messages?since=${msg1.body.id}&limit=2`);
+      expect(page2.status).toBe(200);
+      expect(page2.body.messages).toHaveLength(2);
+      expect(page2.body.messages.map((m: { body: string }) => m.body)).toEqual(["Second message", "Third message"]);
+
+      // since=msg2 should return only msg3 (with default limit)
+      const page3 = await routeJson(service, "GET", `/room/${room.room_id}/messages?since=${msg2.body.id}`);
+      expect(page3.status).toBe(200);
+      expect(page3.body.messages).toHaveLength(1);
+      expect(page3.body.messages[0].body).toBe("Third message");
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("member-scoped messages honor since cursor and limit", async () => {
+    const service = await startedService();
+    try {
+      const room = await roomWithMembers(service);
+      const msg1 = await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "@worker First task",
+      });
+      const msg2 = await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "@worker Second task",
+      });
+      const msg3 = await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_planner",
+        from: "planner",
+        body: "@worker Third task",
+      });
+
+      // Member-scoped since=msg1, limit=2 should return targeted messages after cursor
+      const workerPage = await routeJson(
+        service,
+        "GET",
+        `/room/${room.room_id}/messages?session_id=ses_worker&from=worker&since=${msg1.body.id}&limit=2`,
+      );
+      expect(workerPage.status).toBe(200);
+      expect(workerPage.body.member).toEqual({ session_id: "ses_worker", name: "worker" });
+      expect(workerPage.body.messages).toHaveLength(2);
+      expect(workerPage.body.messages.map((m: { body: string }) => m.body)).toEqual(["@worker Second task", "@worker Third task"]);
+
+      // Each message should have delivery annotations for the worker
+      for (const message of workerPage.body.messages) {
+        expect(message.deliveries).toEqual([expect.objectContaining({ target_session_id: "ses_worker", target_name: "worker" })]);
+      }
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("invalid since cursor is rejected with 400", async () => {
+    const service = await startedService();
+    try {
+      const room = await roomWithMembers(service);
+
+      // Non-existent message id
+      const badCursor = await routeJson(service, "GET", `/room/${room.room_id}/messages?since=msg_nonexistent`);
+      expect(badCursor.status).toBe(400);
+      expect(badCursor.body.error).toBe("since must reference a message in this room");
+
+      // Message from a different room
+      const otherRoom = await routeJson(service, "POST", "/room", { name: "other", session_id: "ses_other", from: "planner" });
+      const otherMsg = await routeJson(service, "POST", `/room/${otherRoom.body.room_id}/message`, {
+        session_id: "ses_other",
+        from: "planner",
+        body: "Other room message",
+      });
+      const wrongRoom = await routeJson(service, "GET", `/room/${room.room_id}/messages?since=${otherMsg.body.id}`);
+      expect(wrongRoom.status).toBe(400);
+      expect(wrongRoom.body.error).toBe("since must reference a message in this room");
+
+      // Member-scoped with invalid cursor
+      const memberBadCursor = await routeJson(
+        service,
+        "GET",
+        `/room/${room.room_id}/messages?session_id=ses_worker&from=worker&since=msg_nonexistent`,
+      );
+      expect(memberBadCursor.status).toBe(400);
+      expect(memberBadCursor.body.error).toBe("since must reference a message in this room");
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("excessive limit is capped to maximum page size", async () => {
+    const service = await startedService();
+    try {
+      const room = await roomWithMembers(service);
+      // Send more than MAX_PAGE_SIZE messages
+      for (let i = 0; i < MAX_PAGE_SIZE + 10; i++) {
+        await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+          session_id: "ses_planner",
+          from: "planner",
+          body: `Bulk ${i}`,
+        });
+      }
+
+      const transcript = await routeJson(service, "GET", `/room/${room.room_id}/messages?limit=99999`);
+      expect(transcript.status).toBe(200);
+      expect(transcript.body.messages.length).toBe(MAX_PAGE_SIZE);
     } finally {
       await service.shutdown();
     }

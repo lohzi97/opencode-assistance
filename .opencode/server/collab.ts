@@ -8,6 +8,14 @@ import { sleep } from "./shared";
 import { OpenCodeRequestError } from "./shared";
 import type { ModelRef, OpenCodeClient, QuestionRequest, SessionStatusInfo } from "./shared";
 
+export const DEFAULT_PAGE_SIZE = 50;
+export const MAX_PAGE_SIZE = 200;
+
+export type PaginationParams = {
+  since?: string;
+  limit: number;
+};
+
 export const FALLBACK_ROOM_JOIN_INSTRUCTION =
   "You are joining collaboration room {room} as {alias} ({role}). Coordinate through agent-collab. Reply with ready to confirm your availability.";
 
@@ -473,10 +481,11 @@ export class CollabService {
   private listMessages(roomRef: string, params: URLSearchParams) {
     const sessionId = params.get("session_id") ?? undefined;
     const from = params.get("from") ?? undefined;
+    const pagination = parsePaginationParams(params);
     if (sessionId !== undefined || from !== undefined) {
-      return this.db!.memberMessages(roomRef, sessionId, from);
+      return this.db!.memberMessages(roomRef, sessionId, from, pagination);
     }
-    return this.db!.roomMessages(roomRef);
+    return this.db!.roomMessages(roomRef, pagination);
   }
 
   private async flushPendingDeliveries() {
@@ -1034,18 +1043,50 @@ export class CollabStorage {
     return this.publicMessage(this.messageById(messageId), this.deliveriesForMessages([messageId]));
   }
 
-  roomMessages(roomRef: string) {
+  roomMessages(roomRef: string, pagination: PaginationParams = { limit: DEFAULT_PAGE_SIZE }) {
     const room = this.getRoom(roomRef);
-    const messages = this.messageRows(room.id);
+    const cursor = pagination.since ? this.resolveCursor(room.id, pagination.since) : undefined;
+    const messages = cursor
+      ? this.db
+          .query<MessageRow, [string, number, string]>(
+            `SELECT * FROM messages WHERE room_id = ? AND (created_at > ? OR (created_at = ? AND id > ?)) ORDER BY created_at ASC, id ASC LIMIT ${pagination.limit}`,
+          )
+          .all(room.id, cursor.created_at, cursor.created_at, cursor.id)
+      : this.db
+          .query<MessageRow, [string]>(
+            `SELECT * FROM messages WHERE room_id = ? ORDER BY created_at ASC, id ASC LIMIT ${pagination.limit}`,
+          )
+          .all(room.id);
     const deliveries = this.deliveriesForMessages(messages.map((message) => message.id));
     return { room_id: room.id, messages: messages.map((message) => this.publicMessage(message, deliveries)) };
   }
 
-  memberMessages(roomRef: string, sessionId?: string, from?: string) {
+  memberMessages(roomRef: string, sessionId?: string, from?: string, pagination: PaginationParams = { limit: DEFAULT_PAGE_SIZE }) {
     const room = this.getRoom(roomRef);
     const member = this.requireActiveMessageViewMember(room.id, sessionId, from);
-    const deliveries = this.memberDeliveryRows(room.id, member.session_id);
-    const messages = this.messageRowsById(deliveries.map((delivery) => delivery.message_id));
+    const cursor = pagination.since ? this.resolveCursor(room.id, pagination.since) : undefined;
+    const deliveries = cursor
+      ? this.db
+          .query<DeliveryRow, [string, string, number, string]>(
+            `SELECT deliveries.* FROM deliveries
+             JOIN messages ON messages.id = deliveries.message_id
+             WHERE messages.room_id = ? AND deliveries.target_session_id = ?
+               AND (messages.created_at > ? OR (messages.created_at = ? AND messages.id > ?))
+             ORDER BY messages.created_at ASC, deliveries.created_at ASC, messages.id ASC
+             LIMIT ${pagination.limit}`,
+          )
+          .all(room.id, member.session_id, cursor.created_at, cursor.created_at, cursor.id)
+      : this.db
+          .query<DeliveryRow, [string, string]>(
+            `SELECT deliveries.* FROM deliveries
+             JOIN messages ON messages.id = deliveries.message_id
+             WHERE messages.room_id = ? AND deliveries.target_session_id = ?
+             ORDER BY messages.created_at ASC, deliveries.created_at ASC, messages.id ASC
+             LIMIT ${pagination.limit}`,
+          )
+          .all(room.id, member.session_id);
+    const messageIds = [...new Set(deliveries.map((delivery) => delivery.message_id))];
+    const messages = this.messageRowsById(messageIds);
     return {
       room_id: room.id,
       member: { session_id: member.session_id, name: member.name },
@@ -1421,6 +1462,12 @@ export class CollabStorage {
 
   private findMessageById(messageId: string) {
     return this.db.query<MessageRow, [string]>("SELECT * FROM messages WHERE id = ? LIMIT 1").get(messageId);
+  }
+
+  private resolveCursor(roomId: string, since: string) {
+    const message = this.findMessageById(since);
+    if (!message || message.room_id !== roomId) throw httpError(400, "since must reference a message in this room");
+    return message;
   }
 
   private messageRows(roomId: string) {
@@ -1824,6 +1871,18 @@ function optionalModel(input: Record<string, unknown>) {
     modelID: record.modelID,
     variant: typeof record.variant === "string" && record.variant.trim() !== "" ? record.variant : undefined,
   };
+}
+
+function parsePaginationParams(params: URLSearchParams): PaginationParams {
+  const since = params.get("since") ?? undefined;
+  let limit = DEFAULT_PAGE_SIZE;
+  const limitParam = params.get("limit");
+  if (limitParam !== null) {
+    const parsed = parseInt(limitParam, 10);
+    if (isNaN(parsed) || parsed < 1) throw httpError(400, "limit must be a positive integer");
+    limit = Math.min(parsed, MAX_PAGE_SIZE);
+  }
+  return { since, limit };
 }
 
 function listState(params: URLSearchParams): "open" | "closed" | "all" {
