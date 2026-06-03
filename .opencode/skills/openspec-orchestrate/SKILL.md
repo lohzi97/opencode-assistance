@@ -21,7 +21,8 @@ One worker session performs one OpenSpec phase.
 
 The planner owns:
 
-- workflow state
+- workflow state (persisted to the state file)
+- state file read/write cadence
 - phase transitions
 - worker spawning and removal
 - commit checkpoint decisions
@@ -34,6 +35,57 @@ The worker owns:
 - reporting the result
 
 Commit workers are also workers. They own git inspection, staging, commit-message selection, committing, and pushing when authorized by the planner assignment.
+
+## State File Protocol
+
+The planner must persist workflow state to a JSON file in the target project directory at `<project>/openspec/.orchestration-state.json`. This file is the single source of truth for workflow progress and survives context compaction or session interruption.
+
+### Schema
+
+```json
+{
+  "project": "<absolute-path>",
+  "workflowMode": "brownfield | greenfield-prd",
+  "proposalName": "<proposal-name or null>",
+  "currentPhase": "<phase-state>",
+  "previousPhase": "<phase-state or null>",
+  "phaseHistory": [
+    {
+      "phase": "<phase-state>",
+      "outcome": "<outcome>",
+      "timestamp": "<ISO-8601>"
+    }
+  ],
+  "config": {
+    "codeReview": "disabled | enabled | auto-skip-non-code",
+    "commitMode": "disabled | ask_each_checkpoint | auto_at_checkpoints",
+    "pushMode": "disabled | ask_each_checkpoint | auto_with_commit",
+    "loopMode": "auto_continue_until_blocked | ask_after_each_phase",
+    "modelOverrides": {}
+  },
+  "roomId": "<room-name or null>",
+  "proposalQueue": [],
+  "currentQueueIndex": 0,
+  "lastUpdated": "<ISO-8601>"
+}
+```
+
+### Read/Write Cadence
+
+- **Read** the state file at the start of every planner turn to recover context, especially after compaction or session resumption.
+- **Write** the state file immediately after:
+  - Intake completes and the workflow configuration is established.
+  - Each phase transition decision (update `currentPhase`, `previousPhase`, and append to `phaseHistory`).
+  - Capturing the proposal name from a `proposal_needed` worker report.
+  - Capturing the proposal queue from PRD decomposition.
+  - Advancing `currentQueueIndex` to the next proposal.
+  - Room creation or closeout.
+- **Never** update the state file while a worker is still in progress. Write only after receiving and processing the worker's report.
+- The state file supplements but does not replace the planner's own reasoning. It is a persistence layer, not a decision maker.
+
+### State File Recovery
+
+If the state file is missing or corrupted, reconstruct from the latest planner report, room status, worker reports, and proposal files. Write the reconstructed state immediately so the next turn has a clean reference.
 
 ## Skill Assignment Rule
 
@@ -98,11 +150,17 @@ For brownfield work, a proposal name is required only when starting from an exis
 
 For greenfield PRD work, capture the proposal queue from `prd-implementation-sequence.md` after PRD decomposition and decomposition review are complete. Process one proposal at a time through the brownfield state machine.
 
+After intake is complete, write the initial state file to `<project>/openspec/.orchestration-state.json` with the resolved configuration, workflow mode, and starting phase. The state file must exist before any worker is spawned.
+
 ## Resume Existing Orchestration
 
-When resuming an interrupted workflow, reconstruct state from the latest planner report, room status, worker reports, and proposal files only as needed. Do not rerun completed phases unless the previous result is missing, blocked, invalid, or explicitly superseded by the user.
+When resuming an interrupted workflow, read the state file at `<project>/openspec/.orchestration-state.json` first. It is the primary source of truth for current phase, proposal name, configuration, and phase history.
 
-If the prior room or worker state is unclear, ask the user for the intended current phase or spawn a narrow review worker for the specific ambiguity. Do not infer implementation quality by inspecting diffs as the planner.
+If the state file is missing or corrupted, fall back to reconstructing from the latest planner report, room status, worker reports, and proposal files. Write the reconstructed state immediately.
+
+Do not rerun completed phases unless the previous result is missing, blocked, invalid, or explicitly superseded by the user.
+
+If the prior state is unclear even after state file recovery and artifact inspection, ask the user for the intended current phase or spawn a narrow review worker for the specific ambiguity. Do not infer implementation quality by inspecting diffs as the planner.
 
 ## Planner Setup
 
@@ -117,6 +175,7 @@ If the prior room or worker state is unclear, ask the user for the intended curr
 4. Preserve the full room name returned by `room create`.
 5. Keep the room password private.
 6. Do not use a detailed room public message. Leave it unset unless a minimal neutral note is necessary.
+7. Update the state file `roomId` field with the created room name.
 
 The worker does not need the project path, change id, phase, global workflow, reporting schema, or orchestration rules in the room public message. Spawn the worker in the correct project directory and send the immediate assignment directly.
 
@@ -177,7 +236,8 @@ For each phase:
 2. Wait for the worker's ordinary collab response. Do not poll while waiting for delivery.
 3. Read and synthesize the worker's report.
 4. Decide the next phase from the report outcome.
-5. Remove the worker from the room before starting the next worker.
+5. Update the state file with the new `currentPhase`, `previousPhase`, and appended `phaseHistory` entry.
+6. Remove the worker from the room before starting the next worker.
 
 Removing a worker from the room removes it from collaboration context; it is not a guarantee that the spawned OpenCode session process is terminated. Do not rely on removed workers for future context.
 
@@ -199,10 +259,11 @@ Use hard interrupts only when a worker is clearly stuck or running the wrong tas
 - Keep one active worker per phase unless the user explicitly requests parallel review.
 - Remove completed workers from the room before spawning the next phase worker.
 - Keep room public context minimal or absent.
+- Keep the state file in sync. Every phase transition must produce a state file write before the next worker is spawned. If the planner suspects the state file is stale, read it and verify before proceeding.
 
 ## Phase State Machine
 
-The planner should track the workflow as explicit states with allowed transitions.
+The planner tracks the workflow as explicit states with allowed transitions. All state transitions must be persisted to the state file immediately after the decision is made.
 
 ### Brownfield Workflow
 
@@ -329,6 +390,8 @@ Blocking question: <question or none>
 
 The signal is for planner routing only. The full skill report remains authoritative for phase details.
 
+After processing the signal and deciding the next phase, update the state file before proceeding. The state file's `currentPhase` must always reflect the planner's latest decision.
+
 Normalize skill-specific result names into the orchestration signal when routing. For example, `PASS` maps to `passed`, `ISSUES_FOUND` maps to `issues_found`, `BLOCKED` maps to `blocked`, and `NOT_APPLICABLE` maps to `not_applicable`.
 
 ## Planner Report To User
@@ -372,4 +435,5 @@ When the workflow is complete:
 2. Run the final commit checkpoint if requested by the workflow.
 3. Remove any remaining workers.
 4. Close the collaboration room.
-5. Report completion to the user with the final proposal/archive status and commit information.
+5. Update the state file with `currentPhase: "completed"` and final `phaseHistory`.
+6. Report completion to the user with the final proposal/archive status and commit information.
