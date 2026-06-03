@@ -278,6 +278,7 @@ describe("collab storage", () => {
     try {
       expect(storage.tableNames()).toEqual([
         "deliveries",
+        "member_session_history",
         "members",
         "messages",
         "question_targets",
@@ -3277,7 +3278,7 @@ function userMessage(sessionID: string, agent?: string, model?: { providerID: st
   };
 }
 
-function configWithTemplates(input: Partial<CollabConfig>): CollabConfig {
+  function configWithTemplates(input: Partial<CollabConfig>): CollabConfig {
   return {
     enabled: false,
     host: "127.0.0.1",
@@ -3289,3 +3290,557 @@ function configWithTemplates(input: Partial<CollabConfig>): CollabConfig {
     ...input,
   };
 }
+
+describe("collab session handoff", () => {
+  test("handoff updates member route and old session rejected, new session accepted", async () => {
+    const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+    try {
+      const now = Date.now();
+      storage.db.run(
+        "INSERT INTO rooms (id, base_name, name, planner_password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "handoff", "handoff-20260601120000", "hash", now],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at, directory, agent, model_provider_id, model_id, model_variant) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ["room_1", "ses_planner", "planner", "planner", now, null, null, null, null, null],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at, directory, agent, model_provider_id, model_id, model_variant) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ["room_1", "ses_worker", "worker", "implementer", now, "/project", "sebastian", "zai-coding-plan", "glm-5.1", "high"],
+      );
+
+      const results = storage.handleSessionHandoff({
+        oldSessionId: "ses_worker",
+        newSessionId: "ses_worker_new",
+        reason: "compaction",
+        now: now + 1000,
+      });
+
+      expect(results).toHaveLength(1);
+      expect(results[0]).toEqual({
+        roomId: "room_1",
+        roomName: "handoff-20260601120000",
+        memberName: "worker",
+        memberRole: "implementer",
+        memberAlias: "worker",
+        skipped: false,
+      });
+
+      const newMember = storage.db
+        .query<{ session_id: string; name: string; role: string; state: string; directory: string | null; agent: string | null; model_provider_id: string | null; model_id: string | null; model_variant: string | null }, [string, string]>(
+          "SELECT session_id, name, role, state, directory, agent, model_provider_id, model_id, model_variant FROM members WHERE room_id = ? AND session_id = ?",
+        )
+        .get("room_1", "ses_worker_new");
+      expect(newMember).toEqual({
+        session_id: "ses_worker_new",
+        name: "worker",
+        role: "implementer",
+        state: "active",
+        directory: "/project",
+        agent: "sebastian",
+        model_provider_id: "zai-coding-plan",
+        model_id: "glm-5.1",
+        model_variant: "high",
+      });
+
+      const oldMember = storage.db
+        .query<{ session_id: string }, [string, string]>(
+          "SELECT session_id FROM members WHERE room_id = ? AND session_id = ?",
+        )
+        .get("room_1", "ses_worker");
+      expect(oldMember).toBeNull();
+    } finally {
+      storage.close();
+    }
+  });
+
+  test("handoff retargets pending buffered, immediate, and hard deliveries", async () => {
+    const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+    try {
+      const now = Date.now();
+      storage.db.run(
+        "INSERT INTO rooms (id, base_name, name, planner_password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "deliveries", "deliveries-20260601120000", "hash", now],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "ses_planner", "planner", "planner", now],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "ses_worker", "worker", "implementer", now],
+      );
+
+      storage.db.run(
+        "INSERT INTO messages (id, room_id, sender_type, sender_name, body, kind, created_at) VALUES (?, ?, 'system', 'system', ?, 'note', ?)",
+        ["msg_buf", "room_1", "Buffered message", now + 100],
+      );
+      storage.db.run(
+        "INSERT INTO deliveries (message_id, target_session_id, target_name, mode, created_at) VALUES (?, ?, ?, 'buffered', ?)",
+        ["msg_buf", "ses_worker", "worker", now + 100],
+      );
+
+      storage.db.run(
+        "INSERT INTO messages (id, room_id, sender_type, sender_name, body, kind, created_at) VALUES (?, ?, 'system', 'system', ?, 'note', ?)",
+        ["msg_imm", "room_1", "Immediate message", now + 200],
+      );
+      storage.db.run(
+        "INSERT INTO deliveries (message_id, target_session_id, target_name, mode, created_at) VALUES (?, ?, ?, 'immediate', ?)",
+        ["msg_imm", "ses_worker", "worker", now + 200],
+      );
+
+      storage.db.run(
+        "INSERT INTO messages (id, room_id, sender_type, sender_name, body, kind, created_at) VALUES (?, ?, 'system', 'system', ?, 'note', ?)",
+        ["msg_hard", "room_1", "Hard message", now + 300],
+      );
+      storage.db.run(
+        "INSERT INTO deliveries (message_id, target_session_id, target_name, mode, created_at) VALUES (?, ?, ?, 'hard', ?)",
+        ["msg_hard", "ses_worker", "worker", now + 300],
+      );
+
+      storage.handleSessionHandoff({
+        oldSessionId: "ses_worker",
+        newSessionId: "ses_worker_new",
+        reason: "compaction",
+        now: now + 1000,
+      });
+
+      const oldDeliveries = storage.db
+        .query<{ message_id: string }, [string]>(
+          "SELECT message_id FROM deliveries WHERE target_session_id = ?",
+        )
+        .all("ses_worker");
+      expect(oldDeliveries).toEqual([]);
+
+      const newDeliveries = storage.db
+        .query<{ message_id: string; mode: string; state: string }, [string]>(
+          "SELECT message_id, mode, state FROM deliveries WHERE target_session_id = ? AND mode IN ('buffered', 'immediate', 'hard') ORDER BY created_at ASC",
+        )
+        .all("ses_worker_new");
+      expect(newDeliveries.map((d) => d.message_id)).toEqual(["msg_buf", "msg_imm", "msg_hard"]);
+      expect(newDeliveries.map((d) => d.mode)).toEqual(["buffered", "immediate", "hard"]);
+      expect(newDeliveries.every((d) => d.state === "pending")).toBe(true);
+    } finally {
+      storage.close();
+    }
+  });
+
+  test("handoff retargets pending question targets", async () => {
+    const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+    try {
+      const now = Date.now();
+      storage.db.run(
+        "INSERT INTO rooms (id, base_name, name, planner_password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "questions", "questions-20260601120000", "hash", now],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "ses_planner", "planner", "planner", now],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "ses_worker", "worker", "implementer", now],
+      );
+
+      storage.db.run(
+        "INSERT INTO messages (id, room_id, sender_type, sender_name, body, kind, created_at) VALUES (?, ?, 'member', 'planner', ?, 'question', ?)",
+        ["msg_q1", "room_1", "@worker Ready?", now + 100],
+      );
+      storage.db.run(
+        "INSERT INTO question_targets (message_id, target_session_id, target_name) VALUES (?, ?, ?)",
+        ["msg_q1", "ses_worker", "worker"],
+      );
+
+      storage.handleSessionHandoff({
+        oldSessionId: "ses_worker",
+        newSessionId: "ses_worker_new",
+        reason: "compaction",
+        now: now + 1000,
+      });
+
+      const oldTargets = storage.db
+        .query<{ message_id: string }, [string]>(
+          "SELECT message_id FROM question_targets WHERE target_session_id = ?",
+        )
+        .all("ses_worker");
+      expect(oldTargets).toEqual([]);
+
+      const newTargets = storage.db
+        .query<{ message_id: string; state: string }, [string]>(
+          "SELECT message_id, state FROM question_targets WHERE target_session_id = ?",
+        )
+        .all("ses_worker_new");
+      expect(newTargets).toEqual([{ message_id: "msg_q1", state: "pending" }]);
+    } finally {
+      storage.close();
+    }
+  });
+
+  test("handoff updates spawned session ownership", async () => {
+    const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+    try {
+      const now = Date.now();
+      storage.db.run(
+        "INSERT INTO rooms (id, base_name, name, planner_password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "spawn", "spawn-20260601120000", "hash", now],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "ses_planner", "planner", "planner", now],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "ses_spawned", "spawned-worker", "implementer", now],
+      );
+      storage.db.run(
+        "INSERT INTO spawned_sessions (room_id, session_id, spawned_by, created_at) VALUES (?, ?, ?, ?)",
+        ["room_1", "ses_spawned", "ses_planner", now],
+      );
+
+      storage.handleSessionHandoff({
+        oldSessionId: "ses_spawned",
+        newSessionId: "ses_spawned_new",
+        reason: "compaction",
+        now: now + 1000,
+      });
+
+      const oldSpawned = storage.db
+        .query<{ session_id: string }, [string, string]>(
+          "SELECT session_id FROM spawned_sessions WHERE room_id = ? AND session_id = ?",
+        )
+        .get("room_1", "ses_spawned");
+      expect(oldSpawned).toBeNull();
+
+      const newSpawned = storage.db
+        .query<{ session_id: string; spawned_by: string }, [string, string]>(
+          "SELECT session_id, spawned_by FROM spawned_sessions WHERE room_id = ? AND session_id = ?",
+        )
+        .get("room_1", "ses_spawned_new");
+      expect(newSpawned).toEqual({ session_id: "ses_spawned_new", spawned_by: "ses_planner" });
+    } finally {
+      storage.close();
+    }
+  });
+
+  test("handoff for non-spawned member does not create spawned_sessions row", async () => {
+    const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+    try {
+      const now = Date.now();
+      storage.db.run(
+        "INSERT INTO rooms (id, base_name, name, planner_password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "nospawn", "nospawn-20260601120000", "hash", now],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "ses_planner", "planner", "planner", now],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "ses_worker", "worker", "implementer", now],
+      );
+
+      storage.handleSessionHandoff({
+        oldSessionId: "ses_worker",
+        newSessionId: "ses_worker_new",
+        reason: "compaction",
+        now: now + 1000,
+      });
+
+      const spawnedCount = storage.db
+        .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM spawned_sessions")
+        .get();
+      expect(spawnedCount?.count).toBe(0);
+    } finally {
+      storage.close();
+    }
+  });
+
+  test("duplicate handoff is idempotent", async () => {
+    const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+    try {
+      const now = Date.now();
+      storage.db.run(
+        "INSERT INTO rooms (id, base_name, name, planner_password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "idempotent", "idempotent-20260601120000", "hash", now],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "ses_planner", "planner", "planner", now],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "ses_worker", "worker", "implementer", now],
+      );
+
+      const first = storage.handleSessionHandoff({
+        oldSessionId: "ses_worker",
+        newSessionId: "ses_worker_new",
+        reason: "compaction",
+        now: now + 1000,
+      });
+      expect(first).toHaveLength(1);
+      expect(first[0].skipped).toBe(false);
+
+      const second = storage.handleSessionHandoff({
+        oldSessionId: "ses_worker",
+        newSessionId: "ses_worker_new",
+        reason: "compaction",
+        now: now + 2000,
+      });
+      expect(second).toHaveLength(0);
+
+      const historyCount = storage.db
+        .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM member_session_history")
+        .get();
+      expect(historyCount?.count).toBe(1);
+
+      const handoffMessages = storage.db
+        .query<{ kind: string }, []>("SELECT kind FROM messages WHERE kind = 'session_handoff'")
+        .all();
+      expect(handoffMessages).toHaveLength(1);
+    } finally {
+      storage.close();
+    }
+  });
+
+  test("handoff rejected when continuation session already in another open room", async () => {
+    const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+    try {
+      const now = Date.now();
+      storage.db.run(
+        "INSERT INTO rooms (id, base_name, name, planner_password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "first", "first-20260601120000", "hash", now],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "ses_planner", "planner", "planner", now],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "ses_worker", "worker", "implementer", now],
+      );
+
+      storage.db.run(
+        "INSERT INTO rooms (id, base_name, name, planner_password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_2", "second", "second-20260601120000", "hash", now],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_2", "ses_taken", "taken-planner", "planner", now],
+      );
+
+      const results = storage.handleSessionHandoff({
+        oldSessionId: "ses_worker",
+        newSessionId: "ses_taken",
+        reason: "compaction",
+        now: now + 1000,
+      });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].skipped).toBe(true);
+      expect(results[0].reason).toContain("continuation session already active");
+
+      const workerStillThere = storage.db
+        .query<{ session_id: string }, [string, string]>(
+          "SELECT session_id FROM members WHERE room_id = ? AND session_id = ?",
+        )
+        .get("room_1", "ses_worker");
+      expect(workerStillThere).toBeDefined();
+    } finally {
+      storage.close();
+    }
+  });
+
+  test("service integration smoke test", async () => {
+    const client = mockClient();
+    const service = await startedService(client);
+    try {
+      const room = await roomWithMembers(service);
+      await markAllDeliveriesInjected();
+
+      await service.handleSessionSuperseded("ses_worker", "ses_worker_new", { reason: "compaction" });
+
+      const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+      try {
+        const reminderDeliveries = storage.db
+          .query<{ target_session_id: string; mode: string }, [string]>(
+            "SELECT target_session_id, mode FROM deliveries WHERE target_session_id = ? AND mode = 'handoff_reminder'",
+          )
+          .all("ses_worker_new");
+        expect(reminderDeliveries).toEqual([{ target_session_id: "ses_worker_new", mode: "handoff_reminder" }]);
+      } finally {
+        storage.close();
+      }
+
+      const oldSender = await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_worker",
+        from: "worker",
+        body: "Old session sends",
+      });
+      expect(oldSender.status).toBe(403);
+
+      const newSender = await routeJson(service, "POST", `/room/${room.room_id}/message`, {
+        session_id: "ses_worker_new",
+        from: "worker",
+        body: "New session sends",
+      });
+      expect(newSender.status).toBe(201);
+      expect(newSender.body.sender_id).toBe("ses_worker_new");
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("handoff records transcript message and reminder with correct content", async () => {
+    const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+    try {
+      const now = Date.now();
+      storage.db.run(
+        "INSERT INTO rooms (id, base_name, name, planner_password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "transcript", "transcript-20260601120000", "hash", now],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "ses_planner", "planner", "planner", now],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "ses_worker", "worker", "implementer", now],
+      );
+
+      storage.handleSessionHandoff({
+        oldSessionId: "ses_worker",
+        newSessionId: "ses_worker_new",
+        reason: "compaction",
+        now: now + 1000,
+      });
+
+      const transcript = storage.db
+        .query<{ kind: string; body: string }, [string]>(
+          "SELECT kind, body FROM messages WHERE kind = 'session_handoff'",
+        )
+        .get("room_1");
+      expect(transcript).toEqual({
+        kind: "session_handoff",
+        body: `Member worker session handed off from ses_worker to ses_worker_new (reason: compaction).`,
+      });
+
+      const reminder = storage.db
+        .query<{ kind: string; body: string }, [string]>(
+          "SELECT kind, body FROM messages WHERE kind = 'session_handoff_reminder'",
+        )
+        .get("room_1");
+      expect(reminder?.kind).toBe("session_handoff_reminder");
+      expect(reminder?.body).toContain("[Collab Session Handoff]");
+      expect(reminder?.body).toContain("Room: transcript-20260601120000");
+      expect(reminder?.body).toContain("Alias: worker");
+      expect(reminder?.body).toContain("Role: implementer");
+      expect(reminder?.body).toContain("Previous session: ses_worker");
+      expect(reminder?.body).toContain("Current session: ses_worker_new");
+
+      const history = storage.db
+        .query<{ room_id: string; name: string; old_session_id: string; new_session_id: string; reason: string }, []>(
+          "SELECT room_id, name, old_session_id, new_session_id, reason FROM member_session_history",
+        )
+        .get();
+      expect(history).toEqual({
+        room_id: "room_1",
+        name: "worker",
+        old_session_id: "ses_worker",
+        new_session_id: "ses_worker_new",
+        reason: "compaction",
+      });
+    } finally {
+      storage.close();
+    }
+  });
+
+  test("handoff reminder delivery uses member stored agent/model/variant", async () => {
+    const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+    try {
+      const now = Date.now();
+      storage.db.run(
+        "INSERT INTO rooms (id, base_name, name, planner_password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "agentmodel", "agentmodel-20260601120000", "hash", now],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at, directory, agent, model_provider_id, model_id, model_variant) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ["room_1", "ses_planner", "planner", "planner", now, null, null, null, null, null],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at, directory, agent, model_provider_id, model_id, model_variant) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ["room_1", "ses_worker", "worker", "implementer", now, "/work", "sebastian", "zai-coding-plan", "glm-5.1", "high"],
+      );
+
+      storage.handleSessionHandoff({
+        oldSessionId: "ses_worker",
+        newSessionId: "ses_worker_new",
+        reason: "compaction",
+        now: now + 1000,
+      });
+
+      const reminderDelivery = storage.db
+        .query<{ target_session_id: string; mode: string; agent: string | null; model_provider_id: string | null; model_id: string | null; model_variant: string | null }, [string]>(
+          "SELECT target_session_id, mode, agent, model_provider_id, model_id, model_variant FROM deliveries WHERE mode = 'handoff_reminder'",
+        )
+        .get("ses_worker_new");
+      expect(reminderDelivery).toEqual({
+        target_session_id: "ses_worker_new",
+        mode: "handoff_reminder",
+        agent: "sebastian",
+        model_provider_id: "zai-coding-plan",
+        model_id: "glm-5.1",
+        model_variant: "high",
+      });
+    } finally {
+      storage.close();
+    }
+  });
+
+  test("handoff handles member in closed room with pending deliveries", async () => {
+    const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+    try {
+      const now = Date.now();
+      storage.db.run(
+        "INSERT INTO rooms (id, base_name, name, planner_password_hash, created_at, state, closed_at) VALUES (?, ?, ?, ?, ?, 'closed', ?)",
+        ["room_1", "closed", "closed-20260601120000", "hash", now, now + 500],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "ses_planner", "planner", "planner", now],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at) VALUES (?, ?, ?, ?, ?)",
+        ["room_1", "ses_worker", "worker", "implementer", now],
+      );
+
+      storage.db.run(
+        "INSERT INTO messages (id, room_id, sender_type, sender_name, body, kind, created_at) VALUES (?, ?, 'system', 'system', ?, 'note', ?)",
+        ["msg_1", "room_1", "Pending in closed", now + 100],
+      );
+      storage.db.run(
+        "INSERT INTO deliveries (message_id, target_session_id, target_name, mode, created_at) VALUES (?, ?, ?, 'buffered', ?)",
+        ["msg_1", "ses_worker", "worker", now + 100],
+      );
+
+      const results = storage.handleSessionHandoff({
+        oldSessionId: "ses_worker",
+        newSessionId: "ses_worker_new",
+        reason: "compaction",
+        now: now + 2000,
+      });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].skipped).toBe(false);
+
+      const retargeted = storage.db
+        .query<{ target_session_id: string }, [string]>(
+          "SELECT target_session_id FROM deliveries WHERE message_id = 'msg_1'",
+        )
+        .get("ses_worker_new");
+      expect(retargeted).toEqual({ target_session_id: "ses_worker_new" });
+    } finally {
+      storage.close();
+    }
+  });
+});

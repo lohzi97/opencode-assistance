@@ -149,6 +149,16 @@ type AgentModelRow = {
   model_variant: string | null;
 };
 
+export type SessionHandoffResult = {
+  roomId: string;
+  roomName: string;
+  memberName: string;
+  memberRole: string;
+  memberAlias: string;
+  skipped: boolean;
+  reason?: string;
+};
+
 type DeliveryFailureClassification = "retryable" | "permanent";
 
 export class CollabService {
@@ -207,6 +217,23 @@ export class CollabService {
 
   async handleDeliveryEvent() {
     await this.flushPendingDeliveriesOnce();
+  }
+
+  async handleSessionSuperseded(sourceSessionId: string, continuationSessionId: string, metadata?: { groupID?: string; reason?: string }) {
+    if (!this.db) return;
+    try {
+      const results = this.db.handleSessionHandoff({
+        oldSessionId: sourceSessionId,
+        newSessionId: continuationSessionId,
+        reason: metadata?.reason ?? "compaction",
+        now: Date.now(),
+      });
+      if (results.some((r) => !r.skipped)) {
+        await this.flushPendingDeliveriesOnce();
+      }
+    } catch (err) {
+      await this.logDeliveryError(`collab handoff failed for ${sourceSessionId} -> ${continuationSessionId}`, err);
+    }
   }
 
   async tickDelivery() {
@@ -1254,6 +1281,185 @@ export class CollabStorage {
     );
   }
 
+  handleSessionHandoff(input: {
+    oldSessionId: string;
+    newSessionId: string;
+    reason: string;
+    now: number;
+  }): SessionHandoffResult[] {
+    const { oldSessionId, newSessionId, reason, now } = input;
+    const results: SessionHandoffResult[] = [];
+
+    const transaction = this.db.transaction(() => {
+      const memberships = this.db
+        .query<
+          MemberRow & { room_state: string; room_name: string },
+          [string]
+        >(
+          `SELECT members.*, rooms.state AS room_state, rooms.name AS room_name
+           FROM members
+           JOIN rooms ON rooms.id = members.room_id
+           WHERE members.session_id = ? AND members.state = 'active'
+             AND (rooms.state = 'open'
+               OR EXISTS (
+                 SELECT 1 FROM deliveries d
+                 JOIN messages m ON m.id = d.message_id
+                 WHERE d.target_session_id = members.session_id
+                   AND d.state = 'pending'
+                   AND m.room_id = members.room_id
+               ))`,
+        )
+        .all(oldSessionId);
+
+      for (const member of memberships) {
+        const roomId = member.room_id;
+
+        const existingHistory = this.db
+          .query<{ room_id: string }, [string, string, string]>(
+            "SELECT room_id FROM member_session_history WHERE room_id = ? AND old_session_id = ? AND new_session_id = ?",
+          )
+          .get(roomId, oldSessionId, newSessionId);
+        if (existingHistory) {
+          results.push({
+            roomId,
+            roomName: member.room_name,
+            memberName: member.name,
+            memberRole: member.role,
+            memberAlias: member.name,
+            skipped: true,
+            reason: "idempotent",
+          });
+          continue;
+        }
+
+        const conflictMember = this.db
+          .query<MemberRow, [string]>(
+            "SELECT * FROM members WHERE session_id = ? AND state = 'active' LIMIT 1",
+          )
+          .get(newSessionId);
+        if (conflictMember && conflictMember.room_id !== roomId) {
+          const conflictRoom = this.db.query<RoomRow, [string]>("SELECT * FROM rooms WHERE id = ?").get(conflictMember.room_id);
+          results.push({
+            roomId,
+            roomName: member.room_name,
+            memberName: member.name,
+            memberRole: member.role,
+            memberAlias: member.name,
+            skipped: true,
+            reason: `continuation session already active in room ${conflictRoom?.name ?? conflictMember.room_id}`,
+          });
+          continue;
+        }
+
+        // Retarget deliveries (DELETE + INSERT because PK includes target_session_id)
+        const pendingDeliveries = this.db
+          .query<DeliveryRow, [string, string]>(
+            "SELECT * FROM deliveries WHERE target_session_id = ? AND state = 'pending' AND message_id IN (SELECT id FROM messages WHERE room_id = ?)",
+          )
+          .all(oldSessionId, roomId);
+        for (const delivery of pendingDeliveries) {
+          this.db.run("DELETE FROM deliveries WHERE message_id = ? AND target_session_id = ?", [delivery.message_id, oldSessionId]);
+          this.db.run(
+            `INSERT INTO deliveries (message_id, target_session_id, target_name, mode, state, injected_at, attempt_count, last_error, created_at, agent, model_provider_id, model_id, model_variant)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              delivery.message_id, newSessionId, delivery.target_name, delivery.mode, delivery.state,
+              delivery.injected_at, delivery.attempt_count, delivery.last_error, delivery.created_at,
+              delivery.agent, delivery.model_provider_id, delivery.model_id, delivery.model_variant,
+            ],
+          );
+        }
+
+        // Retarget question_targets (DELETE + INSERT)
+        const pendingQuestions = this.db
+          .query<{ message_id: string; target_session_id: string; target_name: string; state: string; answered_at: number | null; cancelled_at: number | null; cancelled_reason: string | null }, [string, string]>(
+            "SELECT * FROM question_targets WHERE target_session_id = ? AND state = 'pending' AND message_id IN (SELECT id FROM messages WHERE room_id = ?)",
+          )
+          .all(oldSessionId, roomId);
+        for (const qt of pendingQuestions) {
+          this.db.run("DELETE FROM question_targets WHERE message_id = ? AND target_session_id = ?", [qt.message_id, oldSessionId]);
+          this.db.run(
+            `INSERT INTO question_targets (message_id, target_session_id, target_name, state, answered_at, cancelled_at, cancelled_reason)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [qt.message_id, newSessionId, qt.target_name, qt.state, qt.answered_at, qt.cancelled_at, qt.cancelled_reason],
+          );
+        }
+
+        // Retarget spawned_sessions (DELETE + INSERT)
+        const spawned = this.db
+          .query<{ room_id: string; session_id: string; spawned_by: string; created_at: number }, [string, string]>(
+            "SELECT * FROM spawned_sessions WHERE room_id = ? AND session_id = ?",
+          )
+          .get(roomId, oldSessionId);
+        if (spawned) {
+          this.db.run("DELETE FROM spawned_sessions WHERE room_id = ? AND session_id = ?", [roomId, oldSessionId]);
+          this.db.run(
+            "INSERT INTO spawned_sessions (room_id, session_id, spawned_by, created_at) VALUES (?, ?, ?, ?)",
+            [roomId, newSessionId, spawned.spawned_by, spawned.created_at],
+          );
+        }
+
+        // Update member row (DELETE old + INSERT new)
+        this.db.run("DELETE FROM members WHERE room_id = ? AND session_id = ?", [roomId, oldSessionId]);
+        this.db.run(
+          `INSERT INTO members (room_id, session_id, name, role, state, joined_at, left_at, removed_at, removed_by, directory, agent, model_provider_id, model_id, model_variant)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            roomId, newSessionId, member.name, member.role, member.state, member.joined_at,
+            member.left_at ?? null, member.removed_at ?? null, member.removed_by ?? null,
+            member.directory ?? null, member.agent ?? null, member.model_provider_id ?? null,
+            member.model_id ?? null, member.model_variant ?? null,
+          ],
+        );
+
+        // Insert history row
+        this.db.run(
+          "INSERT OR IGNORE INTO member_session_history (room_id, name, old_session_id, new_session_id, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+          [roomId, member.name, oldSessionId, newSessionId, reason, now],
+        );
+
+        // Insert transcript system message
+        const transcriptBody = `Member ${member.name} session handed off from ${oldSessionId} to ${newSessionId} (reason: ${reason}).`;
+        const transcriptMessageId = this.insertSystemMessage(roomId, transcriptBody, "session_handoff", now);
+
+        // Queue reminder delivery
+        const reminderBody = [
+          "[Collab Session Handoff]",
+          "",
+          "Your collaboration session has been continued after a context rollover.",
+          "",
+          `Room: ${member.room_name}`,
+          `Alias: ${member.name}`,
+          `Role: ${member.role}`,
+          `Previous session: ${oldSessionId}`,
+          `Current session: ${newSessionId}`,
+          "",
+          `You are still an active member of this room. Continue coordinating through agent-collab as ${member.name}.`,
+        ].join("\n");
+        const reminderMessageId = this.insertSystemMessage(roomId, reminderBody, "session_handoff_reminder", now + 1);
+        this.insertDeliveries(reminderMessageId, [{ session_id: newSessionId, name: member.name }], "handoff_reminder", now + 1, {
+          directory: member.directory ?? undefined,
+          agent: member.agent ?? undefined,
+          model: member.model_provider_id && member.model_id
+            ? { providerID: member.model_provider_id, modelID: member.model_id, variant: member.model_variant ?? undefined }
+            : undefined,
+        });
+
+        results.push({
+          roomId,
+          roomName: member.room_name,
+          memberName: member.name,
+          memberRole: member.role,
+          memberAlias: member.name,
+          skipped: false,
+        });
+      }
+    });
+
+    transaction();
+    return results;
+  }
+
   markDeliveriesInjected(deliveries: DeliveryRow[], now: number) {
     const transaction = this.db.transaction(() => {
       for (const delivery of deliveries) {
@@ -1720,6 +1926,16 @@ export class CollabStorage {
         cancelled_at               INTEGER,
         cancelled_reason           TEXT,
         PRIMARY KEY (message_id, target_session_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS member_session_history (
+        room_id        TEXT NOT NULL,
+        name           TEXT NOT NULL,
+        old_session_id TEXT NOT NULL,
+        new_session_id TEXT NOT NULL,
+        reason         TEXT NOT NULL,
+        created_at     INTEGER NOT NULL,
+        PRIMARY KEY (room_id, old_session_id, new_session_id)
       );
     `);
     this.ensureColumn("rooms", "public_message", "TEXT");

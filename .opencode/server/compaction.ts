@@ -141,9 +141,14 @@ export class CompactionService {
   private providersLoadedAt = 0;
   private readonly providers = new Map<string, ProviderInfo["models"][string]>();
   private readonly missingLimitLogged = new Set<string>();
+  private onSessionSuperseded?: (sourceSessionId: string, continuationSessionId: string, metadata: { groupID: string; reason: string }) => void | Promise<void>;
 
   constructor(client: OpenCodeClient) {
     this.client = client;
+  }
+
+  setSessionSupersededHandler(handler: (sourceSessionId: string, continuationSessionId: string, metadata: { groupID: string; reason: string }) => void | Promise<void>) {
+    this.onSessionSuperseded = handler;
   }
 
   async start() {
@@ -538,6 +543,14 @@ export class CompactionService {
     managed.error = undefined;
 
     await this.persist();
+
+    try {
+      if (this.onSessionSuperseded) {
+        await this.onSessionSuperseded(managed.session_id, continuation.id, { groupID: group.group_id, reason: "compaction" });
+      }
+    } catch (err) {
+      console.warn(`[compaction] collab handoff failed for ${managed.session_id} -> ${continuation.id}`, err);
+    }
 
     if (this.config.rename_original) {
       const desiredTitle = formatTitle(group.display_base_title, group.group_id, managed.index);

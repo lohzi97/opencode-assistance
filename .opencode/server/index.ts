@@ -36,6 +36,10 @@ async function main() {
   await proactive.start();
   await collab.start();
 
+  compaction.setSessionSupersededHandler(async (sourceSessionId, continuationSessionId, metadata) => {
+    await collab.handleSessionSuperseded(sourceSessionId, continuationSessionId, metadata);
+  });
+
   void listenGlobalEvents({
     onEvent: async (envelope) => {
       const bus = unwrapBusEvent(envelope);
