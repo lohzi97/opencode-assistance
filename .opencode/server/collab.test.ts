@@ -3029,6 +3029,124 @@ describe("collab message pagination", () => {
   });
 });
 
+describe("collab room list pagination", () => {
+  test("default room list returns rooms ordered newest first and bounded", async () => {
+    const service = await startedService();
+    try {
+      const room1 = await routeJson(service, "POST", "/room", { name: "oldest", session_id: "ses_1", from: "planner" });
+      const room2 = await routeJson(service, "POST", "/room", { name: "middle", session_id: "ses_2", from: "planner" });
+      const room3 = await routeJson(service, "POST", "/room", { name: "newest", session_id: "ses_3", from: "planner" });
+
+      const list = await routeJson(service, "GET", "/room/list");
+      expect(list.status).toBe(200);
+      expect(list.body.rooms.length).toBe(3);
+      expect(list.body.rooms.map((r: { room_id: string }) => r.room_id)).toEqual([
+        room3.body.room_id,
+        room2.body.room_id,
+        room1.body.room_id,
+      ]);
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("room list honors state filter and limit", async () => {
+    const service = await startedService();
+    try {
+      for (let i = 0; i < 3; i++) {
+        await routeJson(service, "POST", "/room", { name: `open-${i}`, session_id: `ses_open_${i}`, from: "planner" });
+      }
+      for (let i = 0; i < 2; i++) {
+        const created = await routeJson(service, "POST", "/room", { name: `closed-${i}`, session_id: `ses_close_${i}`, from: "planner" });
+        await routeJson(service, "DELETE", `/room/${created.body.room_id}`, { session_id: `ses_close_${i}`, from: "planner" });
+      }
+
+      const closedLimited = await routeJson(service, "GET", "/room/list?state=closed&limit=2");
+      expect(closedLimited.status).toBe(200);
+      expect(closedLimited.body.rooms.length).toBe(2);
+      for (const room of closedLimited.body.rooms) {
+        expect(room.state).toBe("closed");
+      }
+
+      const openLimited = await routeJson(service, "GET", "/room/list?limit=1");
+      expect(openLimited.status).toBe(200);
+      expect(openLimited.body.rooms.length).toBe(1);
+      expect(openLimited.body.rooms[0].state).toBe("open");
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("room list honors before cursor", async () => {
+    const service = await startedService();
+    try {
+      const room1 = await routeJson(service, "POST", "/room", { name: "oldest", session_id: "ses_1", from: "planner" });
+      const room2 = await routeJson(service, "POST", "/room", { name: "middle", session_id: "ses_2", from: "planner" });
+      const room3 = await routeJson(service, "POST", "/room", { name: "newest", session_id: "ses_3", from: "planner" });
+
+      const page = await routeJson(service, "GET", `/room/list?before=${room3.body.room_id}`);
+      expect(page.status).toBe(200);
+      expect(page.body.rooms.length).toBe(2);
+      expect(page.body.rooms.map((r: { room_id: string }) => r.room_id)).toEqual([room2.body.room_id, room1.body.room_id]);
+
+      const page2 = await routeJson(service, "GET", `/room/list?before=${room2.body.room_id}`);
+      expect(page2.status).toBe(200);
+      expect(page2.body.rooms.length).toBe(1);
+      expect(page2.body.rooms[0].room_id).toBe(room1.body.room_id);
+
+      const page3 = await routeJson(service, "GET", `/room/list?before=${room1.body.room_id}`);
+      expect(page3.status).toBe(200);
+      expect(page3.body.rooms).toEqual([]);
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("invalid room list cursor is rejected", async () => {
+    const service = await startedService();
+    try {
+      await routeJson(service, "POST", "/room", { name: "test", session_id: "ses_1", from: "planner" });
+
+      const unknown = await routeJson(service, "GET", "/room/list?before=room_nonexistent");
+      expect(unknown.status).toBe(400);
+      expect(unknown.body.error).toBe("before must reference an existing room");
+
+      const created = await routeJson(service, "POST", "/room", { name: "to-close", session_id: "ses_2", from: "planner" });
+      await routeJson(service, "DELETE", `/room/${created.body.room_id}`, { session_id: "ses_2", from: "planner" });
+
+      const wrongState = await routeJson(service, "GET", `/room/list?state=open&before=${created.body.room_id}`);
+      expect(wrongState.status).toBe(400);
+      expect(wrongState.body.error).toBe("before cursor room is not in state 'open'");
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("default room list is bounded by default page size", async () => {
+    const service = await startedService();
+    try {
+      await insertBulkRooms(DEFAULT_PAGE_SIZE + 5);
+      const list = await routeJson(service, "GET", "/room/list");
+      expect(list.status).toBe(200);
+      expect(list.body.rooms.length).toBe(DEFAULT_PAGE_SIZE);
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("excessive room list limit is capped to maximum page size", async () => {
+    const service = await startedService();
+    try {
+      await insertBulkRooms(MAX_PAGE_SIZE + 10);
+      const list = await routeJson(service, "GET", "/room/list?limit=99999");
+      expect(list.status).toBe(200);
+      expect(list.body.rooms.length).toBe(MAX_PAGE_SIZE);
+    } finally {
+      await service.shutdown();
+    }
+  });
+});
+
 async function startedService(client: OpenCodeClientType = mockClient(), config: Partial<CollabConfig> = {}) {
   const service = new CollabService(client, async () => configWithTemplates({ enabled: true, port: 0, poll_interval_ms: 1_000_000, ...config }));
   await service.start();
@@ -3069,6 +3187,27 @@ async function markAllDeliveriesInjected() {
   const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
   try {
     storage.db.run("UPDATE deliveries SET state = 'injected', injected_at = 1");
+  } finally {
+    storage.close();
+  }
+}
+
+async function insertBulkRooms(count: number) {
+  const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+  try {
+    const now = Date.now();
+    for (let i = 0; i < count; i++) {
+      const createdAt = now - (count - i) * 1000;
+      const id = `room_bulk_${i}`;
+      storage.db.run(
+        "INSERT INTO rooms (id, base_name, name, planner_password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+        [id, `bulk-${i}`, `bulk-${i}-20260101000000`, "hash", createdAt],
+      );
+      storage.db.run(
+        "INSERT INTO members (room_id, session_id, name, role, joined_at) VALUES (?, ?, ?, ?, ?)",
+        [id, `ses_bulk_${i}`, "planner", "planner", createdAt],
+      );
+    }
   } finally {
     storage.close();
   }

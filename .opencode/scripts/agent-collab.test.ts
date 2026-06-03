@@ -84,6 +84,16 @@ describe("agent-collab room commands", () => {
     expect(client.requests[1].url).toBe("http://127.0.0.1:9100/room/list?state=all");
   });
 
+  test("room list forwards before and limit query parameters", async () => {
+    const client = mockCli({ ok: true, body: { rooms: [] } });
+
+    await client.run(["room", "list", "--before", "room_abc", "--limit", "10"]);
+    await client.run(["room", "list", "--closed", "--before", "room_xyz", "--limit", "5"]);
+
+    expect(client.requests[0].url).toBe("http://127.0.0.1:9100/room/list?before=room_abc&limit=10");
+    expect(client.requests[1].url).toBe("http://127.0.0.1:9100/room/list?state=closed&before=room_xyz&limit=5");
+  });
+
   test("room close requires planner identity and sends delete payload", async () => {
     const missing = mockCli({ ok: true, body: {} });
     expect(await missing.run(["room", "close", "--room", "r", "--session", "ses_planner"])).toBe(1);

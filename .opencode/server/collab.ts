@@ -16,6 +16,12 @@ export type PaginationParams = {
   limit: number;
 };
 
+export type RoomListParams = {
+  state: "open" | "closed" | "all";
+  before?: string;
+  limit: number;
+};
+
 export const FALLBACK_ROOM_JOIN_INSTRUCTION =
   "You are joining collaboration room {room} as {alias} ({role}). Coordinate through agent-collab. Reply with ready to confirm your availability.";
 
@@ -218,7 +224,7 @@ export class CollabService {
       }
 
       if (request.method === "GET" && parts.length === 2 && parts[0] === "room" && parts[1] === "list") {
-        return jsonResponse({ rooms: this.db.listRooms(listState(url.searchParams)) });
+        return jsonResponse({ rooms: this.db.listRooms(parseRoomListParams(url.searchParams)) });
       }
 
       if (request.method === "GET" && parts.length === 3 && parts[0] === "room" && parts[2] === "status") {
@@ -776,11 +782,43 @@ export class CollabStorage {
     return this.publicRoom(room, { members: this.activeMembers(room.id) });
   }
 
-  listRooms(state: "open" | "closed" | "all" = "open") {
-    const rows =
-      state === "all"
-        ? this.db.query<RoomRow, []>("SELECT * FROM rooms ORDER BY created_at DESC").all()
-        : this.db.query<RoomRow, [string]>("SELECT * FROM rooms WHERE state = ? ORDER BY created_at DESC").all(state);
+  listRooms(params: RoomListParams) {
+    const cursor = params.before ? this.resolveRoomCursor(params.before, params.state) : undefined;
+
+    let rows: RoomRow[];
+    if (params.state === "all") {
+      rows = cursor
+        ? this.db
+            .query<RoomRow, [number, string, number, string]>(
+              `SELECT * FROM rooms
+               WHERE (created_at < ? OR (created_at = ? AND id < ?))
+               ORDER BY created_at DESC, id DESC
+               LIMIT ?`,
+            )
+            .all(cursor.created_at, cursor.created_at, cursor.id, params.limit)
+        : this.db
+            .query<RoomRow, [number]>(
+              `SELECT * FROM rooms ORDER BY created_at DESC, id DESC LIMIT ?`,
+            )
+            .all(params.limit);
+    } else {
+      rows = cursor
+        ? this.db
+            .query<RoomRow, [string, number, string, number, string]>(
+              `SELECT * FROM rooms
+               WHERE state = ?
+                 AND (created_at < ? OR (created_at = ? AND id < ?))
+               ORDER BY created_at DESC, id DESC
+               LIMIT ?`,
+            )
+            .all(params.state, cursor.created_at, cursor.created_at, cursor.id, params.limit)
+        : this.db
+            .query<RoomRow, [string, number]>(
+              `SELECT * FROM rooms WHERE state = ? ORDER BY created_at DESC, id DESC LIMIT ?`,
+            )
+            .all(params.state, params.limit);
+    }
+
     return rows.map((room) => this.publicRoom(room));
   }
 
@@ -1470,6 +1508,13 @@ export class CollabStorage {
     return message;
   }
 
+  private resolveRoomCursor(roomId: string, state: "open" | "closed" | "all") {
+    const room = this.db.query<RoomRow, [string]>("SELECT * FROM rooms WHERE id = ? LIMIT 1").get(roomId);
+    if (!room) throw httpError(400, "before must reference an existing room");
+    if (state !== "all" && room.state !== state) throw httpError(400, `before cursor room is not in state '${state}'`);
+    return room;
+  }
+
   private messageRows(roomId: string) {
     return this.db.query<MessageRow, [string]>("SELECT * FROM messages WHERE room_id = ? ORDER BY created_at ASC, id ASC").all(roomId);
   }
@@ -1871,6 +1916,19 @@ function optionalModel(input: Record<string, unknown>) {
     modelID: record.modelID,
     variant: typeof record.variant === "string" && record.variant.trim() !== "" ? record.variant : undefined,
   };
+}
+
+function parseRoomListParams(params: URLSearchParams): RoomListParams {
+  const state = listState(params);
+  const before = params.get("before") ?? undefined;
+  let limit = DEFAULT_PAGE_SIZE;
+  const limitParam = params.get("limit");
+  if (limitParam !== null) {
+    const parsed = parseInt(limitParam, 10);
+    if (isNaN(parsed) || parsed < 1) throw httpError(400, "limit must be a positive integer");
+    limit = Math.min(parsed, MAX_PAGE_SIZE);
+  }
+  return { state, before, limit };
 }
 
 function parsePaginationParams(params: URLSearchParams): PaginationParams {

@@ -173,7 +173,11 @@ function roomStatus({ args, client }: CommandContext) {
 
 function roomList({ args, client }: CommandContext) {
   const state = args.flags.all ? "all" : args.flags.closed ? "closed" : undefined;
-  return client.request("/room/list", state ? { search: { state } } : undefined);
+  const search: Record<string, string> = {};
+  if (state) search.state = state;
+  if (typeof args.flags.before === "string") search.before = args.flags.before;
+  if (typeof args.flags.limit === "string") search.limit = args.flags.limit;
+  return client.request("/room/list", Object.keys(search).length > 0 ? { search } : undefined);
 }
 
 function closeRoom({ args, client }: CommandContext) {
