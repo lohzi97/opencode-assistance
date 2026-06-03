@@ -54,18 +54,35 @@ The script is conservative by default:
 - Runs `openspec init --tools opencode` unless `--skip-openspec-init` is supplied.
 - Records pre-existing `.opencode/command`, `.opencode/commands`, `.opencode/skill`, and `.opencode/skills` entries before initialization.
 - Removes only newly generated `opsx-*` and `openspec-*` commands/skills created by initialization.
-- Copies `template/opencode.json` to the target project root as `opencode.json`.
-- Recursively copies every other file and directory in `template/` into the target project's `.opencode/` directory.
-- This means new template agents, plugins, skills, commands, or other OpenCode assets are included automatically when placed under `template/`.
-- Skips existing target files unless `--force` is supplied.
+- Copies `template/opencode.json` to the target project root as `opencode.json` (always a copy, never a symlink, because OpenCode writes back to this file).
+- Symlinks all other template entries into `.opencode/` using relative paths. This gives instant propagation: editing a template skill, agent, plugin, or script takes effect across all scaffolded projects on the next OpenCode restart.
+- Skips existing entries (files or symlinks) unless `--force` is supplied.
 - Initializes git when `.git` is absent, unless `--skip-git` is supplied.
 - Never commits changes.
+
+Symlink rules:
+
+- Individual agent files (`.opencode/agents/levi.md`), plugin files (`.opencode/plugins/stuck-watcher.ts`), script files (`.opencode/scripts/session-info.ts`), and config fragments (`.opencode/stuck-watcher.jsonc`) are symlinked at the file level.
+- Skill directories (`.opencode/skills/openspec-propose/`, etc.) are symlinked at the directory level -- the whole skill directory is one symlink.
+- Intermediate directories (`.opencode/agents/`, `.opencode/skills/`, `.opencode/plugins/`, `.opencode/scripts/`) are real directories owned by the target project, so projects can add their own entries alongside the symlinked ones.
+
+### Syncing New Template Entries
+
+When new files or directories are added to the template after a project has already been scaffolded, use `--sync` to create the missing symlinks without re-running init:
+
+```sh
+bun .opencode/skills/openspec-scaffold/scripts/opsx-scaffold.ts --sync <project-path>
+```
+
+Sync mode only creates missing symlinks. It skips `opencode.json`, `openspec init`, git init, and generated-asset removal. It is idempotent and safe to run repeatedly.
 
 Useful options:
 
 ```sh
 bun .opencode/skills/openspec-scaffold/scripts/opsx-scaffold.ts --dry-run <project-or-prd-path>
 bun .opencode/skills/openspec-scaffold/scripts/opsx-scaffold.ts --force <project-or-prd-path>
+bun .opencode/skills/openspec-scaffold/scripts/opsx-scaffold.ts --sync <project-path>
+bun .opencode/skills/openspec-scaffold/scripts/opsx-scaffold.ts --sync --dry-run <project-path>
 bun .opencode/skills/openspec-scaffold/scripts/opsx-scaffold.ts --skip-git <project-or-prd-path>
 bun .opencode/skills/openspec-scaffold/scripts/opsx-scaffold.ts --skip-openspec-init <project-or-prd-path>
 ```

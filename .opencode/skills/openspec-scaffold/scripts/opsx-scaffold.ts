@@ -8,8 +8,11 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  readlinkSync,
   rmSync,
   statSync,
+  symlinkSync,
+  unlinkSync,
 } from "node:fs";
 import path from "node:path";
 
@@ -20,13 +23,14 @@ type Options = {
   templateDir: string;
   dryRun: boolean;
   force: boolean;
+  sync: boolean;
   skipGit: boolean;
   skipOpenSpecInit: boolean;
   help: boolean;
 };
 
 type Action = {
-  kind: "created" | "copied" | "skipped" | "removed" | "ran" | "would" | "error";
+  kind: "created" | "copied" | "symlinked" | "skipped" | "removed" | "ran" | "would" | "error";
   path?: string;
   detail: string;
 };
@@ -48,11 +52,17 @@ Options:
   --template-dir <path>       Template directory. Defaults to this skill's template directory.
   --dry-run                   Show intended changes without writing files or running commands.
   --force                     Overwrite template-managed files that already exist.
+  --sync                      Re-link new template entries into an already-scaffolded project.
+                              Skips openspec init, git init, and generated-asset removal.
+                              Only creates symlinks for template entries not yet present.
   --skip-git                  Do not initialize git when .git is missing.
   --skip-openspec-init        Do not run openspec init.
   --help                      Show this help.
 
-Default behavior is conservative: existing files are skipped, not overwritten.`;
+Default behavior is conservative: existing files are skipped, not overwritten.
+Read-only template assets (agents, skills, plugins, scripts, config fragments)
+are symlinked to the template source for instant propagation. The project root
+opencode.json is always copied since OpenCode writes back to it.`;
 }
 
 function parseArgs(argv: string[]): Options {
@@ -60,6 +70,7 @@ function parseArgs(argv: string[]): Options {
     templateDir: defaultTemplateDir,
     dryRun: false,
     force: false,
+    sync: false,
     skipGit: false,
     skipOpenSpecInit: false,
     help: false,
@@ -77,6 +88,9 @@ function parseArgs(argv: string[]): Options {
         break;
       case "--force":
         options.force = true;
+        break;
+      case "--sync":
+        options.sync = true;
         break;
       case "--skip-git":
         options.skipGit = true;
@@ -174,18 +188,73 @@ function copyManagedFile(src: string, dest: string, options: Options, actions: A
   actions.push({ kind: "copied", path: dest, detail: `from ${src}` });
 }
 
-function copyTree(srcDir: string, destDir: string, options: Options, actions: Action[]) {
-  if (!existsSync(srcDir)) return;
-  for (const entry of readdirSync(srcDir)) {
-    const src = path.join(srcDir, entry);
-    const dest = path.join(destDir, entry);
-    const st = lstatSync(src);
-    if (st.isDirectory()) {
-      ensureDir(dest, options, actions);
-      copyTree(src, dest, options, actions);
-      continue;
+/**
+ * Create a relative symlink from dest -> src. Handles existing entries:
+ * - Correct symlink already present: skip
+ * - Wrong symlink or regular file present: skip unless --force
+ */
+function symlinkManagedEntry(src: string, dest: string, options: Options, actions: Action[]) {
+  const relativeTarget = path.relative(path.dirname(dest), src);
+
+  let existingStat: ReturnType<typeof lstatSync> = undefined;
+  try {
+    existingStat = lstatSync(dest);
+  } catch {}
+
+  if (existingStat?.isSymbolicLink()) {
+    try {
+      const currentTarget = readlinkSync(dest);
+      const resolvedCurrent = path.resolve(path.dirname(dest), currentTarget);
+      if (resolvedCurrent === path.resolve(src)) {
+        actions.push({ kind: "skipped", path: dest, detail: "symlink already correct" });
+        return;
+      }
+    } catch {}
+    if (!options.force) {
+      actions.push({ kind: "skipped", path: dest, detail: "symlink exists (different target)" });
+      return;
     }
-    if (st.isFile()) copyManagedFile(src, dest, options, actions);
+    if (!options.dryRun) unlinkSync(dest);
+  } else if (existingStat) {
+    if (!options.force) {
+      actions.push({ kind: "skipped", path: dest, detail: "exists (not a symlink)" });
+      return;
+    }
+    if (!options.dryRun) rmSync(dest, { recursive: true, force: true });
+  }
+
+  if (options.dryRun) {
+    actions.push({ kind: "would", path: dest, detail: `symlink -> ${relativeTarget}` });
+    return;
+  }
+
+  mkdirSync(path.dirname(dest), { recursive: true });
+  symlinkSync(relativeTarget, dest);
+  actions.push({ kind: "symlinked", path: dest, detail: `-> ${relativeTarget}` });
+}
+
+/**
+ * Symlink leaf entries from srcDir into destDir.
+ * - Files are symlinked individually.
+ * - Directories that contain no subdirectories ("leaf dirs") are symlinked as a whole.
+ * - Directories that contain subdirectories are recursed into.
+ */
+function symlinkTree(srcDir: string, destDir: string, options: Options, actions: Action[]) {
+  if (!existsSync(srcDir)) return;
+  for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
+    const src = path.join(srcDir, entry.name);
+    const dest = path.join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      const children = readdirSync(src, { withFileTypes: true });
+      if (children.some((c) => c.isDirectory())) {
+        ensureDir(dest, options, actions);
+        symlinkTree(src, dest, options, actions);
+      } else {
+        symlinkManagedEntry(src, dest, options, actions);
+      }
+    } else if (entry.isFile()) {
+      symlinkManagedEntry(src, dest, options, actions);
+    }
   }
 }
 
@@ -210,23 +279,53 @@ function removeGeneratedAssets(projectRoot: string, preExisting: { commands: Set
         actions.push({ kind: "would", path: target, detail: "remove generated OpenSpec/OpenCode asset" });
         continue;
       }
-      rmSync(target, { recursive: true, force: true });
+      // Use unlinkSync for symlinks to avoid following into the target
+      if (lstatSync(target).isSymbolicLink()) {
+        unlinkSync(target);
+      } else {
+        rmSync(target, { recursive: true, force: true });
+      }
       actions.push({ kind: "removed", path: target, detail: "generated OpenSpec/OpenCode asset" });
     }
   }
 }
 
-function copyTemplate(projectRoot: string, templateDir: string, options: Options, actions: Action[]) {
+/**
+ * Copy opencode.json (mutable) and symlink all other template entries.
+ */
+function applyTemplate(projectRoot: string, templateDir: string, options: Options, actions: Action[]) {
   for (const entry of readdirSync(templateDir)) {
     const src = path.join(templateDir, entry);
     const dest = entry === "opencode.json" ? path.join(projectRoot, entry) : path.join(projectRoot, ".opencode", entry);
     const st = lstatSync(src);
-    if (st.isDirectory()) {
-      ensureDir(dest, options, actions);
-      copyTree(src, dest, options, actions);
+    if (entry === "opencode.json") {
+      if (st.isFile()) copyManagedFile(src, dest, options, actions);
       continue;
     }
-    if (st.isFile()) copyManagedFile(src, dest, options, actions);
+    if (st.isDirectory()) {
+      ensureDir(dest, options, actions);
+      symlinkTree(src, dest, options, actions);
+      continue;
+    }
+    if (st.isFile()) symlinkManagedEntry(src, dest, options, actions);
+  }
+}
+
+/**
+ * --sync: only create missing symlinks, skip opencode.json and all init steps.
+ */
+function syncTemplate(projectRoot: string, templateDir: string, options: Options, actions: Action[]) {
+  for (const entry of readdirSync(templateDir)) {
+    if (entry === "opencode.json") continue;
+    const src = path.join(templateDir, entry);
+    const dest = path.join(projectRoot, ".opencode", entry);
+    const st = lstatSync(src);
+    if (st.isDirectory()) {
+      ensureDir(dest, options, actions);
+      symlinkTree(src, dest, options, actions);
+      continue;
+    }
+    if (st.isFile()) symlinkManagedEntry(src, dest, options, actions);
   }
 }
 
@@ -252,7 +351,7 @@ function validateTemplate(templateDir: string) {
 }
 
 function printActions(actions: Action[]) {
-  const groups = ["ran", "created", "removed", "copied", "skipped", "would", "error"] as const;
+  const groups = ["ran", "created", "removed", "copied", "symlinked", "skipped", "would", "error"] as const;
   for (const group of groups) {
     const items = actions.filter((action) => action.kind === group);
     if (items.length === 0) continue;
@@ -275,6 +374,14 @@ function main() {
   validateTemplate(templateDir);
 
   const actions: Action[] = [];
+
+  if (options.sync) {
+    syncTemplate(projectRoot, templateDir, options, actions);
+    console.log(`OPSX sync target: ${projectRoot}`);
+    printActions(actions);
+    return;
+  }
+
   const preExisting = {
     commands: new Set([
       ...listNames(path.join(projectRoot, ".opencode", "command")),
@@ -288,7 +395,7 @@ function main() {
 
   if (!options.skipOpenSpecInit) runCommand("openspec", ["init", "--tools", "opencode"], projectRoot, options, actions);
   removeGeneratedAssets(projectRoot, preExisting, options, actions);
-  copyTemplate(projectRoot, templateDir, options, actions);
+  applyTemplate(projectRoot, templateDir, options, actions);
 
   if (!options.skipGit && !existsSync(path.join(projectRoot, ".git"))) {
     runCommand("git", ["init"], projectRoot, options, actions);
