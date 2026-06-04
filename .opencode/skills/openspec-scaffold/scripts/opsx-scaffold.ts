@@ -13,6 +13,7 @@ import {
   statSync,
   symlinkSync,
   unlinkSync,
+  writeFileSync,
 } from "node:fs";
 import path from "node:path";
 
@@ -30,7 +31,7 @@ type Options = {
 };
 
 type Action = {
-  kind: "created" | "copied" | "symlinked" | "skipped" | "removed" | "ran" | "would" | "error";
+  kind: "created" | "copied" | "symlinked" | "skipped" | "removed" | "ran" | "would" | "updated" | "error";
   path?: string;
   detail: string;
 };
@@ -186,6 +187,45 @@ function copyManagedFile(src: string, dest: string, options: Options, actions: A
   mkdirSync(path.dirname(dest), { recursive: true });
   copyFileSync(src, dest);
   actions.push({ kind: "copied", path: dest, detail: `from ${src}` });
+}
+
+/**
+ * Ensure a specific entry exists in the project's .gitignore.
+ * Creates .gitignore if absent. Skips if the entry is already present.
+ */
+function ensureGitignoreEntry(projectRoot: string, entry: string, comment: string, options: Options, actions: Action[]) {
+  const gitignorePath = path.join(projectRoot, ".gitignore");
+  const entryBase = entry.replace(/\/$/, ""); // ".opencode"
+
+  if (existsSync(gitignorePath)) {
+    const content = readFileSync(gitignorePath, "utf-8");
+    const lines = content.split(/\r?\n/);
+    const alreadyPresent = lines.some((line) => {
+      const trimmed = line.trim();
+      return trimmed === entryBase || trimmed === entryBase + "/";
+    });
+    if (alreadyPresent) {
+      actions.push({ kind: "skipped", path: gitignorePath, detail: `${entry} already in .gitignore` });
+      return;
+    }
+  }
+
+  if (options.dryRun) {
+    actions.push({ kind: "would", path: gitignorePath, detail: `add ${entry} to .gitignore` });
+    return;
+  }
+
+  const block = `\n# ${comment}\n${entry}\n`;
+
+  if (existsSync(gitignorePath)) {
+    const content = readFileSync(gitignorePath, "utf-8");
+    const needsNewline = content.length > 0 && !content.endsWith("\n");
+    writeFileSync(gitignorePath, content + (needsNewline ? "\n" : "") + block);
+  } else {
+    writeFileSync(gitignorePath, block);
+  }
+
+  actions.push({ kind: "updated", path: gitignorePath, detail: `added ${entry}` });
 }
 
 /**
@@ -351,7 +391,7 @@ function validateTemplate(templateDir: string) {
 }
 
 function printActions(actions: Action[]) {
-  const groups = ["ran", "created", "removed", "copied", "symlinked", "skipped", "would", "error"] as const;
+  const groups = ["ran", "created", "removed", "copied", "symlinked", "updated", "skipped", "would", "error"] as const;
   for (const group of groups) {
     const items = actions.filter((action) => action.kind === group);
     if (items.length === 0) continue;
@@ -377,6 +417,7 @@ function main() {
 
   if (options.sync) {
     syncTemplate(projectRoot, templateDir, options, actions);
+    ensureGitignoreEntry(projectRoot, ".opencode/", "OpenCode config (symlinked — recreate with opsx-scaffold --sync)", options, actions);
     console.log(`OPSX sync target: ${projectRoot}`);
     printActions(actions);
     return;
@@ -396,6 +437,7 @@ function main() {
   if (!options.skipOpenSpecInit) runCommand("openspec", ["init", "--tools", "opencode"], projectRoot, options, actions);
   removeGeneratedAssets(projectRoot, preExisting, options, actions);
   applyTemplate(projectRoot, templateDir, options, actions);
+  ensureGitignoreEntry(projectRoot, ".opencode/", "OpenCode config (symlinked — recreate with opsx-scaffold --sync)", options, actions);
 
   if (!options.skipGit && !existsSync(path.join(projectRoot, ".git"))) {
     runCommand("git", ["init"], projectRoot, options, actions);
