@@ -13,7 +13,7 @@
 # 2. Install opencode with `bun add -g opencode-ai`
 # 3. Grant opencode root level permission so that it can access the whole machine
 # 4. Install uv / uvx
-#    - required for computer-control mcp
+#    - required for computer-control mcp and forked Python MCP dependencies
 # 5. Install node version manager (nvm)
 # 6. Install latest node LTS version with nvm
 #    - required for chrome-devtools mcp
@@ -25,10 +25,11 @@
 # 9. install tmux
 #    - required for ./start.sh and ./stop.sh script
 
-# 10. Install qmd (new)
-# 11. Install agent-tui (TUI automation for AI agents)
+# 10. Install google_workspace_mcp and forked computer-control-mcp Python MCP dependencies
+# 11. Install qmd (new)
+# 12. Install agent-tui (TUI automation for AI agents)
 #    - required for antigravity-websearch skill
-# 12. Install Antigravity CLI (agy)
+# 13. Install Antigravity CLI (agy)
 #    - required for antigravity-websearch skill
 
 
@@ -145,7 +146,7 @@ ensure_sudo() {
 }
 
 install_prereqs() {
-  apt_install curl wget unzip ca-certificates gnupg lsb-release software-properties-common
+  apt_install curl wget unzip ca-certificates gnupg lsb-release software-properties-common python3-tk python3-dev
 }
 
 install_bun() {
@@ -370,6 +371,9 @@ install_tmux() {
 WORKSPACE_MCP_REPO="https://github.com/taylorwilsdon/google_workspace_mcp.git"
 WORKSPACE_MCP_DIR="${PROJECT_ROOT}/../google_workspace_mcp"
 
+COMPUTER_CONTROL_MCP_REPO="git@github.com:lohzi97/computer-control-mcp.git"
+COMPUTER_CONTROL_MCP_DIR="${PROJECT_ROOT}/../computer-control-mcp"
+
 IMAP_MCP_REPO="https://github.com/nikolausm/imap-mcp-server.git"
 IMAP_MCP_DIR="${HOME_DIR}/imap-mcp-server"
 
@@ -386,6 +390,21 @@ install_workspace_mcp() {
   INFO "Installing google_workspace_mcp dependencies"
   run_as_user env HOME="$HOME_DIR" PATH="${HOME_DIR}/.local/bin:${PATH}" bash -lc \
     "cd '$WORKSPACE_MCP_DIR' && uv sync"
+}
+
+install_computer_control_mcp() {
+  if [ ! -d "$COMPUTER_CONTROL_MCP_DIR/.git" ]; then
+    INFO "Cloning computer-control-mcp fork into $COMPUTER_CONTROL_MCP_DIR"
+    run_as_user git clone "$COMPUTER_CONTROL_MCP_REPO" "$COMPUTER_CONTROL_MCP_DIR"
+  else
+    INFO "computer-control-mcp fork already cloned at $COMPUTER_CONTROL_MCP_DIR; pulling latest"
+    run_as_user git -C "$COMPUTER_CONTROL_MCP_DIR" pull --ff-only || \
+      WARN "Failed to pull latest computer-control-mcp fork. Continuing with existing version."
+  fi
+
+  INFO "Installing computer-control-mcp dependencies"
+  run_as_user env HOME="$HOME_DIR" PATH="${HOME_DIR}/.local/bin:${PATH}" bash -lc \
+    "cd '$COMPUTER_CONTROL_MCP_DIR' && uv sync"
 }
 
 install_imap_mcp() {
@@ -470,6 +489,7 @@ main() {
   install_docker_engine
   install_tmux
   install_workspace_mcp
+  install_computer_control_mcp
   install_imap_mcp
   install_qmd
   setup_qmd

@@ -34,6 +34,7 @@ else
   HOME_DIR="${HOME:-/home/${USER_NAME}}"
 fi
 HOME_DIR="${HOME_DIR:-/home/${USER_NAME}}"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 confirm() {
   local prompt="${1:-Proceed?}"
@@ -65,6 +66,28 @@ user_command_path() {
   run_as_user bash -lc "command -v \"$1\" 2>/dev/null || true"
 }
 
+# Helper: safely remove a directory only if it exists and is owned by the target user
+safe_remove_user_dir() {
+  local dir="$1"
+  if [ -d "$dir" ]; then
+    # Determine owner (GNU stat)
+    local owner
+    owner=$(stat -c %U "$dir" 2>/dev/null || true)
+    if [ "$owner" = "$USER_NAME" ] || [ -z "$owner" ]; then
+      INFO "Removing $dir"
+      if [ -n "${SUDO_USER:-}" ] && command -v sudo >/dev/null 2>&1; then
+        sudo -u "$USER_NAME" rm -rf "$dir" || true
+      else
+        rm -rf "$dir" || true
+      fi
+    else
+      WARN "Directory $dir is owned by '$owner' not '$USER_NAME'; skipping to avoid removing other user's data"
+    fi
+  else
+    INFO "Directory $dir not present; skipping"
+  fi
+}
+
 INFO "This script will attempt to undo changes made by install.sh for user '$USER_NAME' (home: $HOME_DIR)."
 cat <<EOF
 Planned actions:
@@ -72,6 +95,7 @@ Planned actions:
 - Remove opencode (bun package) and related sudoers file /etc/sudoers.d/opencode-assistant
 - Remove qmd (npm/bun global install) and qmd cache/config data under ~/.cache/qmd and ~/.config/qmd
 - Remove qmd fork repo at ~/Projects/qmd
+- Remove computer-control-mcp fork repo at ../computer-control-mcp
 - Remove agent-tui (bun package) and agent-tui state data under ~/.agent-tui
 - Remove Antigravity CLI binary (~/.local/bin/agy) and config/data under ~/.antigravitycli
 - Remove OpenChamber (bun package or binary) and config/data under ~/.config/openchamber
@@ -174,28 +198,6 @@ fi
 
 QMD_FORK_DIR="${HOME_DIR}/Projects/qmd"
 safe_remove_user_dir "$QMD_FORK_DIR"
-
-# Helper: safely remove a directory only if it exists and is owned by the target user
-safe_remove_user_dir() {
-  local dir="$1"
-  if [ -d "$dir" ]; then
-    # Determine owner (GNU stat)
-    local owner
-    owner=$(stat -c %U "$dir" 2>/dev/null || true)
-    if [ "$owner" = "$USER_NAME" ] || [ -z "$owner" ]; then
-      INFO "Removing $dir"
-      if [ -n "${SUDO_USER:-}" ] && command -v sudo >/dev/null 2>&1; then
-        sudo -u "$USER_NAME" rm -rf "$dir" || true
-      else
-        rm -rf "$dir" || true
-      fi
-    else
-      WARN "Directory $dir is owned by '$owner' not '$USER_NAME'; skipping to avoid removing other user's data"
-    fi
-  else
-    INFO "Directory $dir not present; skipping"
-  fi
-}
 
 # 5) Remove qmd cache and config
 safe_remove_user_dir "$HOME_DIR/.cache/qmd"
@@ -374,6 +376,10 @@ fi
 IMAP_MCP_DIR="${HOME_DIR}/imap-mcp-server"
 safe_remove_user_dir "$IMAP_MCP_DIR"
 safe_remove_user_dir "${HOME_DIR}/.imap-mcp"
+
+# 13b) Remove computer-control-mcp fork repo
+COMPUTER_CONTROL_MCP_DIR="${PROJECT_ROOT}/../computer-control-mcp"
+safe_remove_user_dir "$COMPUTER_CONTROL_MCP_DIR"
 
 INFO "Final apt-get autoremove/autoclean to tidy packages"
 sudo apt-get autoremove -y || true

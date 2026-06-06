@@ -60,11 +60,15 @@
       "enabled": true,
       "type": "local",
       "command": [
-        "uvx",
-        "--python",
-        "3.13",
-        "computer-control-mcp@latest"
-      ]
+        "uv",
+        "run",
+        "--directory",
+        "../computer-control-mcp",
+        "computer-control-mcp"
+      ],
+      "environment": {
+        "HUMANIZE_ENABLED": "true"
+      }
     },
     "google-workspace": {
       "enabled": false,
