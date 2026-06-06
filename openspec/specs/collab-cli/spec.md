@@ -7,7 +7,7 @@ Define the durable contract for the agent-collab CLI adapter: command structure,
 ## Requirements
 
 ### Requirement: CLI wraps room lifecycle commands
-The CLI SHALL implement `room create`, `room status`, `room list`, and `room close` with default human-readable output, optional `--json`, and base URL default/override behavior from PRD lines 691-700 and 727-733. The `room list` command SHALL forward `--before` and `--limit` query parameters when supplied and SHALL leave pagination semantics to the server.
+The CLI SHALL implement `room create`, `room status`, `room list`, and `room close` with default human-readable output, optional `--json`, and base URL default/override behavior from PRD lines 691-700 and 727-733. The `room list` command SHALL forward `--before` and `--limit` query parameters when supplied and SHALL leave pagination semantics to the server. The `room status` command SHALL forward `--failure-limit` when supplied and SHALL leave failure sample semantics to the server.
 
 #### Scenario: Room create shows one-time password warning
 - **WHEN** `agent-collab room create` succeeds without `--json`
@@ -32,6 +32,10 @@ The CLI SHALL implement `room create`, `room status`, `room list`, and `room clo
 #### Scenario: Room list pagination request
 - **WHEN** `agent-collab room list` is invoked with `--closed`, `--before`, and `--limit`
 - **THEN** the CLI sends `state=closed`, `before`, and `limit` query parameters to `/room/list`
+
+#### Scenario: Room status failure limit request
+- **WHEN** `agent-collab room status` is invoked with `--failure-limit 5`
+- **THEN** the CLI sends `failure_limit=5` to `/room/:room/status`
 
 ### Requirement: CLI wraps membership commands
 The CLI SHALL implement `member add`, `member remove`, `join`, `leave`, and `spawn` with explicit identity flags and arguments matching PRD lines 702-712.
