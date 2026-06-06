@@ -1,5 +1,6 @@
 ---
 description: Generate a commit message for staged changes following conventional commit guidelines
+agent: levi
 model: zai-coding-plan/glm-4.7
 ---
 
