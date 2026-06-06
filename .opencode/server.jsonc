@@ -202,7 +202,7 @@
       {
         "id": "daily-diary-with-refresh",
         "name": "Daily Diary with Refresh",
-        "enabled": true,
+        "enabled": false,
         "purpose": "Summarize yesterday's sessions, write the daily diary, identify memorizable info, update memory, then refresh the qmd index.",
         "trigger": {
           "kind": "cron",
@@ -231,7 +231,7 @@
       {
         "id": "master-diary",
         "name": "Master's Diary",
-        "enabled": true,
+        "enabled": false,
         "purpose": "Ask the Master about their day every evening and write a personal diary entry into ~/diary/.",
         "trigger": {
           "kind": "cron",
@@ -260,7 +260,7 @@
       {
         "id": "weekly-ml-lesson",
         "name": "Weekly ML Lesson Prep",
-        "enabled": true,
+        "enabled": false,
         "purpose": "Prepare weekly learning material and practical assignments for the next topic in the Applied ML learning plan.",
         "trigger": {
           "kind": "cron",

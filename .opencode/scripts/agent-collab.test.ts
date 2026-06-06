@@ -34,6 +34,14 @@ describe("agent-collab HTTP and output handling", () => {
     expect(client.requests[0]).toMatchObject({ method: "GET", url: "http://127.0.0.1:9100/room/room-one/status" });
   });
 
+  test("room status forwards failure limit query parameter", async () => {
+    const client = mockCli({ ok: true, body: { room_id: "room_1", name: "room-one", state: "open" } });
+    const exit = await client.run(["room", "status", "--room", "room-one", "--failure-limit", "5"]);
+
+    expect(exit).toBe(0);
+    expect(client.requests[0]).toMatchObject({ method: "GET", url: "http://127.0.0.1:9100/room/room-one/status?failure_limit=5" });
+  });
+
   test("prints non-2xx errors without leaking request bodies", async () => {
     const client = mockCli({ ok: false, status: 403, body: { error: "invalid planner password" } });
     const exit = await client.run(["join", "--room", "room-one", "--session", "ses_1", "--name", "planner", "--password", "secret"]);

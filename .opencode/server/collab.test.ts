@@ -13,7 +13,9 @@ import {
 import {
   CollabService,
   CollabStorage,
+  DEFAULT_FAILURE_SAMPLE_SIZE,
   DEFAULT_PAGE_SIZE,
+  MAX_FAILURE_SAMPLE_SIZE,
   MAX_PAGE_SIZE,
   assertValidAlias,
   classifyDeliveryFailure,
@@ -683,7 +685,9 @@ describe("collab service", () => {
       const listed = await routeJson(service, "GET", "/room/list");
       expect(JSON.stringify(status.body)).not.toContain(password);
       expect(JSON.stringify(status.body)).not.toContain("planner_password");
+      expect(JSON.stringify(status.body)).not.toContain("planner_password_hash");
       expect(JSON.stringify(listed.body)).not.toContain(password);
+      expect(JSON.stringify(listed.body)).not.toContain("planner_password");
       expect(JSON.stringify(listed.body)).not.toContain("planner_password_hash");
 
       const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
@@ -2840,7 +2844,7 @@ describe("collab service", () => {
       expect(client.prompts[0].sessionID).toBe("ses_planner");
       expect(client.prompts[0].text).toContain(`[Room: ${room.name}]`);
       expect(client.prompts[0].text).toContain("[Public Message]\nPublic objective: finish the review.");
-      expect(client.prompts[0].text).toContain("|inactivity_notice] system:");
+      expect(client.prompts[0].text).toContain("|inactivity_notice|id:");
       expect(client.prompts[0].text).toContain("consider sending a reminder, asking for status, closing the room");
       expect(client.prompts[0].text.match(/Reply to the room with agent-collab as planner/g)).toHaveLength(1);
 
@@ -3035,6 +3039,56 @@ describe("collab service", () => {
         expect.objectContaining({ target_name: "worker", state: "failed", attempt_count: 1, last_error: "invalid" }),
       ]);
       expect(messages.body.messages.filter((message: { kind: string }) => message.kind === "delivery_failed")).toEqual([]);
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("status returns default bounded newest failure sample and total count", async () => {
+    const service = await startedService();
+    try {
+      const created = await routeJson(service, "POST", "/room", { name: "failure-sample", session_id: "ses_creator", from: "planner" });
+      await insertFailedDeliveries(created.body.room_id, DEFAULT_FAILURE_SAMPLE_SIZE + 5);
+
+      const status = await routeJson(service, "GET", `/room/${created.body.room_id}/status`);
+
+      expect(status.status).toBe(200);
+      expect(status.body.outstanding_failure_count).toBe(DEFAULT_FAILURE_SAMPLE_SIZE + 5);
+      expect(status.body.outstanding_failures).toHaveLength(DEFAULT_FAILURE_SAMPLE_SIZE);
+      expect(status.body.outstanding_failures[0].message_body).toBe(`Failed delivery ${DEFAULT_FAILURE_SAMPLE_SIZE + 5}`);
+      expect(status.body.outstanding_failures.at(-1).message_body).toBe("Failed delivery 6");
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("status honors explicit failure limit and caps excessive limits", async () => {
+    const service = await startedService();
+    try {
+      const created = await routeJson(service, "POST", "/room", { name: "failure-limit", session_id: "ses_creator", from: "planner" });
+      await insertFailedDeliveries(created.body.room_id, MAX_FAILURE_SAMPLE_SIZE + 10);
+
+      const explicit = await routeJson(service, "GET", `/room/${created.body.room_id}/status?failure_limit=5`);
+      const capped = await routeJson(service, "GET", `/room/${created.body.room_id}/status?failure_limit=99999`);
+      const invalid = await routeJson(service, "GET", `/room/${created.body.room_id}/status?failure_limit=0`);
+      const nonInteger = await routeJson(service, "GET", `/room/${created.body.room_id}/status?failure_limit=5x`);
+
+      expect(explicit.status).toBe(200);
+      expect(explicit.body.outstanding_failure_count).toBe(MAX_FAILURE_SAMPLE_SIZE + 10);
+      expect(explicit.body.outstanding_failures).toHaveLength(5);
+      expect(explicit.body.outstanding_failures.map((failure: { message_body: string }) => failure.message_body)).toEqual([
+        "Failed delivery 110",
+        "Failed delivery 109",
+        "Failed delivery 108",
+        "Failed delivery 107",
+        "Failed delivery 106",
+      ]);
+      expect(capped.status).toBe(200);
+      expect(capped.body.outstanding_failures).toHaveLength(MAX_FAILURE_SAMPLE_SIZE);
+      expect(invalid.status).toBe(400);
+      expect(invalid.body.error).toBe("failure_limit must be a positive integer");
+      expect(nonInteger.status).toBe(400);
+      expect(nonInteger.body.error).toBe("failure_limit must be a positive integer");
     } finally {
       await service.shutdown();
     }
@@ -3384,6 +3438,26 @@ async function markAllDeliveriesInjected() {
   const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
   try {
     storage.db.run("UPDATE deliveries SET state = 'injected', injected_at = 1");
+  } finally {
+    storage.close();
+  }
+}
+
+async function insertFailedDeliveries(roomId: string, count: number) {
+  const storage = await CollabStorage.open(path.join(tempDir, "collab.sqlite"));
+  try {
+    for (let i = 1; i <= count; i++) {
+      const messageId = `msg_failed_${i}`;
+      storage.db.run(
+        "INSERT INTO messages (id, room_id, sender_type, sender_name, body, kind, created_at) VALUES (?, ?, 'member', 'planner', ?, 'note', ?)",
+        [messageId, roomId, `Failed delivery ${i}`, i],
+      );
+      storage.db.run(
+        `INSERT INTO deliveries (message_id, target_session_id, target_name, mode, state, attempt_count, last_error, created_at)
+         VALUES (?, 'ses_worker', 'worker', 'buffered', 'failed', 1, 'invalid', ?)`,
+        [messageId, i],
+      );
+    }
   } finally {
     storage.close();
   }

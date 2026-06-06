@@ -10,6 +10,8 @@ import type { ModelRef, OpenCodeClient, QuestionRequest, SessionStatusInfo } fro
 
 export const DEFAULT_PAGE_SIZE = 50;
 export const MAX_PAGE_SIZE = 200;
+export const DEFAULT_FAILURE_SAMPLE_SIZE = 20;
+export const MAX_FAILURE_SAMPLE_SIZE = 100;
 
 export type PaginationParams = {
   since?: string;
@@ -20,6 +22,10 @@ export type RoomListParams = {
   state: "open" | "closed" | "all";
   before?: string;
   limit: number;
+};
+
+export type FailureSampleParams = {
+  failureLimit: number;
 };
 
 export const FALLBACK_ROOM_JOIN_INSTRUCTION =
@@ -259,7 +265,7 @@ export class CollabService {
       }
 
       if (request.method === "GET" && parts.length === 3 && parts[0] === "room" && parts[2] === "status") {
-        return jsonResponse(this.db.roomStatus(parts[1], this.config?.inactivity_nudge));
+        return jsonResponse(this.db.roomStatus(parts[1], this.config?.inactivity_nudge, parseFailureSampleParams(url.searchParams)));
       }
 
       if (request.method === "DELETE" && parts.length === 2 && parts[0] === "room") {
@@ -826,9 +832,9 @@ export class CollabStorage {
     return room;
   }
 
-  roomStatus(roomRef: string, inactivityNudge?: CollabConfig["inactivity_nudge"]) {
+  roomStatus(roomRef: string, inactivityNudge?: CollabConfig["inactivity_nudge"], failureSample: FailureSampleParams = { failureLimit: DEFAULT_FAILURE_SAMPLE_SIZE }) {
     const room = this.getRoom(roomRef);
-    return this.publicRoom(room, { members: this.activeMembers(room.id) }, inactivityNudge);
+    return this.publicRoom(room, { members: this.activeMembers(room.id) }, inactivityNudge, failureSample);
   }
 
   listRooms(params: RoomListParams, inactivityNudge?: CollabConfig["inactivity_nudge"]) {
@@ -1664,10 +1670,16 @@ export class CollabStorage {
     if (!remaining) throw httpError(409, "room must retain at least one planner");
   }
 
-  private publicRoom(room: RoomRow, extra: Record<string, unknown> = {}, inactivityNudge?: CollabConfig["inactivity_nudge"]) {
+  private publicRoom(
+    room: RoomRow,
+    extra: Record<string, unknown> = {},
+    inactivityNudge?: CollabConfig["inactivity_nudge"],
+    failureSample: FailureSampleParams = { failureLimit: DEFAULT_FAILURE_SAMPLE_SIZE },
+  ) {
     const lastMeaningfulActivityAt = this.lastMeaningfulActivityAt(room.id);
     const activityBase = lastMeaningfulActivityAt ?? room.created_at;
     const now = Date.now();
+    const outstandingFailureCount = this.failedDeliveryCountForRoom(room.id);
     return {
       room_id: room.id,
       base_name: room.base_name,
@@ -1683,7 +1695,8 @@ export class CollabStorage {
       last_inactivity_nudge_at: room.last_inactivity_nudge_at,
       inactive_for_ms: Math.max(0, now - activityBase),
       next_inactivity_nudge_at: inactivityNudge?.enabled ? this.nextInactivityNudgeAt(room, lastMeaningfulActivityAt, inactivityNudge) : null,
-      outstanding_failures: this.failedDeliveriesForRoom(room.id),
+      outstanding_failure_count: outstandingFailureCount,
+      outstanding_failures: this.failedDeliveriesForRoom(room.id, failureSample.failureLimit),
       ...extra,
     };
   }
@@ -1696,20 +1709,33 @@ export class CollabStorage {
     return activityBase + config.threshold_ms;
   }
 
-  private failedDeliveriesForRoom(roomId: string) {
+  private failedDeliveryCountForRoom(roomId: string) {
     return this.db
-      .query<DeliveryRow & { message_kind: string; message_body: string; message_created_at: number }, [string]>(
+      .query<{ count: number }, [string]>(
+        `SELECT COUNT(*) AS count
+         FROM deliveries
+         JOIN messages ON messages.id = deliveries.message_id
+         WHERE messages.room_id = ?
+           AND deliveries.state = 'failed'`,
+      )
+      .get(roomId)?.count ?? 0;
+  }
+
+  private failedDeliveriesForRoom(roomId: string, limit: number) {
+    return this.db
+      .query<DeliveryRow & { message_kind: string; message_body: string; message_created_at: number }, [string, number]>(
         `SELECT deliveries.*,
                 messages.kind AS message_kind,
                 messages.body AS message_body,
                 messages.created_at AS message_created_at
          FROM deliveries
-         JOIN messages ON messages.id = deliveries.message_id
-         WHERE messages.room_id = ?
-           AND deliveries.state = 'failed'
-         ORDER BY messages.created_at ASC, deliveries.created_at ASC, deliveries.target_name ASC`,
+          JOIN messages ON messages.id = deliveries.message_id
+          WHERE messages.room_id = ?
+            AND deliveries.state = 'failed'
+          ORDER BY messages.created_at DESC, deliveries.created_at DESC, deliveries.rowid DESC
+          LIMIT ?`,
       )
-      .all(roomId)
+      .all(roomId, limit)
       .map((delivery) => ({
         message_id: delivery.message_id,
         message_kind: delivery.message_kind,
@@ -2243,6 +2269,17 @@ function parseRoomListParams(params: URLSearchParams): RoomListParams {
     limit = Math.min(parsed, MAX_PAGE_SIZE);
   }
   return { state, before, limit };
+}
+
+function parseFailureSampleParams(params: URLSearchParams): FailureSampleParams {
+  let failureLimit = DEFAULT_FAILURE_SAMPLE_SIZE;
+  const limitParam = params.get("failure_limit");
+  if (limitParam !== null) {
+    const parsed = Number(limitParam);
+    if (!Number.isInteger(parsed) || parsed < 1) throw httpError(400, "failure_limit must be a positive integer");
+    failureLimit = Math.min(parsed, MAX_FAILURE_SAMPLE_SIZE);
+  }
+  return { failureLimit };
 }
 
 function parsePaginationParams(params: URLSearchParams): PaginationParams {

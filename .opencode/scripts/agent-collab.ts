@@ -168,7 +168,8 @@ function createRoom({ args, client }: CommandContext) {
 }
 
 function roomStatus({ args, client }: CommandContext) {
-  return client.request(`/room/${encodeURIComponent(required(args, "room"))}/status`);
+  const search = compact({ failure_limit: optional(args, "failure-limit") }) as Record<string, string>;
+  return client.request(`/room/${encodeURIComponent(required(args, "room"))}/status`, Object.keys(search).length > 0 ? { search } : undefined);
 }
 
 function roomList({ args, client }: CommandContext) {
