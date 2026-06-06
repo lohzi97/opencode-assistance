@@ -46,3 +46,14 @@ The spawned member SHALL receive join bootstrap before the spawn `initial_prompt
 #### Scenario: Empty initial prompt skips spawn initial delivery
 - **WHEN** spawn has no `initial_prompt`
 - **THEN** no `spawn_initial` delivery is created
+
+### Requirement: Spawned session ownership survives compaction handoff
+The spawn capability SHALL preserve room ownership for spawned members when their OpenCode session is replaced by a custom compaction continuation session.
+
+#### Scenario: Spawned session record is updated on handoff
+- **WHEN** a spawned room member is handed off from `ses_old` to `ses_new`
+- **THEN** the `spawned_sessions` record for that room member uses `ses_new` and remains associated with the same room and spawning session
+
+#### Scenario: Non-spawned member handoff does not create spawned ownership
+- **WHEN** a non-spawned room member is handed off from `ses_old` to `ses_new`
+- **THEN** no new `spawned_sessions` record is created
