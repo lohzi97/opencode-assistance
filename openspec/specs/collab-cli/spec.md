@@ -58,11 +58,15 @@ The CLI SHALL implement `send` with `--body`, `--body-file`, or `--body -`, opti
 - **THEN** the CLI sends `hard: true` in the HTTP request and leaves authorization to the server
 
 ### Requirement: CLI supports questions, answers, and transcript reads
-The CLI SHALL implement `ask`, `answer`, and `messages` with flags matching PRD lines 721-725.
+The CLI SHALL implement `ask`, `answer`, and `messages` with flags matching PRD lines 721-725. The `messages` command SHALL forward `--since` and `--limit` query parameters without locally enforcing pagination semantics.
 
 #### Scenario: Member-scoped messages request
 - **WHEN** `agent-collab messages` is invoked with `--member implementer-1`, `--since`, and `--limit`
 - **THEN** the CLI sends the corresponding query parameters and prints the server response
+
+#### Scenario: Room messages pagination request
+- **WHEN** `agent-collab messages` is invoked with `--room`, `--since`, and `--limit`
+- **THEN** the CLI sends the corresponding query parameters and does not locally filter or reorder the server response
 
 ### Requirement: Messaging CLI preserves thin-wrapper behavior
 The CLI SHALL NOT perform local mention validation, authorization, or delivery simulation; it SHALL rely on server responses for collaboration semantics.
