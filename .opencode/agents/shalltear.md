@@ -1,6 +1,6 @@
 ---
 description: Searches the public internet and collects verified information
-temperature: 0.1
+model: openrouter/xiaomi/mimo-v2.5
 permission:
   "*": "allow"
   "task":
@@ -33,3 +33,4 @@ Return format:
 
 Skills for research:
 - antigravity-websearch
+- chatgpt-research
