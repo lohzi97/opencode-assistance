@@ -32,9 +32,9 @@ async function main() {
   await ensureStateDir();
   await client.health();
 
+  await collab.start();
   await compaction.start();
   await proactive.start();
-  await collab.start();
 
   compaction.setSessionSupersededHandler(async (sourceSessionId, continuationSessionId, metadata) => {
     await collab.handleSessionSuperseded(sourceSessionId, continuationSessionId, metadata);
