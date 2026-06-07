@@ -202,7 +202,7 @@
       {
         "id": "daily-diary-with-refresh",
         "name": "Daily Diary with Refresh",
-        "enabled": false,
+        "enabled": true,
         "purpose": "Summarize yesterday's sessions, write the daily diary, identify memorizable info, update memory, then refresh the qmd index.",
         "trigger": {
           "kind": "cron",
@@ -231,7 +231,7 @@
       {
         "id": "master-diary",
         "name": "Master's Diary",
-        "enabled": false,
+        "enabled": true,
         "purpose": "Ask the Master about their day every evening and write a personal diary entry into ~/diary/.",
         "trigger": {
           "kind": "cron",
