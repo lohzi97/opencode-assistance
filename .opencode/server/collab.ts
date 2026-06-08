@@ -19,7 +19,7 @@ export type PaginationParams = {
 };
 
 export type RoomListParams = {
-  state: "open" | "closed" | "all";
+  state: "open" | "paused" | "closed" | "all";
   before?: string;
   limit: number;
 };
@@ -51,7 +51,7 @@ type RoomRow = {
   base_name: string;
   name: string;
   project_dir: string | null;
-  state: "open" | "closed";
+  state: "open" | "paused" | "closed";
   public_message: string | null;
   public_message_updated_at: number | null;
   public_message_updated_by: string | null;
@@ -59,6 +59,10 @@ type RoomRow = {
   created_at: number;
   closed_at: number | null;
   last_inactivity_nudge_at: number | null;
+  paused_at: number | null;
+  paused_by: string | null;
+  resumed_at: number | null;
+  active_pause_id: string | null;
 };
 
 type MemberRow = {
@@ -119,7 +123,7 @@ type DeliveryRow = {
 type PendingDeliveryRow = DeliveryRow & {
   room_id: string;
   room_name: string;
-  room_state: "open" | "closed";
+  room_state: "open" | "paused" | "closed";
   public_message: string | null;
   message_sender_name: string;
   message_body: string;
@@ -132,6 +136,30 @@ type PendingDeliveryRow = DeliveryRow & {
   model_id: string | null;
   model_variant: string | null;
 };
+
+type RoomPauseMemberRow = {
+  room_id: string;
+  pause_id: string;
+  session_id: string;
+  name: string;
+  was_interrupted: number;
+  status_at_pause: string | null;
+  resume_prompted_at: number | null;
+  resume_gate_seen_busy_at: number | null;
+  resume_gate_cleared_at: number | null;
+  interrupt_error: string | null;
+  resume_error: string | null;
+};
+
+type PauseMemberInput = {
+  sessionId: string;
+  name: string;
+  wasInterrupted: boolean;
+  statusAtPause?: string;
+  interruptError?: string;
+};
+
+type ResumePromptTarget = RoomPauseMemberRow & AgentModelRow & { role: string };
 
 type SpawnInput = {
   sessionId: string;
@@ -272,6 +300,14 @@ export class CollabService {
         return jsonResponse(await this.closeRoom(parts[1], await readJsonObject(request)));
       }
 
+      if (request.method === "POST" && parts.length === 3 && parts[0] === "room" && parts[2] === "pause") {
+        return jsonResponse(await this.pauseRoom(parts[1], await readJsonObject(request)));
+      }
+
+      if (request.method === "POST" && parts.length === 3 && parts[0] === "room" && parts[2] === "resume") {
+        return jsonResponse(await this.resumeRoom(parts[1], await readJsonObject(request)));
+      }
+
       if (request.method === "POST" && parts.length === 3 && parts[0] === "room" && parts[2] === "public-message") {
         return jsonResponse(this.setPublicMessage(parts[1], await readJsonObject(request)));
       }
@@ -365,6 +401,56 @@ export class CollabService {
     const sessionId = requireString(input, "session_id");
     const from = requireAlias(input, "from");
     return this.db!.closeRoom(roomRef, sessionId, from, Date.now());
+  }
+
+  private async pauseRoom(roomRef: string, input: Record<string, unknown>) {
+    const password = requireString(input, "password");
+    const room = this.db!.pausableRoom(roomRef);
+    if (!(await verifyPlannerPassword(password, room.planner_password_hash))) throw httpError(403, "invalid planner password");
+
+    const statuses = await this.client.sessionStatus().catch(() => ({} as Record<string, SessionStatusInfo>));
+    const members = this.db!.activeMembersWithRoutes(room.id);
+    const pauseMembers: PauseMemberInput[] = [];
+    for (const member of members) {
+      const status = statuses[member.session_id];
+      let wasInterrupted = false;
+      let interruptError: string | undefined;
+      if (status?.type === "busy" || status?.type === "retry") {
+        try {
+          await this.client.abortSession(member.session_id, promptOptionsFromRow(member));
+          wasInterrupted = true;
+        } catch (error) {
+          interruptError = error instanceof Error ? error.message : String(error);
+        }
+      }
+      pauseMembers.push({ sessionId: member.session_id, name: member.name, wasInterrupted, statusAtPause: status?.type, interruptError });
+    }
+
+    return this.db!.pauseRoom(room.id, { pauseId: `pause_${randomUUID()}`, pausedBy: "operator", members: pauseMembers, now: Date.now() });
+  }
+
+  private async resumeRoom(roomRef: string, input: Record<string, unknown>) {
+    const password = requireString(input, "password");
+    const room = this.db!.resumableRoom(roomRef);
+    if (!(await verifyPlannerPassword(password, room.planner_password_hash))) throw httpError(403, "invalid planner password");
+    const now = Date.now();
+    const targets = this.db!.resumeRoom(room.id, now);
+
+    for (const target of targets) {
+      if (!target.was_interrupted) continue;
+      try {
+        await this.client.promptAsync(target.session_id, {
+          ...promptOptionsFromRow(target),
+          parts: [{ type: "text", text: resumePrompt(room.name, target.name) }],
+        });
+        this.db!.markResumePrompted(room.id, target.pause_id, target.session_id, Date.now());
+      } catch (error) {
+        this.db!.markResumePromptError(room.id, target.pause_id, target.session_id, error instanceof Error ? error.message : String(error));
+      }
+    }
+
+    await this.flushPendingDeliveriesOnce();
+    return this.db!.roomStatus(room.id, this.config?.inactivity_nudge);
   }
 
   private async addMember(roomRef: string, input: Record<string, unknown>) {
@@ -696,12 +782,14 @@ export class CollabService {
   }
 
   private immediateDeliveryBlocker(targetSessionId: string, status?: SessionStatusInfo, questions: QuestionRequest[] = []) {
+    if (this.db!.hasActiveResumeGate(targetSessionId, status)) return "resume_gate";
     if (status?.type === "retry") return "retry";
     if (questions.some((question) => question.sessionID === targetSessionId)) return "pending_user_question";
     return undefined;
   }
 
   private bufferedDeliveryBlocker(targetSessionId: string, status?: SessionStatusInfo, questions: QuestionRequest[] = []) {
+    if (this.db!.hasActiveResumeGate(targetSessionId, status)) return "resume_gate";
     if (status?.type === "busy") return "busy";
     if (status?.type === "retry") return "retry";
     if (questions.some((question) => question.sessionID === targetSessionId)) return "pending_user_question";
@@ -829,6 +917,21 @@ export class CollabStorage {
   openRoom(roomRef: string) {
     const room = this.getRoom(roomRef);
     if (room.state === "closed") throw httpError(409, "room is closed");
+    if (room.state === "paused") throw httpError(409, "room is paused");
+    return room;
+  }
+
+  pausableRoom(roomRef: string) {
+    const room = this.getRoom(roomRef);
+    if (room.state === "closed") throw httpError(409, "room is closed");
+    if (room.state === "paused") throw httpError(409, "room is already paused");
+    return room;
+  }
+
+  resumableRoom(roomRef: string) {
+    const room = this.getRoom(roomRef);
+    if (room.state === "open") throw httpError(409, "room is not paused");
+    if (room.state === "closed") throw httpError(409, "room is closed");
     return room;
   }
 
@@ -890,6 +993,41 @@ export class CollabStorage {
     transaction();
 
     return this.roomStatus(room.id);
+  }
+
+  pauseRoom(roomRef: string, input: { pauseId: string; pausedBy: string; members: PauseMemberInput[]; now: number }) {
+    const room = this.pausableRoom(roomRef);
+    const transaction = this.db.transaction(() => {
+      this.db.run("UPDATE rooms SET state = 'paused', paused_at = ?, paused_by = ?, resumed_at = NULL, active_pause_id = ? WHERE id = ?", [
+        input.now,
+        input.pausedBy,
+        input.pauseId,
+        room.id,
+      ]);
+      for (const member of input.members) {
+        this.db.run(
+          `INSERT INTO room_pause_members
+           (room_id, pause_id, session_id, name, was_interrupted, status_at_pause, interrupt_error)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [room.id, input.pauseId, member.sessionId, member.name, member.wasInterrupted ? 1 : 0, member.statusAtPause ?? null, member.interruptError ?? null],
+        );
+      }
+      this.insertSystemMessage(room.id, `Room paused by ${input.pausedBy}.`, "room_paused", input.now);
+    });
+    transaction();
+    return this.roomStatus(room.id);
+  }
+
+  resumeRoom(roomRef: string, now: number): ResumePromptTarget[] {
+    const room = this.resumableRoom(roomRef);
+    const pauseId = room.active_pause_id;
+    const transaction = this.db.transaction(() => {
+      this.db.run("UPDATE rooms SET state = 'open', resumed_at = ? WHERE id = ?", [now, room.id]);
+      this.insertSystemMessage(room.id, "Room resumed by operator.", "room_resumed", now);
+    });
+    transaction();
+    if (!pauseId) return [];
+    return this.resumePromptTargets(room.id, pauseId);
   }
 
   addMember(
@@ -1263,6 +1401,72 @@ export class CollabStorage {
       .all(targetSessionId);
   }
 
+  hasActiveResumeGate(targetSessionId: string, status?: SessionStatusInfo) {
+    const gates = this.db
+      .query<RoomPauseMemberRow, [string]>(
+        `SELECT room_pause_members.*
+         FROM room_pause_members
+         JOIN rooms ON rooms.id = room_pause_members.room_id
+         WHERE room_pause_members.session_id = ?
+           AND room_pause_members.was_interrupted = 1
+           AND room_pause_members.resume_prompted_at IS NOT NULL
+           AND room_pause_members.resume_gate_cleared_at IS NULL
+           AND rooms.state = 'open'
+           AND rooms.active_pause_id = room_pause_members.pause_id`,
+      )
+      .all(targetSessionId);
+    if (gates.length === 0) return false;
+
+    const now = Date.now();
+    for (const gate of gates) {
+      if ((status?.type === "busy" || status?.type === "retry") && gate.resume_gate_seen_busy_at === null) {
+        this.db.run("UPDATE room_pause_members SET resume_gate_seen_busy_at = ? WHERE room_id = ? AND pause_id = ? AND session_id = ?", [
+          now,
+          gate.room_id,
+          gate.pause_id,
+          gate.session_id,
+        ]);
+      }
+      if (status?.type === "idle" && gate.resume_gate_seen_busy_at !== null) {
+        this.db.run("UPDATE room_pause_members SET resume_gate_cleared_at = ? WHERE room_id = ? AND pause_id = ? AND session_id = ?", [
+          now,
+          gate.room_id,
+          gate.pause_id,
+          gate.session_id,
+        ]);
+      }
+    }
+    return Boolean(
+      this.db
+        .query<{ session_id: string }, [string]>(
+          `SELECT room_pause_members.session_id
+           FROM room_pause_members
+           JOIN rooms ON rooms.id = room_pause_members.room_id
+           WHERE room_pause_members.session_id = ?
+             AND room_pause_members.was_interrupted = 1
+             AND room_pause_members.resume_prompted_at IS NOT NULL
+             AND room_pause_members.resume_gate_cleared_at IS NULL
+             AND rooms.state = 'open'
+             AND rooms.active_pause_id = room_pause_members.pause_id
+           LIMIT 1`,
+        )
+        .get(targetSessionId),
+    );
+  }
+
+  markResumePrompted(roomId: string, pauseId: string, sessionId: string, now: number) {
+    this.db.run("UPDATE room_pause_members SET resume_prompted_at = ?, resume_error = NULL WHERE room_id = ? AND pause_id = ? AND session_id = ?", [
+      now,
+      roomId,
+      pauseId,
+      sessionId,
+    ]);
+  }
+
+  markResumePromptError(roomId: string, pauseId: string, sessionId: string, error: string) {
+    this.db.run("UPDATE room_pause_members SET resume_error = ? WHERE room_id = ? AND pause_id = ? AND session_id = ?", [error, roomId, pauseId, sessionId]);
+  }
+
   memberPromptOptions(roomId: string, sessionId: string): SpawnPromptOptions {
     const row = this.db
       .query<AgentModelRow, [string, string]>(
@@ -1273,6 +1477,10 @@ export class CollabStorage {
       )
       .get(roomId, sessionId);
     return promptOptionsFromRow(row);
+  }
+
+  activeMembersWithRoutes(roomId: string) {
+    return this.db.query<MemberRow, [string]>("SELECT * FROM members WHERE room_id = ? AND state = 'active' ORDER BY joined_at ASC").all(roomId);
   }
 
   dueInactivityNudges(config: CollabConfig["inactivity_nudge"], now: number) {
@@ -1346,8 +1554,9 @@ export class CollabStorage {
            FROM members
            JOIN rooms ON rooms.id = members.room_id
            WHERE members.session_id = ? AND members.state = 'active'
-             AND (rooms.state = 'open'
-               OR EXISTS (
+              AND (rooms.state = 'open'
+                OR rooms.state = 'paused'
+                OR EXISTS (
                  SELECT 1 FROM deliveries d
                  JOIN messages m ON m.id = d.message_id
                  WHERE d.target_session_id = members.session_id
@@ -1442,6 +1651,38 @@ export class CollabStorage {
           this.db.run(
             "INSERT INTO spawned_sessions (room_id, session_id, spawned_by, created_at) VALUES (?, ?, ?, ?)",
             [roomId, newSessionId, spawned.spawned_by, spawned.created_at],
+          );
+        }
+
+        const pauseRecords = this.db
+          .query<RoomPauseMemberRow, [string, string]>(
+            `SELECT room_pause_members.*
+             FROM room_pause_members
+             JOIN rooms ON rooms.id = room_pause_members.room_id
+             WHERE room_pause_members.room_id = ?
+               AND room_pause_members.session_id = ?
+               AND rooms.active_pause_id = room_pause_members.pause_id`,
+          )
+          .all(roomId, oldSessionId);
+        for (const pauseRecord of pauseRecords) {
+          this.db.run("DELETE FROM room_pause_members WHERE room_id = ? AND pause_id = ? AND session_id = ?", [roomId, pauseRecord.pause_id, oldSessionId]);
+          this.db.run(
+            `INSERT INTO room_pause_members
+             (room_id, pause_id, session_id, name, was_interrupted, status_at_pause, resume_prompted_at, resume_gate_seen_busy_at, resume_gate_cleared_at, interrupt_error, resume_error)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              roomId,
+              pauseRecord.pause_id,
+              newSessionId,
+              pauseRecord.name,
+              pauseRecord.was_interrupted,
+              pauseRecord.status_at_pause,
+              pauseRecord.resume_prompted_at,
+              pauseRecord.resume_gate_seen_busy_at,
+              pauseRecord.resume_gate_cleared_at,
+              pauseRecord.interrupt_error,
+              pauseRecord.resume_error,
+            ],
           );
         }
 
@@ -1691,8 +1932,13 @@ export class CollabStorage {
       public_message_updated_by: room.public_message_updated_by,
       created_at: room.created_at,
       closed_at: room.closed_at,
+      paused_at: room.paused_at,
+      paused_by: room.paused_by,
+      resumed_at: room.resumed_at,
+      active_pause_id: room.active_pause_id,
       last_meaningful_activity_at: lastMeaningfulActivityAt,
       last_inactivity_nudge_at: room.last_inactivity_nudge_at,
+      pause_members: this.pauseMemberDiagnostics(room.id),
       inactive_for_ms: Math.max(0, now - activityBase),
       next_inactivity_nudge_at: inactivityNudge?.enabled ? this.nextInactivityNudgeAt(room, lastMeaningfulActivityAt, inactivityNudge) : null,
       outstanding_failure_count: outstandingFailureCount,
@@ -1707,6 +1953,43 @@ export class CollabStorage {
       return room.last_inactivity_nudge_at + config.repeat_ms;
     }
     return activityBase + config.threshold_ms;
+  }
+
+  private pauseMemberDiagnostics(roomId: string) {
+    return this.db
+      .query<RoomPauseMemberRow, [string]>(
+        `SELECT room_pause_members.*
+         FROM room_pause_members
+         JOIN rooms ON rooms.id = room_pause_members.room_id
+         WHERE room_pause_members.room_id = ?
+           AND rooms.active_pause_id = room_pause_members.pause_id
+         ORDER BY room_pause_members.name ASC`,
+      )
+      .all(roomId)
+      .map((row) => ({
+        pause_id: row.pause_id,
+        session_id: row.session_id,
+        name: row.name,
+        was_interrupted: Boolean(row.was_interrupted),
+        status_at_pause: row.status_at_pause,
+        resume_prompted_at: row.resume_prompted_at,
+        resume_gate_seen_busy_at: row.resume_gate_seen_busy_at,
+        resume_gate_cleared_at: row.resume_gate_cleared_at,
+        interrupt_error: row.interrupt_error,
+        resume_error: row.resume_error,
+      }));
+  }
+
+  private resumePromptTargets(roomId: string, pauseId: string) {
+    return this.db
+      .query<ResumePromptTarget, [string, string]>(
+        `SELECT room_pause_members.*, members.role, members.directory, members.agent, members.model_provider_id, members.model_id, members.model_variant
+         FROM room_pause_members
+         JOIN members ON members.room_id = room_pause_members.room_id AND members.session_id = room_pause_members.session_id AND members.state = 'active'
+         WHERE room_pause_members.room_id = ? AND room_pause_members.pause_id = ?
+         ORDER BY members.joined_at ASC`,
+      )
+      .all(roomId, pauseId);
   }
 
   private failedDeliveryCountForRoom(roomId: string) {
@@ -1821,7 +2104,7 @@ export class CollabStorage {
     return message;
   }
 
-  private resolveRoomCursor(roomId: string, state: "open" | "closed" | "all") {
+  private resolveRoomCursor(roomId: string, state: "open" | "paused" | "closed" | "all") {
     const room = this.db.query<RoomRow, [string]>("SELECT * FROM rooms WHERE id = ? LIMIT 1").get(roomId);
     if (!room) throw httpError(400, "before must reference an existing room");
     if (state !== "all" && room.state !== state) throw httpError(400, `before cursor room is not in state '${state}'`);
@@ -1961,7 +2244,11 @@ export class CollabStorage {
         planner_password_hash      TEXT NOT NULL,
         created_at                 INTEGER NOT NULL,
         closed_at                  INTEGER,
-        last_inactivity_nudge_at   INTEGER
+        last_inactivity_nudge_at   INTEGER,
+        paused_at                  INTEGER,
+        paused_by                  TEXT,
+        resumed_at                 INTEGER,
+        active_pause_id            TEXT
       );
 
       CREATE TABLE IF NOT EXISTS members (
@@ -2041,11 +2328,30 @@ export class CollabStorage {
         created_at     INTEGER NOT NULL,
         PRIMARY KEY (room_id, old_session_id, new_session_id)
       );
+
+      CREATE TABLE IF NOT EXISTS room_pause_members (
+        room_id                    TEXT NOT NULL,
+        pause_id                   TEXT NOT NULL,
+        session_id                 TEXT NOT NULL,
+        name                       TEXT NOT NULL,
+        was_interrupted            INTEGER NOT NULL,
+        status_at_pause            TEXT,
+        resume_prompted_at         INTEGER,
+        resume_gate_seen_busy_at   INTEGER,
+        resume_gate_cleared_at     INTEGER,
+        interrupt_error            TEXT,
+        resume_error               TEXT,
+        PRIMARY KEY (room_id, pause_id, session_id)
+      );
     `);
     this.ensureColumn("rooms", "public_message", "TEXT");
     this.ensureColumn("rooms", "public_message_updated_at", "INTEGER");
     this.ensureColumn("rooms", "public_message_updated_by", "TEXT");
     this.ensureColumn("rooms", "last_inactivity_nudge_at", "INTEGER");
+    this.ensureColumn("rooms", "paused_at", "INTEGER");
+    this.ensureColumn("rooms", "paused_by", "TEXT");
+    this.ensureColumn("rooms", "resumed_at", "INTEGER");
+    this.ensureColumn("rooms", "active_pause_id", "TEXT");
     this.ensureColumn("messages", "parent_id", "TEXT");
     this.ensureColumn("members", "directory", "TEXT");
     this.ensureColumn("members", "agent", "TEXT");
@@ -2294,12 +2600,22 @@ function parsePaginationParams(params: URLSearchParams): PaginationParams {
   return { since, limit };
 }
 
-function listState(params: URLSearchParams): "open" | "closed" | "all" {
+function listState(params: URLSearchParams): "open" | "paused" | "closed" | "all" {
   const state = params.get("state");
-  if (state === "all" || state === "closed" || state === "open") return state;
+  if (state === "all" || state === "closed" || state === "paused" || state === "open") return state;
   if (params.get("all") === "true") return "all";
   if (params.get("closed") === "true") return "closed";
+  if (params.get("paused") === "true") return "paused";
   return "open";
+}
+
+function resumePrompt(roomName: string, alias: string) {
+  return [
+    "[Collab Room Resume]",
+    "",
+    `Room ${roomName} was paused and has now been resumed.`,
+    `Continue your prior task as ${alias}. Use agent-collab to inspect room status/messages before proceeding if needed.`,
+  ].join("\n");
 }
 
 function jsonResponse(body: unknown, status = 200) {

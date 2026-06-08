@@ -39,9 +39,19 @@ List rooms:
 
 ```bash
 bun .opencode/scripts/agent-collab.ts room list --json
+bun .opencode/scripts/agent-collab.ts room list --paused --json
 bun .opencode/scripts/agent-collab.ts room list --closed --json
 bun .opencode/scripts/agent-collab.ts room list --all --json
 ```
+
+Pause or resume a room with the planner password. Prefer `--password-stdin` so the password is not stored in shell history:
+
+```bash
+printf '%s\n' '<room-password>' | bun .opencode/scripts/agent-collab.ts pause --room <room> --password-stdin --json
+printf '%s\n' '<room-password>' | bun .opencode/scripts/agent-collab.ts resume --room <room> --password-stdin --json
+```
+
+Paused rooms reject normal mutations and close operations while preserving read-only status/list/transcript inspection. Resume prompts interrupted members before normal pending deliveries drain.
 
 Close a room:
 
@@ -281,12 +291,13 @@ bun .opencode/scripts/agent-collab.ts messages \
 - `ask` accepts `--body <text>` or `--body -`.
 - `answer` accepts `--body <text>` or `--body -`.
 - `public-message set` accepts exactly one of `--text <text>`, `--file <path>`, or `--stdin`.
-- `join` accepts exactly one of `--password <value>` or `--password-stdin`.
+- `join`, `pause`, and `resume` accept exactly one of `--password <value>` or `--password-stdin`; prefer `--password-stdin`.
 
 ## Common Error Meanings
 
 - `collab service disabled`: worker did not load enabled collab config or needs restart.
 - `room is closed`: the room no longer accepts mutations; use read-only commands.
+- `room is paused`: resume the room before mutating or closing it; read-only commands remain available.
 - `active member required`: supplied `--session` and `--from` alias do not match an active member.
 - `planner role required`: the command requires a planner member.
 - `unknown mention`: the message references an alias that is not active in the room.

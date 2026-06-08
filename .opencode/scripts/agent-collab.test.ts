@@ -82,14 +82,16 @@ describe("agent-collab room commands", () => {
     expect(client.stdoutText()).toContain("will not be shown again");
   });
 
-  test("room list maps closed and all flags to state query", async () => {
+  test("room list maps paused, closed, and all flags to state query", async () => {
     const client = mockCli({ ok: true, body: { rooms: [] } });
 
+    await client.run(["room", "list", "--paused"]);
     await client.run(["room", "list", "--closed"]);
     await client.run(["room", "list", "--all"]);
 
-    expect(client.requests[0].url).toBe("http://127.0.0.1:9100/room/list?state=closed");
-    expect(client.requests[1].url).toBe("http://127.0.0.1:9100/room/list?state=all");
+    expect(client.requests[0].url).toBe("http://127.0.0.1:9100/room/list?state=paused");
+    expect(client.requests[1].url).toBe("http://127.0.0.1:9100/room/list?state=closed");
+    expect(client.requests[2].url).toBe("http://127.0.0.1:9100/room/list?state=all");
   });
 
   test("room list forwards before and limit query parameters", async () => {
@@ -131,6 +133,27 @@ describe("agent-collab room commands", () => {
     const rejected = mockCli({ ok: false, status: 403, body: { error: "caller is not an active planner" } });
     expect(await rejected.run(["room", "close", "--room", "r", "--session", "ses_worker", "--from", "worker"])).toBe(1);
     expect(rejected.stderrText()).toContain("Error: caller is not an active planner");
+  });
+
+  test("pause and resume send password-authenticated requests without echoing passwords", async () => {
+    const inline = mockCli({ ok: true, body: { name: "r", state: "paused" } });
+    expect(await inline.run(["pause", "--room", "r", "--password", "secret"])).toBe(0);
+    expect(inline.requests[0]).toMatchObject({ method: "POST", url: "http://127.0.0.1:9100/room/r/pause", body: { password: "secret" } });
+    expect(inline.stdoutText()).not.toContain("secret");
+
+    const stdin = mockCli({ ok: true, body: { name: "r", state: "open" } }, "secret-from-stdin\n");
+    expect(await stdin.run(["resume", "--room", "r", "--password-stdin"])).toBe(0);
+    expect(stdin.requests[0]).toMatchObject({ method: "POST", url: "http://127.0.0.1:9100/room/r/resume", body: { password: "secret-from-stdin" } });
+    expect(stdin.stdoutText()).not.toContain("secret-from-stdin");
+  });
+
+  test("pause and resume propagate server errors", async () => {
+    const client = mockCli({ ok: false, status: 409, body: { error: "room is already paused" } });
+    const exit = await client.run(["pause", "--room", "r", "--password", "secret"]);
+
+    expect(exit).toBe(1);
+    expect(client.stderrText()).toContain("Error: room is already paused");
+    expect(client.stderrText()).not.toContain("secret");
   });
 });
 

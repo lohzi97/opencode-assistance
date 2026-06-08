@@ -327,6 +327,7 @@ describe("collab storage", () => {
         "members",
         "messages",
         "question_targets",
+        "room_pause_members",
         "rooms",
         "spawned_sessions",
       ]);
@@ -750,6 +751,81 @@ describe("collab service", () => {
       expect(allList.body.rooms.map((room: { room_id: string }) => room.room_id).sort()).toEqual(
         [openRoom.body.room_id, closingRoom.body.room_id].sort(),
       );
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("pauses and resumes rooms with planner password while preserving read-only inspection", async () => {
+    const client = mockClient({ statuses: { ses_planner: { type: "busy" }, ses_worker: { type: "idle" } } });
+    const service = await startedService(client);
+    try {
+      const created = await routeJson(service, "POST", "/room", { name: "pause-room", session_id: "ses_planner", from: "planner" });
+      await routeJson(service, "POST", `/room/${created.body.room_id}/member`, {
+        session_id: "ses_planner",
+        from: "planner",
+        target_session_id: "ses_worker",
+        name: "worker",
+        role: "implementer",
+      });
+      const invalid = await routeJson(service, "POST", `/room/${created.body.room_id}/pause`, { password: "wrong" });
+      expect(invalid.status).toBe(403);
+
+      const paused = await routeJson(service, "POST", `/room/${created.body.room_id}/pause`, { password: created.body.planner_password });
+      expect(paused.body.state).toBe("paused");
+      expect(paused.body.paused_at).toBeNumber();
+      expect(paused.body.pause_members).toContainEqual(expect.objectContaining({ session_id: "ses_planner", was_interrupted: true, status_at_pause: "busy" }));
+      expect(paused.body.pause_members).toContainEqual(expect.objectContaining({ session_id: "ses_worker", was_interrupted: false, status_at_pause: "idle" }));
+      expect(client.events).toContain("abort:ses_planner");
+
+      const pausedList = await routeJson(service, "GET", "/room/list?state=paused");
+      expect(pausedList.body.rooms.map((room: { room_id: string }) => room.room_id)).toEqual([created.body.room_id]);
+      expect(await routeJson(service, "GET", `/room/${created.body.room_id}/messages`)).toMatchObject({ status: 200 });
+
+      const pauseAgain = await routeJson(service, "POST", `/room/${created.body.room_id}/pause`, { password: created.body.planner_password });
+      expect(pauseAgain.status).toBe(409);
+      expect(pauseAgain.body.error).toBe("room is already paused");
+
+      const resumed = await routeJson(service, "POST", `/room/${created.body.room_id}/resume`, { password: created.body.planner_password });
+      expect(resumed.body.state).toBe("open");
+      expect(resumed.body.resumed_at).toBeNumber();
+      expect(client.prompts.some((prompt) => prompt.sessionID === "ses_planner" && prompt.text.includes("Collab Room Resume"))).toBe(true);
+
+      const messages = await routeJson(service, "GET", `/room/${created.body.room_id}/messages`);
+      expect(messages.body.messages.map((message: { kind: string }) => message.kind)).toContain("room_paused");
+      expect(messages.body.messages.map((message: { kind: string }) => message.kind)).toContain("room_resumed");
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("paused rooms reject normal mutations and close until resumed", async () => {
+    const service = await startedService();
+    try {
+      const created = await routeJson(service, "POST", "/room", { name: "paused-mutations", session_id: "ses_planner", from: "planner" });
+      await routeJson(service, "POST", `/room/${created.body.room_id}/pause`, { password: created.body.planner_password });
+
+      for (const [method, route, body] of [
+        ["POST", `/room/${created.body.room_id}/message`, { session_id: "ses_planner", from: "planner", body: "no" }],
+        ["POST", `/room/${created.body.room_id}/ask`, { session_id: "ses_planner", from: "planner", body: "@planner no" }],
+        ["POST", `/room/${created.body.room_id}/answer`, { session_id: "ses_planner", from: "planner", parent: "msg_missing", body: "no" }],
+        ["POST", `/room/${created.body.room_id}/join`, { session_id: "ses_other", name: "other", password: created.body.planner_password }],
+        ["DELETE", `/room/${created.body.room_id}/leave`, { session_id: "ses_planner", from: "planner" }],
+        ["POST", `/room/${created.body.room_id}/member`, { session_id: "ses_planner", from: "planner", target_session_id: "ses_other", name: "other", role: "member" }],
+        ["DELETE", `/room/${created.body.room_id}/member`, { session_id: "ses_planner", from: "planner", target: "planner" }],
+        ["POST", `/room/${created.body.room_id}/spawn`, { session_id: "ses_planner", from: "planner", name: "worker", role: "implementer" }],
+        ["POST", `/room/${created.body.room_id}/public-message`, { session_id: "ses_planner", from: "planner", body: "no" }],
+        ["DELETE", `/room/${created.body.room_id}/public-message`, { session_id: "ses_planner", from: "planner" }],
+        ["DELETE", `/room/${created.body.room_id}`, { session_id: "ses_planner", from: "planner" }],
+      ] as Array<[string, string, Record<string, unknown>]>) {
+        const rejected = await routeJson(service, method, route, body);
+        expect(rejected.status).toBe(409);
+        expect(rejected.body.error).toBe("room is paused");
+      }
+
+      const status = await routeJson(service, "GET", `/room/${created.body.room_id}/status`);
+      expect(status.status).toBe(200);
+      expect(status.body.state).toBe("paused");
     } finally {
       await service.shutdown();
     }
@@ -2893,6 +2969,57 @@ describe("collab service", () => {
 
       const messages = await routeJson(service, "GET", `/room/${closed.body.room_id}/messages`);
       expect(messages.body.messages.filter((message: { kind: string }) => message.kind === "inactivity_notice")).toHaveLength(0);
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+  test("paused rooms suppress delivery and inactivity work until resume gates clear", async () => {
+    const statuses: Record<string, SessionStatusInfo> = { ses_planner: { type: "busy" }, ses_worker: { type: "idle" }, ses_reviewer: { type: "idle" } };
+    const client = mockClient({ statuses });
+    const service = await startedService(client, {
+      inactivity_nudge: { enabled: true, threshold_ms: 1_000, repeat_ms: 60_000 },
+    });
+    try {
+      const created = await routeJson(service, "POST", "/room", { name: "pause-delivery", session_id: "ses_planner", from: "planner" });
+      await routeJson(service, "POST", `/room/${created.body.room_id}/member`, {
+        session_id: "ses_planner",
+        from: "planner",
+        target_session_id: "ses_worker",
+        name: "worker",
+        role: "implementer",
+      });
+      await routeJson(service, "POST", `/room/${created.body.room_id}/member`, {
+        session_id: "ses_planner",
+        from: "planner",
+        target_session_id: "ses_reviewer",
+        name: "reviewer",
+        role: "reviewer",
+      });
+      await markAllDeliveriesInjected();
+      await routeJson(service, "POST", `/room/${created.body.room_id}/message`, { session_id: "ses_planner", from: "planner", body: "Backlog for non-interrupted" });
+      await routeJson(service, "POST", `/room/${created.body.room_id}/message`, { session_id: "ses_worker", from: "worker", body: "Backlog for interrupted planner" });
+
+      const paused = await routeJson(service, "POST", `/room/${created.body.room_id}/pause`, { password: created.body.planner_password });
+      expect(paused.body.state).toBe("paused");
+      client.prompts.length = 0;
+      await rewriteRoomMessageTimes(created.body.room_id, Date.now() - 10_000);
+      await service.tickDelivery();
+      expect(client.prompts).toHaveLength(0);
+      const pausedMessages = await routeJson(service, "GET", `/room/${created.body.room_id}/messages`);
+      expect(pausedMessages.body.messages.filter((message: { kind: string }) => message.kind === "inactivity_notice")).toHaveLength(0);
+
+      statuses.ses_planner = { type: "idle" };
+      const resumed = await routeJson(service, "POST", `/room/${created.body.room_id}/resume`, { password: created.body.planner_password });
+      expect(resumed.body.state).toBe("open");
+      expect(client.prompts.map((prompt) => prompt.sessionID).sort()).toEqual(["ses_planner", "ses_reviewer", "ses_worker"]);
+      expect(client.prompts.find((prompt) => prompt.sessionID === "ses_planner")?.text).toContain("Collab Room Resume");
+
+      await expect(service.attemptFlush("ses_planner", { type: "idle" }, [])).resolves.toEqual({ flushed: false, reason: "resume_gate" });
+      statuses.ses_planner = { type: "busy" };
+      await expect(service.attemptFlush("ses_planner", statuses.ses_planner, [])).resolves.toEqual({ flushed: false, reason: "resume_gate" });
+      statuses.ses_planner = { type: "idle" };
+      await expect(service.attemptFlush("ses_planner", statuses.ses_planner, [])).resolves.toEqual({ flushed: true, count: 1 });
     } finally {
       await service.shutdown();
     }

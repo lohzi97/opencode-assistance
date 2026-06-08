@@ -37,7 +37,7 @@ type RequestOptions = {
 
 export const DEFAULT_AGENT_COLLAB_URL = "http://127.0.0.1:9100";
 
-const BOOLEAN_FLAGS = new Set(["all", "closed", "hard", "json", "password-stdin", "stdin"]);
+const BOOLEAN_FLAGS = new Set(["all", "closed", "paused", "hard", "json", "password-stdin", "stdin"]);
 
 class CliError extends Error {
   constructor(
@@ -141,6 +141,8 @@ async function dispatch(context: CommandContext) {
   if (group === "room" && action === "status") return roomStatus(context);
   if (group === "room" && action === "list") return roomList(context);
   if (group === "room" && action === "close") return closeRoom(context);
+  if (group === "pause") return pauseRoom(context);
+  if (group === "resume") return resumeRoom(context);
   if (group === "member" && action === "add") return memberAdd(context);
   if (group === "member" && action === "remove") return memberRemove(context);
   if (group === "join") return joinRoom(context);
@@ -173,12 +175,28 @@ function roomStatus({ args, client }: CommandContext) {
 }
 
 function roomList({ args, client }: CommandContext) {
-  const state = args.flags.all ? "all" : args.flags.closed ? "closed" : undefined;
+  const state = args.flags.all ? "all" : args.flags.closed ? "closed" : args.flags.paused ? "paused" : undefined;
   const search: Record<string, string> = {};
   if (state) search.state = state;
   if (typeof args.flags.before === "string") search.before = args.flags.before;
   if (typeof args.flags.limit === "string") search.limit = args.flags.limit;
   return client.request("/room/list", Object.keys(search).length > 0 ? { search } : undefined);
+}
+
+async function pauseRoom({ args, client, io }: CommandContext) {
+  const password = await readPassword(args, io);
+  return client.request(`/room/${encodeURIComponent(required(args, "room"))}/pause`, {
+    method: "POST",
+    body: { password },
+  });
+}
+
+async function resumeRoom({ args, client, io }: CommandContext) {
+  const password = await readPassword(args, io);
+  return client.request(`/room/${encodeURIComponent(required(args, "room"))}/resume`, {
+    method: "POST",
+    body: { password },
+  });
 }
 
 function closeRoom({ args, client }: CommandContext) {

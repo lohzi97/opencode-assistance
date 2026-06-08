@@ -24,11 +24,14 @@ Use this skill when coordinating multiple OpenCode sessions through the local `a
 
 ## Room Lifecycle
 
-- Rooms are either `open` or `closed`.
+- Rooms are `open`, `paused`, or `closed`.
 - Open rooms accept member management, public-message updates, sends, asks, answers, joins, leaves, spawns, and close operations.
+- Paused rooms preserve transcript, pending deliveries, questions, and members, but reject normal mutations and close until resumed.
+- `agent-collab pause --room <room> --password-stdin` freezes an open room using the room planner password, aborting busy/retry members and recording interruption diagnostics.
+- `agent-collab resume --room <room> --password-stdin` reopens a paused room, prompts interrupted members to continue, and gates their normal pending deliveries until their resume turn is observed busy/retry then idle.
 - Closing a room is terminal; closed rooms cannot be reopened.
 - Closed rooms reject new mutations: no new `send`, `ask`, `answer`, `join`, `leave`, `member add`, `member remove`, `spawn`, or public-message updates.
-- Read-only operations still work after close, including `room status`, `room list`, and `messages`.
+- Read-only operations still work for paused and closed rooms, including `room status`, `room list`, and `messages`.
 - Already-created pending deliveries may still drain after close, including the final `room_closed` message.
 - Closing a room does not automatically stop spawned OpenCode sessions; it only closes the collaboration room.
 
@@ -63,7 +66,7 @@ For complete command syntax, see [CLI.md](CLI.md).
 
 ## Rules
 
-1. Never expose the room password in room messages, public messages, notes, or logs.
+1. Never expose the room password in room messages, public messages, notes, or logs. Prefer `--password-stdin` for `join`, `pause`, and `resume`.
 2. Preserve the full room name returned by `room create`; later commands should use that full name.
 3. Always include explicit identity flags for mutating commands: `--session <session_id>` and, when already a member, `--from <alias>`.
 4. For discussion-only rooms, tell members not to edit files unless the planner explicitly authorizes implementation.
