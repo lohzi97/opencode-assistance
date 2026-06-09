@@ -71,14 +71,14 @@
       }
     },
     "google-workspace": {
-      "enabled": false,
+      "enabled": true,
       "type": "local",
       "command": [
         "uv",
         "run",
         "--directory", "../google_workspace_mcp",
         "main.py",
-        "--tools", "gmail", "drive", "calendar",
+        "--tools", "drive", "calendar",
         "--tool-tier", "extended"
       ],
       "environment": {
