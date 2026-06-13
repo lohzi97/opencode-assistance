@@ -15,16 +15,16 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 type Options = {
   input?: string;
   project?: string;
   prd?: string;
-  templateDir: string;
+  openextPath: string;
   dryRun: boolean;
   force: boolean;
-  sync: boolean;
   skipGit: boolean;
   skipOpenSpecInit: boolean;
   help: boolean;
@@ -39,6 +39,30 @@ type Action = {
 const skillDir = path.resolve(import.meta.dir, "..");
 const defaultTemplateDir = path.join(skillDir, "template");
 
+const DEFAULT_OPSX_MANIFEST: Record<string, string[]> = {
+  agents: ["levi", "shalltear"],
+  skills: [
+    "agent-tui",
+    "antigravity-websearch",
+    "chatgpt-research",
+    "chrome",
+    "openspec-align",
+    "openspec-apply-change",
+    "openspec-apply-resume",
+    "openspec-archive-change",
+    "openspec-code-review",
+    "openspec-discuss",
+    "openspec-fix",
+    "openspec-propose",
+    "openspec-review-proposal",
+    "openspec-test",
+    "write-commit-message",
+  ],
+  plugins: ["stuck-watcher"],
+  scripts: ["session-info"],
+  config: ["stuck-watcher.jsonc"],
+};
+
 function usage() {
   return `Usage: bun .opencode/skills/openspec-scaffold/scripts/opsx-scaffold.ts [options] <project-or-prd-path>
 
@@ -50,28 +74,23 @@ Inputs:
   --prd <path>                PRD file; its parent directory is used as the project root.
 
 Options:
-  --template-dir <path>       Template directory. Defaults to this skill's template directory.
+  --openext-path <path>       Path to openext CLI. Defaults to ~/openext/cli.ts.
   --dry-run                   Show intended changes without writing files or running commands.
-  --force                     Overwrite template-managed files that already exist.
-  --sync                      Re-link new template entries into an already-scaffolded project.
-                              Skips openspec init, git init, and generated-asset removal.
-                              Only creates symlinks for template entries not yet present.
+  --force                     Overwrite files that already exist.
   --skip-git                  Do not initialize git when .git is missing.
   --skip-openspec-init        Do not run openspec init.
   --help                      Show this help.
 
 Default behavior is conservative: existing files are skipped, not overwritten.
-Read-only template assets (agents, skills, plugins, scripts, config fragments)
-are symlinked to the template source for instant propagation. The project root
-opencode.json is always copied since OpenCode writes back to it.`;
+Extension management (agents, skills, plugins, scripts, config) is delegated
+to openext via a generated .opencode/openext.json manifest.`;
 }
 
 function parseArgs(argv: string[]): Options {
   const options: Options = {
-    templateDir: defaultTemplateDir,
+    openextPath: "~/openext/cli.ts",
     dryRun: false,
     force: false,
-    sync: false,
     skipGit: false,
     skipOpenSpecInit: false,
     help: false,
@@ -90,9 +109,6 @@ function parseArgs(argv: string[]): Options {
       case "--force":
         options.force = true;
         break;
-      case "--sync":
-        options.sync = true;
-        break;
       case "--skip-git":
         options.skipGit = true;
         break;
@@ -105,8 +121,8 @@ function parseArgs(argv: string[]): Options {
       case "--prd":
         options.prd = readValue(argv, ++i, arg);
         break;
-      case "--template-dir":
-        options.templateDir = readValue(argv, ++i, arg);
+      case "--openext-path":
+        options.openextPath = readValue(argv, ++i, arg);
         break;
       default:
         if (arg.startsWith("--")) throw new Error(`Unknown option: ${arg}`);
@@ -189,13 +205,9 @@ function copyManagedFile(src: string, dest: string, options: Options, actions: A
   actions.push({ kind: "copied", path: dest, detail: `from ${src}` });
 }
 
-/**
- * Ensure a specific entry exists in the project's .gitignore.
- * Creates .gitignore if absent. Skips if the entry is already present.
- */
 function ensureGitignoreEntry(projectRoot: string, entry: string, comment: string, options: Options, actions: Action[]) {
   const gitignorePath = path.join(projectRoot, ".gitignore");
-  const entryBase = entry.replace(/\/$/, ""); // ".opencode"
+  const entryBase = entry.replace(/\/$/, "");
 
   if (existsSync(gitignorePath)) {
     const content = readFileSync(gitignorePath, "utf-8");
@@ -229,14 +241,13 @@ function ensureGitignoreEntry(projectRoot: string, entry: string, comment: strin
 }
 
 /**
- * Create a relative symlink from dest -> src. Handles existing entries:
- * - Correct symlink already present: skip
- * - Wrong symlink or regular file present: skip unless --force
+ * Create a relative symlink from dest -> src for scaffold-specific files.
+ * Skips if correct symlink already present; overwrites only with --force.
  */
-function symlinkManagedEntry(src: string, dest: string, options: Options, actions: Action[]) {
+function ensureSymlink(src: string, dest: string, options: Options, actions: Action[]) {
   const relativeTarget = path.relative(path.dirname(dest), src);
 
-  let existingStat: ReturnType<typeof lstatSync> = undefined;
+  let existingStat: ReturnType<typeof lstatSync> | undefined;
   try {
     existingStat = lstatSync(dest);
   } catch {}
@@ -273,31 +284,6 @@ function symlinkManagedEntry(src: string, dest: string, options: Options, action
   actions.push({ kind: "symlinked", path: dest, detail: `-> ${relativeTarget}` });
 }
 
-/**
- * Symlink leaf entries from srcDir into destDir.
- * - Files are symlinked individually.
- * - Directories that contain no subdirectories ("leaf dirs") are symlinked as a whole.
- * - Directories that contain subdirectories are recursed into.
- */
-function symlinkTree(srcDir: string, destDir: string, options: Options, actions: Action[]) {
-  if (!existsSync(srcDir)) return;
-  for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
-    const src = path.join(srcDir, entry.name);
-    const dest = path.join(destDir, entry.name);
-    if (entry.isDirectory()) {
-      const children = readdirSync(src, { withFileTypes: true });
-      if (children.some((c) => c.isDirectory())) {
-        ensureDir(dest, options, actions);
-        symlinkTree(src, dest, options, actions);
-      } else {
-        symlinkManagedEntry(src, dest, options, actions);
-      }
-    } else if (entry.isFile()) {
-      symlinkManagedEntry(src, dest, options, actions);
-    }
-  }
-}
-
 function removeGeneratedAssets(projectRoot: string, preExisting: { commands: Set<string>; skills: Set<string> }, options: Options, actions: Action[]) {
   const specs = [
     { dir: path.join(projectRoot, ".opencode", "command"), before: preExisting.commands },
@@ -319,7 +305,6 @@ function removeGeneratedAssets(projectRoot: string, preExisting: { commands: Set
         actions.push({ kind: "would", path: target, detail: "remove generated OpenSpec/OpenCode asset" });
         continue;
       }
-      // Use unlinkSync for symlinks to avoid following into the target
       if (lstatSync(target).isSymbolicLink()) {
         unlinkSync(target);
       } else {
@@ -330,64 +315,33 @@ function removeGeneratedAssets(projectRoot: string, preExisting: { commands: Set
   }
 }
 
-/**
- * Copy opencode.json (mutable) and symlink all other template entries.
- */
-function applyTemplate(projectRoot: string, templateDir: string, options: Options, actions: Action[]) {
-  for (const entry of readdirSync(templateDir)) {
-    const src = path.join(templateDir, entry);
-    const dest = entry === "opencode.json" ? path.join(projectRoot, entry) : path.join(projectRoot, ".opencode", entry);
-    const st = lstatSync(src);
-    if (entry === "opencode.json") {
-      if (st.isFile()) copyManagedFile(src, dest, options, actions);
-      continue;
-    }
-    if (st.isDirectory()) {
-      ensureDir(dest, options, actions);
-      symlinkTree(src, dest, options, actions);
-      continue;
-    }
-    if (st.isFile()) symlinkManagedEntry(src, dest, options, actions);
-  }
-}
-
-/**
- * --sync: only create missing symlinks, skip opencode.json and all init steps.
- */
-function syncTemplate(projectRoot: string, templateDir: string, options: Options, actions: Action[]) {
-  for (const entry of readdirSync(templateDir)) {
-    if (entry === "opencode.json") continue;
-    const src = path.join(templateDir, entry);
-    const dest = path.join(projectRoot, ".opencode", entry);
-    const st = lstatSync(src);
-    if (st.isDirectory()) {
-      ensureDir(dest, options, actions);
-      symlinkTree(src, dest, options, actions);
-      continue;
-    }
-    if (st.isFile()) symlinkManagedEntry(src, dest, options, actions);
-  }
-}
-
 function validateTemplate(templateDir: string) {
-  const required = [
-    "opencode.json",
-    "stuck-watcher.jsonc",
-    path.join("agents", "levi.md"),
-    path.join("plugins", "stuck-watcher.ts"),
-    "skills",
-  ];
-  for (const rel of required) {
-    const target = path.join(templateDir, rel);
-    if (!existsSync(target)) throw new Error(`Missing template asset: ${target}`);
-  }
-
   const configPath = path.join(templateDir, "opencode.json");
+  if (!existsSync(configPath)) throw new Error(`Missing template asset: ${configPath}`);
   try {
     JSON.parse(readFileSync(configPath, "utf-8"));
   } catch (err) {
     throw new Error(`Template opencode.json is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+function generateManifest(projectRoot: string, options: Options, actions: Action[]) {
+  const od = path.join(projectRoot, ".opencode");
+  const mp = path.join(od, "openext.json");
+
+  if (existsSync(mp) && !options.force) {
+    actions.push({ kind: "skipped", path: mp, detail: "openext.json already exists" });
+    return;
+  }
+
+  if (options.dryRun) {
+    actions.push({ kind: "would", path: mp, detail: "generate default openext.json manifest" });
+    return;
+  }
+
+  mkdirSync(od, { recursive: true });
+  writeFileSync(mp, JSON.stringify(DEFAULT_OPSX_MANIFEST, null, 2) + "\n", "utf-8");
+  actions.push({ kind: "created", path: mp, detail: "default OPSX manifest" });
 }
 
 function printActions(actions: Action[]) {
@@ -410,19 +364,17 @@ function main() {
   }
 
   const { projectRoot, prdPath } = resolveProjectRoot(options);
-  const templateDir = path.resolve(options.templateDir);
-  validateTemplate(templateDir);
+  validateTemplate(defaultTemplateDir);
 
   const actions: Action[] = [];
 
-  if (options.sync) {
-    syncTemplate(projectRoot, templateDir, options, actions);
-    ensureGitignoreEntry(projectRoot, ".opencode/", "OpenCode config (symlinked — recreate with opsx-scaffold --sync)", options, actions);
-    console.log(`OPSX sync target: ${projectRoot}`);
-    printActions(actions);
-    return;
-  }
+  // Step 1: Generate default .opencode/openext.json manifest
+  generateManifest(projectRoot, options, actions);
 
+  // Step 2: Run openspec init --tools opencode
+  if (!options.skipOpenSpecInit) runCommand("openspec", ["init", "--tools", "opencode"], projectRoot, options, actions);
+
+  // Step 3: Remove generated opsx-/openspec- commands and skills
   const preExisting = {
     commands: new Set([
       ...listNames(path.join(projectRoot, ".opencode", "command")),
@@ -433,17 +385,37 @@ function main() {
       ...listNames(path.join(projectRoot, ".opencode", "skills")),
     ]),
   };
-
-  if (!options.skipOpenSpecInit) runCommand("openspec", ["init", "--tools", "opencode"], projectRoot, options, actions);
   removeGeneratedAssets(projectRoot, preExisting, options, actions);
-  applyTemplate(projectRoot, templateDir, options, actions);
-  ensureGitignoreEntry(projectRoot, ".opencode/", "OpenCode config (symlinked — recreate with opsx-scaffold --sync)", options, actions);
 
+  // Step 4: Copy opencode.json to project root (always a copy — OpenCode writes back to it)
+  const opencodeSrc = path.join(defaultTemplateDir, "opencode.json");
+  const opencodeDest = path.join(projectRoot, "opencode.json");
+  copyManagedFile(opencodeSrc, opencodeDest, options, actions);
+
+  // Step 4b: Symlink scaffold-specific files not managed by openext
+  for (const file of ["runtime-session-info.md", "system-files.json"]) {
+    const src = path.join(defaultTemplateDir, file);
+    if (existsSync(src)) {
+      const dest = path.join(projectRoot, ".opencode", file);
+      ensureSymlink(src, dest, options, actions);
+    }
+  }
+
+  // Step 5: Run openext init to create all extension symlinks from the manifest
+  const openextPath = options.openextPath.replace(/^~/, os.homedir());
+  const openextArgs = [openextPath, "init", projectRoot];
+  if (options.force) openextArgs.push("--force");
+  runCommand("bun", openextArgs, projectRoot, options, actions);
+
+  // Step 6: Initialize git when .git is absent
   if (!options.skipGit && !existsSync(path.join(projectRoot, ".git"))) {
     runCommand("git", ["init"], projectRoot, options, actions);
   } else if (existsSync(path.join(projectRoot, ".git"))) {
     actions.push({ kind: "skipped", path: path.join(projectRoot, ".git"), detail: "git repository already exists" });
   }
+
+  // Ensure .opencode/ is in .gitignore
+  ensureGitignoreEntry(projectRoot, ".opencode/", "OpenCode config (managed by openext — recreate with opsx-scaffold)", options, actions);
 
   console.log(`OPSX scaffold target: ${projectRoot}`);
   if (prdPath) console.log(`PRD input: ${prdPath}`);
