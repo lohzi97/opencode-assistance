@@ -19,6 +19,7 @@ Use this skill for anything related to the Master's finances: recording spending
 - Opening balances and cross-scope transactions live in `ledgers/opening_balances.beancount` (included only by `combined.beancount`).
 - After recording entries, commit and push to `sebastianloh97/finance`.
 - When the Master mentions a transaction verbally (e.g. "lunch RM7"), record it immediately using `./bin/record` or by editing the ledger directly.
+- **Always confirm the expense category, tag (if any), and payment method with the Master before recording. Never assume.** When in doubt, ask.
 
 ## Repo Structure
 
@@ -89,6 +90,9 @@ Domain, Hosting, Software, Marketing, Subcontractors, Equipment, Travel, Banking
 ### Income
 - `Income:Salary` - DotDash salary (net)
 - `Income:Freelance:TeeSure`, `Income:Freelance:CamMillion`, `Income:Freelance:Other`
+
+### Category and Tag Reference
+The authoritative source for category descriptions, tag conventions, and account metadata is `config/accounts.yaml` in the finance repo. Run `./bin/categories` for a quick formatted reference. Always consult this before recording a transaction to select the correct category.
 
 ## Workflows
 
