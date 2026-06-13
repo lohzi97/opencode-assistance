@@ -1,11 +1,11 @@
 ---
 name: openspec-scaffold
-description: Use when preparing a project for Master's OPSX/OpenSpec orchestration workflow: run opsx-scaffold, install project-local OpenCode agents/plugins/openspec skills, initialize OpenSpec/git, and interview the user before creating AGENTS.md.
+description: Use when preparing a project for OPSX/OpenSpec orchestration workflow: run opsx-scaffold, install project-local OpenCode agents/plugins/openspec skills, initialize OpenSpec/git, and interview the user before creating AGENTS.md.
 ---
 
 # OpenSpec Scaffold
 
-Use this skill when Master wants to prepare a target project for the OPSX/OpenSpec orchestration workflow before running `opsx-orchestrate`.
+Use this skill when user wants to prepare a target project for the OPSX/OpenSpec orchestration workflow before running `opsx-orchestrate`.
 
 This is a one-time manually triggered setup skill. The autonomous `opsx-orchestrate` workflow should assume this scaffold has already been completed and should not perform scaffold work itself.
 
@@ -18,26 +18,12 @@ which openext
 which openspec
 ```
 
-If either is missing, **pause immediately** and inform Master. Tell them which tool is missing and how to install it:
+If either is missing, **pause immediately** and inform the user. Tell them which tool is missing and how to install it:
 
 - `openext` — clone the hub and run the install script: `git clone git@github.com:sebastianloh97/openext.git ~/openext && bash ~/openext/install.sh`
 - `openspec` — install via the OpenSpec CLI's own setup instructions.
 
 Do not proceed until both are confirmed available.
-
-## Grounding
-
-Master's OPSX workflow is recorded in:
-
-- `notes/my-opsx-workflow.md`
-- `notes/20260602-opsx-orchestration-workflow.md`
-
-Important orchestration facts:
-
-- Sebastian remains the long-lived planner/orchestrator.
-- Short-lived worker sessions are spawned in the target project directory.
-- Agent-collab messages cannot trigger slash commands, so workers must use project-local `openspec-*` skills directly.
-- The target project must therefore contain the OpenCode configuration, `levi` agent, `stuck-watcher` plugin, and custom `openspec-*` skills before orchestration begins.
 
 ## Inputs
 
@@ -46,7 +32,7 @@ Accept either:
 - A target project directory.
 - A PRD file path. When a PRD path is given, use the PRD file's parent directory as the project directory.
 
-If neither path is explicit, ask Master for the project directory or PRD path before running any setup.
+If neither path is explicit, ask the user for the project directory or PRD path before running any setup.
 
 ## Workflow
 
@@ -57,9 +43,9 @@ If neither path is explicit, ask Master for the project directory or PRD path be
 bun .opencode/skills/openspec-scaffold/scripts/opsx-scaffold.ts <project-or-prd-path>
 ```
 
-3. If the target project already has `opencode.json` or `.opencode/openext.json`, the script skips them. Inspect and discuss any needed manual merge with Master.
+3. If the target project already has `opencode.json` or `.opencode/openext.json`, the script skips them. Inspect and discuss any needed manual merge with the user.
 4. Analyze the project or PRD before creating `AGENTS.md`.
-5. Interview Master until the project-specific operating context is clear.
+5. Interview the user until the project-specific operating context is clear.
 6. Create or update `AGENTS.md` in the project root.
 7. Verify the scaffold and report readiness for `opsx-orchestrate`.
 
@@ -135,7 +121,7 @@ Use this structure unless the project clearly needs a small variation:
 ## Additional Resources
 ```
 
-The `OpenSpec / OPSX Workflow` section should tell future workers that this project uses Master's OPSX/OpenSpec workflow, that project-local `openspec-*` skills are available, and that spawned worker sessions should follow the assigned skill rather than slash commands.
+The `OpenSpec / OPSX Workflow` section should tell future workers that this project uses OPSX/OpenSpec workflow, that project-local `openspec-*` skills are available, and that spawned worker sessions should follow the assigned skill rather than slash commands.
 
 ## Verification
 
@@ -160,4 +146,4 @@ bun .opencode/skills/openspec-scaffold/scripts/opsx-scaffold.ts --dry-run <proje
 git -C <project-path> status --short
 ```
 
-If an OpenCode config, agent, skill, or plugin file was created or changed, remind Master that running OpenCode sessions must be restarted before those config-time changes take effect.
+If an OpenCode config, agent, skill, or plugin file was created or changed, remind the user that running OpenCode sessions must be restarted before those config-time changes take effect.

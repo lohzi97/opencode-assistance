@@ -71,7 +71,7 @@
       }
     },
     "google-workspace": {
-      "enabled": true,
+      "enabled": false,
       "type": "local",
       "command": [
         "uv",

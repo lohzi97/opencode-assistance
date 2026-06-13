@@ -261,6 +261,29 @@ Use hard interrupts only when a worker is clearly stuck or running the wrong tas
 - Keep room public context minimal or absent.
 - Keep the state file in sync. Every phase transition must produce a state file write before the next worker is spawned. If the planner suspects the state file is stale, read it and verify before proceeding.
 
+## Review Gate Protocol
+
+Four phases act as review gates. A gate worker must report a **clean pass** before the planner may advance to the next phase. A clean pass means the worker found zero issues in that specific run and made zero changes.
+
+A run where the worker found issues and fixed them is a **dirty pass**, even if the worker then concludes everything is now fine. The fixes themselves must survive a fresh gate run. The planner must re-run the same gate phase after any dirty pass.
+
+### Gate Definitions
+
+| Gate phase | Skill | Clean-pass criteria |
+| --- | --- | --- |
+| PRD decomposition review | `openspec-review-prd-decomposition` | Zero coverage gaps found, zero proposal artifacts modified in this run. |
+| Proposal review | `openspec-review-proposal` | Zero gaps found, zero proposal artifacts modified in this run. |
+| Implementation review | `openspec-apply-resume` | Zero files edited because the implementation already matches the proposal. |
+| Code review | `openspec-code-review` | All issues found are already listed in `issue.md`, zero new issues added in this run. |
+
+### Planner Behavior at Gates
+
+- After a gate worker finishes, read the worker's full report.
+- If the report describes any issues found, files edited, gaps addressed, or artifacts updated during this run, the gate is a dirty pass. Re-run the same gate phase with a fresh worker.
+- If the report explicitly states no issues were found and no changes were made, the gate is a clean pass. Proceed to the next phase.
+- The gate worker's orchestration signal must include `Gate verdict: clean_pass | dirty_pass` for gate phases.
+- Do not advance past a gate on a generic `ready` outcome alone. The explicit clean-pass verdict is required.
+
 ## Phase State Machine
 
 The planner tracks the workflow as explicit states with allowed transitions. All state transitions must be persisted to the state file immediately after the decision is made.
@@ -288,11 +311,11 @@ proposal_needed
 Recommended transitions:
 
 - `proposal_needed` uses `openspec-propose`.
-- `proposal_review` uses `openspec-review-proposal` repeatedly until no material gaps remain.
+- `proposal_review` uses `openspec-review-proposal` as a review gate. Do not advance until the worker reports a clean pass (zero gaps found, zero proposal artifacts modified).
 - If `openspec-propose` creates or renames the change, capture the canonical proposal name from the worker report and use that name for all later phases.
 - After proposal review reports ready, trigger the proposal-ready commit checkpoint according to commit and push modes.
 - `implementation` uses `openspec-apply-change`.
-- `implementation_review` uses `openspec-apply-resume` repeatedly until the implementation matches the proposal.
+- `implementation_review` uses `openspec-apply-resume` as a review gate. Do not advance until the worker reports a clean pass (zero files edited).
 - After implementation review reports ready, trigger the initial-implementation commit checkpoint according to commit and push modes.
 - `testing` uses `openspec-test`.
 - If testing fails or updates `issue.md`, go to `fixing` with `openspec-fix`, then return to `testing`.
@@ -303,7 +326,7 @@ Recommended transitions:
 - If final test fails or updates `issue.md`, go to `fixing` with `openspec-fix`, then return to `testing` and re-enter the code-review decision from a passing test.
 - If final test passes after quality fix, trigger the post-quality-fix tested commit checkpoint according to commit and push modes, then proceed to `alignment`.
 - If the quality fix was substantial, optionally run one more `optional_code_review`; if that review finds issues, return to `quality_fix`.
-- If code review finds no issues, proceed to `alignment` without a quality-fix pass.
+- If code review finds no issues (clean pass), proceed to `alignment` without a quality-fix pass.
 - After `alignment` reports complete, trigger the aligned-proposal commit checkpoint according to commit and push modes.
 - After alignment, run `archive` with `openspec-archive-change`.
 - After archive reports complete, trigger the archive-complete commit checkpoint according to commit and push modes.
@@ -328,7 +351,7 @@ Then process one proposal at a time through the brownfield workflow.
 
 Do not parallelize proposals unless the user explicitly requests it and dependency ordering in `prd-implementation-sequence.md` allows it.
 
-Run PRD decomposition review repeatedly until no material PRD coverage gaps remain.
+Run PRD decomposition review as a review gate. Do not advance until the worker reports a clean pass (zero coverage gaps found, zero proposal artifacts modified).
 
 ## Optional Code Review Loop
 
@@ -338,14 +361,14 @@ When enabled, use this loop after `openspec-test` passes:
 
 ```text
 openspec-test PASS
-  -> openspec-code-review
-  -> if NOT_APPLICABLE, openspec-align
-  -> if issues are found, openspec-fix for accumulated code quality issues
+  -> openspec-code-review (review gate: must report clean pass)
+  -> if clean pass or NOT_APPLICABLE, openspec-align
+  -> if dirty pass (issues found or added to issue.md), openspec-fix for accumulated code quality issues
   -> openspec-test final verification
   -> if final test fails, openspec-fix and return to normal testing loop
-  -> optionally run one more openspec-code-review if the quality fix was substantial
-  -> if follow-up code review finds issues, return to openspec-fix
-  -> openspec-align
+  -> openspec-code-review again (review gate: must report clean pass)
+  -> if still dirty, return to openspec-fix
+  -> if clean pass, openspec-align
 ```
 
 If the change is non-code work or `openspec-code-review` reports `NOT_APPLICABLE`, skip code review remediation and proceed from passing test to alignment.
@@ -384,9 +407,12 @@ Orchestration signal:
 Outcome: ready | repeat | issues_found | fixed | passed | failed | blocked | not_applicable
 Changed files: yes | no | unknown
 Issue file updated: yes | no | not_applicable
+Gate verdict: clean_pass | dirty_pass | not_applicable
 Recommended next phase: <phase>
 Blocking question: <question or none>
 ```
+
+For gate phases (PRD decomposition review, proposal review, implementation review, code review), `Gate verdict` is required and must be `clean_pass` or `dirty_pass`. For non-gate phases, use `not_applicable`.
 
 The signal is for planner routing only. The full skill report remains authoritative for phase details.
 
