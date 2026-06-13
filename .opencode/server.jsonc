@@ -258,6 +258,30 @@
       },
 
       {
+        "id": "master-finance-tracking",
+        "name": "Master's Weekly Finance Tracking",
+        "enabled": true,
+        "purpose": "Weekly anchor session where the Master reports spending throughout the week and Sebastian records each transaction into the Beancount ledger.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "15 0 * * 1" // every Monday 00:15 MYT
+        },
+        "mode": "anchor-session",
+        "instructions": "/master-finance-tracking-start",
+        "anchor": {
+          "duration_ms": 603000000, // Monday 00:15 to Sunday 23:45 (6d 23h 30m)
+          "end_instructions": "/master-finance-tracking-end",
+          "rollover_threshold": 0.8,
+          "rollover_instructions": "/master-finance-tracking-rollover"
+        },
+        "priority": 3,
+        "policy": {
+          "silence_ok": true,
+          "ttl_ms": 1800000
+        }
+      },
+
+      {
         "id": "weekly-ml-lesson",
         "name": "Weekly ML Lesson Prep",
         "enabled": false,
