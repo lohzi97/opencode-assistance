@@ -83,7 +83,7 @@ Use this skill for anything related to the Master's finances: recording spending
 - `Liabilities:Freelance:TaxProvision` - provisional tax reserve
 
 ### Expenses (Personal)
-Food, Transport, Rent, Utilities, Subscriptions, Insurance, Medical, Education, Discretionary, Mortgage, Housing
+Food, Transport, Rent, Utilities, Subscriptions, Insurance, Medical, Education, Discretionary, Mortgage, Housing, Household
 
 ### Expenses (Freelance)
 Domain, Hosting, Software, Marketing, Subcontractors, Equipment, Travel, Banking
