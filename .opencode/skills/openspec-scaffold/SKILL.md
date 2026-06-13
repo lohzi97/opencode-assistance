@@ -9,6 +9,22 @@ Use this skill when Master wants to prepare a target project for the OPSX/OpenSp
 
 This is a one-time manually triggered setup skill. The autonomous `opsx-orchestrate` workflow should assume this scaffold has already been completed and should not perform scaffold work itself.
 
+## Prerequisites
+
+Before doing anything else, verify that both CLIs are installed and on PATH:
+
+```sh
+which openext
+which openspec
+```
+
+If either is missing, **pause immediately** and inform Master. Tell them which tool is missing and how to install it:
+
+- `openext` — clone the hub and run the install script: `git clone git@github.com:sebastianloh97/openext.git ~/openext && bash ~/openext/install.sh`
+- `openspec` — install via the OpenSpec CLI's own setup instructions.
+
+Do not proceed until both are confirmed available.
+
 ## Grounding
 
 Master's OPSX workflow is recorded in:
@@ -41,38 +57,30 @@ If neither path is explicit, ask Master for the project directory or PRD path be
 bun .opencode/skills/openspec-scaffold/scripts/opsx-scaffold.ts <project-or-prd-path>
 ```
 
-3. If the target project already has meaningful local `opencode.json` configuration, do not auto-merge it. The script skips existing files by default. Inspect and discuss any needed manual merge with Master.
+3. If the target project already has `opencode.json` or `.opencode/openext.json`, the script skips them. Inspect and discuss any needed manual merge with Master.
 4. Analyze the project or PRD before creating `AGENTS.md`.
 5. Interview Master until the project-specific operating context is clear.
 6. Create or update `AGENTS.md` in the project root.
 7. Verify the scaffold and report readiness for `opsx-orchestrate`.
 
-## Scaffold Script Behavior
+## Scaffold Script Flow
 
-The script generates a default `.opencode/openext.json` manifest and delegates extension management to `openext init`. The 6-step flow is:
+The script does exactly 4 things:
 
-1. **Generate manifest** — writes `.opencode/openext.json` with the default OPSX extension set (agents, skills, plugins, scripts, config). Skipped if the manifest already exists (use `--force` to overwrite).
-2. **Run `openspec init --tools opencode`** — initializes the OpenSpec directory and generates `opsx-`/`openspec-` commands and skills. Skipped if `--skip-openspec-init` is supplied.
-3. **Remove generated assets** — deletes only newly created `opsx-*` and `openspec-*` entries from `.opencode/commands/` and `.opencode/skills/` (these are replaced by openext-managed versions). Pre-existing entries are preserved.
-4. **Copy `opencode.json`** — copies `template/opencode.json` to the project root. Always a copy (never a symlink) because OpenCode writes back to this file. Symlinks scaffold-specific files (`runtime-session-info.md`, `system-files.json`) into `.opencode/`.
-5. **Run `openext init`** — creates all extension symlinks from the manifest using the openext hub at `~/openext/`. This is idempotent: re-running creates only missing symlinks and removes stale ones. Passes `--force` to openext when the scaffold `--force` flag is set.
-6. **Initialize git** — runs `git init` when `.git` is absent, unless `--skip-git` is supplied.
+1. **Ensure OpenSpec is initialized** — checks if `openspec/` exists. If not, runs `openspec init --tools opencode`, then removes the auto-generated `opsx-*`/`openspec-*` commands and skills (these are replaced by openext-managed versions). Pre-existing entries are preserved.
+2. **Copy template files** — copies `template/opencode.json` to the project root (always a copy because OpenCode writes back to it) and `template/openext.json` to `.opencode/openext.json`. Both are skipped if they already exist (use `--force` to overwrite).
+3. **Run `openext init`** — creates all extension symlinks from the manifest. This is idempotent: re-running creates only missing symlinks and removes stale ones.
+4. **Initialize git** — runs `git init` when `.git` is absent.
 
 The script also ensures `.opencode/` is listed in `.gitignore`.
 
-### Extension Management
-
-All extension symlinks (agents, skills, plugins, scripts, config) are managed by `openext`. To add or remove individual extensions after scaffolding, use the openext CLI directly:
+All extension management (agents, skills, plugins, scripts, config) is handled by `openext`. To add or remove individual extensions after scaffolding, use the openext CLI directly:
 
 ```sh
-bun ~/openext/cli.ts add skills/chrome <project-path>
-bun ~/openext/cli.ts remove skills/chrome <project-path>
-```
-
-To reconcile all symlinks with the manifest (e.g., after adding new extensions to `openext.json`):
-
-```sh
-bun ~/openext/cli.ts init <project-path>
+openext add skills/chrome <project-path>
+openext remove skills/chrome <project-path>
+openext init <project-path>
+openext status <project-path>
 ```
 
 ### Useful Options
@@ -82,7 +90,6 @@ bun .opencode/skills/openspec-scaffold/scripts/opsx-scaffold.ts --dry-run <proje
 bun .opencode/skills/openspec-scaffold/scripts/opsx-scaffold.ts --force <project-or-prd-path>
 bun .opencode/skills/openspec-scaffold/scripts/opsx-scaffold.ts --skip-git <project-or-prd-path>
 bun .opencode/skills/openspec-scaffold/scripts/opsx-scaffold.ts --skip-openspec-init <project-or-prd-path>
-bun .opencode/skills/openspec-scaffold/scripts/opsx-scaffold.ts --openext-path ~/custom/openext/cli.ts <project-or-prd-path>
 ```
 
 ## AGENTS.md Interview
@@ -136,12 +143,6 @@ After setup, verify at minimum:
 
 - `opencode.json` exists or was intentionally skipped due to an existing config.
 - `.opencode/openext.json` exists and contains the expected extension manifest.
-- `.opencode/agents/levi.md` exists (symlinked by openext).
-- `.opencode/plugins/stuck-watcher.ts` exists (symlinked by openext).
-- `.opencode/stuck-watcher.jsonc` exists (symlinked by openext).
-- `.opencode/skills/openspec-propose/SKILL.md` exists (symlinked by openext).
-- `.opencode/skills/openspec-apply-change/SKILL.md` exists (symlinked by openext).
-- `.opencode/skills/openspec-test/SKILL.md` exists (symlinked by openext).
 - `openspec/` exists after initialization, unless intentionally skipped.
 - `.git/` exists after initialization, unless intentionally skipped.
 - `AGENTS.md` exists and reflects the project/PRD.
@@ -149,7 +150,7 @@ After setup, verify at minimum:
 Run openext status to verify all extension symlinks are healthy:
 
 ```sh
-bun ~/openext/cli.ts status <project-path>
+openext status <project-path>
 ```
 
 Also run lightweight validation where feasible:

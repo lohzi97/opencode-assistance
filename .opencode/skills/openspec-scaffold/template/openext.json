@@ -1,0 +1,8 @@
+{
+  "agents": ["levi", "shalltear"],
+  "skills": ["agent-tui", "antigravity-websearch", "chatgpt-research", "chrome", "handoff", "openspec-align", "openspec-apply-change", "openspec-apply-resume", "openspec-archive-change", "openspec-code-review", "openspec-discuss", "openspec-fix", "openspec-propose", "openspec-review-proposal", "openspec-test", "write-commit-message", "write-findings-report"],
+  "commands": ["generate-commit", "grill-me", "opsx-align", "opsx-apply", "opsx-apply-resume", "opsx-archive", "opsx-code-review", "opsx-discuss", "opsx-fix", "opsx-propose", "opsx-review-proposal"],
+  "plugins": ["stuck-watcher", "system-files"],
+  "scripts": ["session-info"],
+  "config": ["runtime-session-info.md", "stuck-watcher.jsonc", "system-files.json"]
+}
