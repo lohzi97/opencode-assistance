@@ -33,6 +33,7 @@ Use this skill for anything related to the Master's finances: recording spending
     budget                    Check budget status
     fava                      Start Fava web dashboard
     close                     Period-end closing
+    categories                List all categories, accounts, and tag conventions
   ledgers/
     personal.beancount        Personal entry point (standalone)
     freelance.beancount       Freelance entry point (standalone)
@@ -41,7 +42,7 @@ Use this skill for anything related to the Master's finances: recording spending
     personal/2026.beancount   Personal accounts + transactions
     freelance/2026.beancount  Freelance accounts + transactions
   config/
-    accounts.yaml             Account metadata (scope, active, budget_category)
+    accounts.yaml             Account metadata, descriptions, tag conventions (source of truth for categories)
     budgets.yaml              Budget limits per category
   PRD.md                      Full system design doc
   README.md                   Usage guide with examples
