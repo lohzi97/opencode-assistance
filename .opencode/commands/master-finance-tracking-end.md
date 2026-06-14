@@ -1,7 +1,7 @@
 ---
 description: Generate the weekly spending summary and close the finance tracking anchor session
 agent: sebastian
-model: zai-coding-plan/glm-4.7
+model: openrouter/xiaomi/mimo-v2.5
 ---
 
 The weekly finance tracking anchor session is ending (Sunday 23:45). Generate a weekly spending summary for the Master.

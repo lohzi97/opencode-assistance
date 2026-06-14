@@ -1,7 +1,7 @@
 ---
 description: Summarize the finance tracking anchor conversation for rollover into a fresh session
 agent: sebastian
-model: zai-coding-plan/glm-4.7
+model: openrouter/xiaomi/mimo-v2.5
 ---
 
 The finance tracking anchor session is approaching its context limit and must roll over into a fresh session. Summarize everything so no transaction data is lost.
