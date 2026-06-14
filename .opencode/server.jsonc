@@ -365,6 +365,24 @@
             "channels": ["telegram"]
           }
         }
+      },
+
+      {
+        "id": "freelance-reimbursement-reminder",
+        "name": "Monthly Freelance Reimbursement",
+        "enabled": true,
+        "purpose": "Monthly reminder to reimburse the owner for business expenses paid with personal funds. Shows the outstanding balance and records the reimbursement transfer when confirmed.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "0 10 1 * *" // 1st of each month at 10:00 AM MYT
+        },
+        "mode": "isolated-session",
+        "instructions": "Monthly freelance reimbursement check.\n\n1. Run `cd ~/finance && ./bin/report balance --scope all` to check the current balance of `Assets:Receivable:Freelance` (personal) and `Liabilities:Freelance:AccountsPayable` (freelance). These mirror each other — the positive balance is what the freelance business owes the owner.\n2. If the balance is zero or near-zero (less than 1 MYR), respond with SEBASTIAN_IDLE.\n3. If there is an outstanding balance, present it to the Master:\n   - State the total amount the freelance business owes\n   - Recommend transferring that amount from Maybank to Public Bank PlusSavings\n   - Explain that this clears the reimbursement balance\n4. Wait for the Master to confirm the transfer is complete.\n5. After confirmation, record the reimbursement entries:\n   - Personal ledger (ledgers/personal/2026.beancount): Dr Assets:Bank:PublicBank:PlusSavings, Cr Assets:Receivable:Freelance\n   - Freelance ledger (ledgers/freelance/2026.beancount): Dr Liabilities:Freelance:AccountsPayable, Cr Assets:Bank:Maybank\n   - Use the transfer amount as the posting amount in both entries\n   - Use a clear description like 'Monthly reimbursement - freelance expenses'\n6. Run `cd ~/finance && ./bin/validate` to verify the ledger.\n7. If valid, commit and push: `cd ~/finance && git add -A && git commit -m 'reimbursement: monthly freelance reimbursement <Month>' && git push`\n8. Confirm to the Master that the reimbursement has been recorded.",
+        "priority": 3,
+        "policy": {
+          "silence_ok": true,
+          "ttl_ms": 86400000
+        }
       }
 
     ]
