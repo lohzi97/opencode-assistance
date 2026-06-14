@@ -57,7 +57,7 @@ Use this skill for anything related to the Master's finances: recording spending
 - `Assets:Bank:PublicBank:ShariahSavings` (4915764821) - home loan auto-deduction
 - `Assets:Bank:PublicBank:FixedDeposit` - PB fixed deposits (single account, multiple placements)
 - `Assets:Investment:VersaCash` - Versa money market fund, split into virtual envelopes (sub-accounts):
-  - `VersaCash:Emergency`, `VersaCash:TradingCapital`, `VersaCash:GlenCourt:RoomADeposit`, `VersaCash:GlenCourt:RoomBDeposit`, `VersaCash:GlenCourt:Maintenance`, `VersaCash:AstrumRenovation`, `VersaCash:Spectacles`, `VersaCash:Dental`, `VersaCash:BodyCheckup`, `VersaCash:SkinHairCare`, `VersaCash:Pet`, `VersaCash:CarMaintenance`, `VersaCash:DigitalProduct`, `VersaCash:Unallocated` (catch-all for yield drift and free-form reserve)
+  - `VersaCash:Emergency`, `VersaCash:TradingCapital`, `VersaCash:GlenCourt:RoomADeposit`, `VersaCash:GlenCourt:RoomBDeposit`, `VersaCash:GlenCourt:Maintenance`, `VersaCash:AstrumRenovation`, `VersaCash:Spectacles`, `VersaCash:Dental`, `VersaCash:BodyCheckup`, `VersaCash:SkinHairCare`, `VersaCash:Pet`, `VersaCash:CarMaintenance`, `VersaCash:DigitalProduct`, `VersaCash:Entertainment`, `VersaCash:Unallocated` (catch-all for yield drift and free-form reserve)
 - `Assets:Investment:KDISave` - Kenanga KDI money market fund
 - `Assets:Investment:StashAway` - StashAway robo advisor (MYR)
 - `Assets:Investment:IBKR:Metals` (U19742234) - IBKR metals/commodities (USD, with cost basis lots)
