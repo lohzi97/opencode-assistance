@@ -58,7 +58,8 @@ Use this skill for anything related to the Master's finances: recording spending
 - `Assets:Bank:PublicBank:FixedDeposit` - PB fixed deposits (single account, multiple placements)
 - `Assets:Investment:VersaCash` - Versa money market fund, split into virtual envelopes (sub-accounts):
   - `VersaCash:Emergency`, `VersaCash:TradingCapital`, `VersaCash:GlenCourt:RoomADeposit`, `VersaCash:GlenCourt:RoomBDeposit`, `VersaCash:GlenCourt:Maintenance`, `VersaCash:AstrumRenovation`, `VersaCash:Spectacles`, `VersaCash:Dental`, `VersaCash:BodyCheckup`, `VersaCash:SkinHairCare`, `VersaCash:Pet`, `VersaCash:CarMaintenance`, `VersaCash:DigitalProduct`, `VersaCash:Entertainment`, `VersaCash:Unallocated` (catch-all for yield drift and free-form reserve)
-- `Assets:Investment:KDISave` - Kenanga KDI money market fund
+- `Assets:Investment:KDISave` - Kenanga KDI money market fund (designated as freelance tax provision reserve)
+- `Assets:Receivable:Freelance` - money the freelance business owes the owner (personal funds used for business expenses); mirrors `Liabilities:Freelance:AccountsPayable`
 - `Assets:Investment:StashAway` - StashAway robo advisor (MYR)
 - `Assets:Investment:IBKR:Metals` (U19742234) - IBKR metals/commodities (USD, with cost basis lots)
 - `Assets:Investment:IBKR:Stocks` (U15501472) - IBKR individual stocks (USD, with cost basis lots)
@@ -82,8 +83,11 @@ Use this skill for anything related to the Master's finances: recording spending
 - `Liabilities:Mortgage` - Public Bank home loan (Astrum Ampang)
 
 ### Liabilities (Freelance)
-- `Liabilities:Freelance:AccountsPayable` - money owed to subcontractors
+- `Liabilities:Freelance:AccountsPayable` - money owed to subcontractors and owner (for business expenses paid personally)
 - `Liabilities:Freelance:TaxProvision` - provisional tax reserve
+
+### Equity (Cross-Scope)
+- `Equity:OwnerDrawings` - owner's drawings bridge account; tracks money withdrawn from freelance business for personal use. Opened in `combined.beancount` only. Appears in both scopes with opposite signs; nets to zero in combined view.
 
 ### Expenses (Personal)
 Food, Transport, Rent, Utilities, Subscriptions, Insurance, Medical, Education, Discretionary, Mortgage, Housing, Household
@@ -135,7 +139,16 @@ Must pass for all three entry points (personal, freelance, combined) before comm
 ```
 Templates are defined in `config/recurring.yaml`. Each entry carries a `recurring-id` metadata tag (e.g. `gym-believe-202607`) for idempotency — re-running never creates duplicates. A daily exec proactive task (`finance-recurring-daily`, cron `0 9 * * *`) auto-runs this and commits.
 
-### Fava Dashboard
+### Cross-Scope Transactions
+
+When money or expenses cross between personal and freelance scopes, use the standard workflows documented in `~/finance/README.md` (section: "Cross-Scope Transactions"). Four scenarios:
+
+- **Owner's drawing** (Maybank to personal): use `Equity:OwnerDrawings` bridge in both ledgers
+- **Business expense paid with personal funds**: split personal/business portions, use `Assets:Receivable:Freelance` (personal) and `Liabilities:Freelance:AccountsPayable` (freelance) to track what the business owes you
+- **Reimbursing yourself**: clear the AP/AR balance with a Maybank-to-personal transfer
+- **Direct business expense from Maybank**: single entry in freelance ledger only
+
+Always confirm the business-use percentage with the Master before splitting mixed-use expenses. Consult README for full beancount examples.
 - Public URL: https://finance.lohzi.com (behind Cloudflare Access)
 - Local: tmux session `fava`, port 5000, bound to 0.0.0.0
 - Nginx config: `~/nginx-proxy/conf.d/finance.conf`
