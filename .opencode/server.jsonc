@@ -282,6 +282,33 @@
       },
 
       {
+        "id": "finance-recurring-daily",
+        "name": "Finance Recurring Transactions",
+        "enabled": true,
+        "purpose": "Auto-generate recurring transaction entries (subscriptions, auto-deductions) and commit to the finance ledger.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "0 9 * * *" // daily 9:00 AM MYT
+        },
+        "mode": "exec",
+        "command": [
+          "sh", "-c",
+          ".opencode/scripts/finance-recurring.sh"
+        ],
+        "priority": 2,
+        "policy": {
+          "no_overlap": true,
+          "silence_ok": true,
+          "max_runtime_ms": 60000,
+          "ttl_ms": 1800000,
+          "retry": {
+            "max_attempts": 1,
+            "delay_ms": 60000
+          }
+        }
+      },
+
+      {
         "id": "weekly-ml-lesson",
         "name": "Weekly ML Lesson Prep",
         "enabled": false,
