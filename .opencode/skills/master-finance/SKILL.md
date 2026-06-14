@@ -34,6 +34,7 @@ Use this skill for anything related to the Master's finances: recording spending
     fava                      Start Fava web dashboard
     close                     Period-end closing
     categories                List all categories, accounts, and tag conventions
+    recurring                 Generate recurring transactions from config/recurring.yaml
   ledgers/
     personal.beancount        Personal entry point (standalone)
     freelance.beancount       Freelance entry point (standalone)
@@ -44,6 +45,7 @@ Use this skill for anything related to the Master's finances: recording spending
   config/
     accounts.yaml             Account metadata, descriptions, tag conventions (source of truth for categories)
     budgets.yaml              Budget limits per category
+    recurring.yaml            Recurring transaction templates (subscriptions, auto-deductions)
   PRD.md                      Full system design doc
   README.md                   Usage guide with examples
 ```
@@ -123,6 +125,14 @@ Must pass for all three entry points (personal, freelance, combined) before comm
 ./bin/budget status --week    # Weekly budget remaining
 ./bin/budget status --month   # Monthly budget remaining
 ```
+
+### Recurring Transactions
+```bash
+./bin/recurring                      # Generate entries up to today
+./bin/recurring --until 2026-12-31   # Generate up to a specific date
+./bin/recurring --dry-run            # Preview without writing
+```
+Templates are defined in `config/recurring.yaml`. Each entry carries a `recurring-id` metadata tag (e.g. `gym-believe-202607`) for idempotency — re-running never creates duplicates. A daily exec proactive task (`finance-recurring-daily`, cron `0 9 * * *`) auto-runs this and commits.
 
 ### Fava Dashboard
 - Public URL: https://finance.lohzi.com (behind Cloudflare Access)
