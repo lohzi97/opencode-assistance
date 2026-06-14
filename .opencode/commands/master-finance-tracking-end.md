@@ -18,7 +18,12 @@ Run `date +%Y%m%d` to confirm today's date. The week being closed started on the
    ./bin/report personal --from YYYY-MM-DD --to YYYY-MM-DD
    ```
    Use the Monday date as `--from` and the Sunday date as `--to`.
-3. Present the report output to the Master in a clean, readable format.
+3. Run the monthly budget status:
+   ```
+   ./bin/budget status --month
+   ```
+   This shows month-to-date limit vs spent vs remaining per category. Budgets are configured monthly (food, transport, discretionary), so a month-to-date snapshot at week's end helps track pacing.
+4. Present both reports to the Master in a clean, readable format.
 
 ## Output
 
@@ -28,11 +33,14 @@ Present the report to the Master:
 
 [report output]
 
+[budget status output]
+
 The ledger has been committed. Wishing you a good week ahead."
 
 ## Constraints
 
-- Work from the report script output, not from memory.
+- Work from the script outputs, not from memory.
 - If no transactions were recorded this week, the report will show RM 0.00 — say so gracefully: "No transactions were recorded this week, Master. The ledger is clean and committed."
 - Do not ask the Master any questions.
-- Keep the summary concise. The report already breaks down by category — no per-transaction listing needed.
+- Keep the summary concise. The reports already break down by category — no per-transaction listing needed.
+- The budget status is month-to-date (not weekly) since budgets are configured monthly.
