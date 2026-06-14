@@ -139,6 +139,21 @@ Must pass for all three entry points (personal, freelance, combined) before comm
 ```
 Templates are defined in `config/recurring.yaml`. Each entry carries a `recurring-id` metadata tag (e.g. `gym-believe-202607`) for idempotency — re-running never creates duplicates. A daily exec proactive task (`finance-recurring-daily`, cron `0 9 * * *`) auto-runs this and commits.
 
+Split items (cross-scope business/personal apportionment) use a `split` block instead of `to`:
+```yaml
+- id: google-ai-pro
+  description: "Google AI Pro subscription"
+  amount: 97.99
+  from: Liabilities:CreditCard:RHBVisaSignature
+  day: 14
+  start: "2026-07-14"
+  split:
+    business_ratio: 0.70
+    personal_account: Expenses:Personal:Subscriptions
+    business_account: Expenses:Freelance:Software
+```
+This generates two entries per month (personal + freelance) using the reimbursement model. Business amount = `amount * business_ratio`; personal amount = remainder. Recurring-IDs use `-personal` and `-freelance` suffixes (e.g. `google-ai-pro-202607-personal`).
+
 ### Cross-Scope Transactions
 
 When money or expenses cross between personal and freelance scopes, use the standard workflows documented in `~/finance/README.md` (section: "Cross-Scope Transactions"). Four scenarios:
