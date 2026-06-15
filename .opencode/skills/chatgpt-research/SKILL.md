@@ -1,13 +1,13 @@
 ---
 name: chatgpt-research
-description: Perform web research via ChatGPT using Chrome and computer-control MCP. Use when user wants to research a topic through ChatGPT, ask ChatGPT a question, or gather information from ChatGPT's web interface.
+description: Perform web research through ChatGPT in Chrome using the browser interaction workflow. Use when the user wants research, verification, or question-answering through ChatGPT's website, with findings written to notes for later reuse.
 ---
 
 # ChatGPT Research
 
 ## When To Use
 
-Use this skill when the user wants to research a topic using ChatGPT's web interface. This skill combines the `chrome` skill (to launch a browser) with the `computer-control` MCP (to interact with the page like a human).
+Use this skill when the user wants to research a topic using ChatGPT's web interface.
 
 Typical requests:
 
@@ -18,69 +18,65 @@ Typical requests:
 
 ## Prerequisites
 
-- **chrome skill** — must be loaded first to start the browser.
-- **computer-control MCP** — required for all page interaction (mouse, keyboard, screenshots with OCR).
-- If either is missing, report the limitation to the user immediately and do not proceed.
+- Load `browser-interact` first.
+- Load `chrome` and start a Chrome instance.
+- If either requirement is missing, report the limitation immediately and stop.
 
 ## Workflow
 
 ### Step 1: Start Chrome and Navigate
-
-1. Load the `chrome` skill and start a Chrome instance.
-2. Navigate to `https://chatgpt.com/` by clicking the address bar and typing the URL.
+1. Load `browser-interact`.
+2. Start Chrome if needed.
+3. Navigate to `https://chatgpt.com/` using the browser workflow.
 
 ### Step 2: Verify Login Status
-
-1. Take an OCR screenshot (`take_screenshot_with_ocr`).
+1. Take a full-desktop screenshot with cursor visible.
 2. Look for login indicators:
-   - **Logged in:** User profile name visible, "New chat" sidebar present.
-   - **Not logged in:** "Log in" or "Sign up for free" buttons visible.
+   - Logged in: user profile name visible, `New chat` sidebar present.
+   - Not logged in: `Log in` or `Sign up for free` visible.
 3. If not logged in, inform the user and wait for them to log in before continuing.
 
 ### Step 3: Submit the Research Query
-
-1. Click on the "Ask anything" input field (roughly center-bottom of the page).
-2. Type the research question using `type_text`.
-3. Press `Enter` to submit.
-4. Wait 10-15 seconds for ChatGPT to generate a response.
+1. Verify the chat input is visible.
+2. Click into the input if focus is uncertain.
+3. Type the research query in short chunks, verifying between chunks.
+4. Submit with `enter`.
+5. Wait for ChatGPT to generate a response and verify the page state.
 
 ### Step 4: Read the Full Response
+This is the critical step. Read every part of the response.
 
-**This is the most critical step. You MUST read every part of the response.**
-
-1. Press `Home` key to scroll to the top of the page.
+1. Press `home` to scroll to the top.
 2. Verify that the original question is visible at the top of the response.
-3. Use `PageDown` to scroll through the response one section at a time.
-4. After each `PageDown`, take an OCR screenshot to capture the visible content.
-5. Continue scrolling until you reach the bottom of the page (no new content appears).
-6. Do NOT skip sections. Do NOT summarize prematurely. Read every part.
+3. Use `pagedown` to scroll through the response one section at a time.
+4. After each `pagedown`, take a full-desktop screenshot to capture the visible content.
+5. Continue until you reach the bottom and further scrolling produces no new content.
+6. Do not skip sections and do not summarize prematurely.
 
 ### Step 5: Document the Findings
-
 1. Write the research findings to `notes/research/<topic-slug>.md`.
 2. Use a clear structure with headings, tables, and bullet points as appropriate.
-3. Include all key information gathered — do not omit details.
+3. Include all key information gathered.
 
 ### Step 6: Close Up
-
-1. Close the ChatGPT tab: `press_keys` with `[["ctrl", "w"]]`.
-2. Close the Chrome window: `press_keys` with `[["ctrl", "shift", "w"]]`.
+1. Close the ChatGPT tab with `Ctrl+W`.
+2. Close the Chrome window with `Ctrl+Shift+W`.
 3. Kill the Chrome PTY session via `pty_kill`.
 
 ## Rules
 
-- **Always verify login before interacting.** Never assume the user is logged in.
-- **Always use OCR to read page content.** Do not guess or assume what is on screen.
-- **Read the FULL response.** Scroll through every section using `PageDown`. Never skip content.
-- **Document findings in a file.** Never return research results only in chat — always write them to `notes/research/`.
-- **Use computer-control MCP exclusively** for all page interaction (not chrome-devtools MCP). This ensures human-like browsing behavior.
-- **If OCR is unavailable or failing**, inform the user and pause the task.
+- Always verify login before interacting.
+- Use the browser workflow from `browser-interact`.
+- Prefer full-desktop screenshots with cursor visible.
+- Read the full response from top to bottom.
+- Document findings in `notes/research/` every time.
+- If screenshot-based verification is failing, inform the user and pause the task.
 
 ## Keyboard Shortcuts Reference
 
 | Action | Shortcut |
 | :--- | :--- |
-| Scroll to top | `Home` |
-| Scroll one section | `PageDown` |
+| Scroll to top | `home` |
+| Scroll one section | `pagedown` |
 | Close tab | `Ctrl + W` |
 | Close window | `Ctrl + Shift + W` |
