@@ -200,6 +200,30 @@
       },
 
       {
+        "id": "daily-journal-cleanup",
+        "name": "Daily Journal Cleanup",
+        "enabled": true,
+        "purpose": "Delete journal files older than retention windows (session 30d, session-summary 90d, daily 365d) before the daily diary workflow runs.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "45 4 * * *" // every day 4:45 AM MYT, 15 min before daily-diary-with-refresh
+        },
+        "mode": "exec",
+        "instructions": "Apply journal retention policy to journals/ folders.",
+        "command": [
+          "sh",
+          "-c",
+          "bash .opencode/scripts/journal-cleanup.sh --apply"
+        ],
+        "priority": 3,
+        "policy": {
+          "no_overlap": true,
+          "silence_ok": true,
+          "ttl_ms": 1800000
+        }
+      },
+
+      {
         "id": "daily-diary-with-refresh",
         "name": "Daily Diary with Refresh",
         "enabled": true,
