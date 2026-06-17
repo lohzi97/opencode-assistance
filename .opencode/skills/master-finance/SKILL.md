@@ -164,6 +164,19 @@ When money or expenses cross between personal and freelance scopes, use the stan
 - **Direct business expense from Maybank**: single entry in freelance ledger only
 
 Always confirm the business-use percentage with the Master before splitting mixed-use expenses. Consult README for full beancount examples.
+
+### Receipts and Documents
+
+Receipts are attached to transactions via Fava's Documents feature. Files are stored in `ledgers/documents/` (gitignored; Google Drive `Expenses/<vendor>/` is the source of truth).
+
+**Structure** (beancount scans account-named subdirectories with date-prefixed filenames):
+```
+ledgers/documents/
+  <AccountName>/                # full beancount account (colons in folder name)
+    YYYY-MM-DD <description>.<ext>   # date prefix required
+```
+
+**Workflow**: Master uploads receipts to Google Drive `Expenses/<vendor>/` → Sebastian downloads to `ledgers/documents/<account>/` → Fava auto-displays in Documents tab. No metadata keys on transactions needed — beancount auto-creates Document entries. See `~/finance/README.md` (section: "Receipts and Documents") for full details.
 - Public URL: https://finance.lohzi.com (behind Cloudflare Access)
 - Local: tmux session `fava`, port 5000, bound to 0.0.0.0
 - Nginx config: `~/nginx-proxy/conf.d/finance.conf`
