@@ -1,6 +1,6 @@
 ---
 description: Searches the public internet and collects verified information
-model: openrouter/xiaomi/mimo-v2.5
+model: xiaomi/mimo-v2.5
 permission:
   "*": "allow"
   "task":
