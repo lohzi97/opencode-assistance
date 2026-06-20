@@ -1,6 +1,6 @@
 ---
 name: chatgpt-research
-description: Perform web research through ChatGPT in Chrome using the browser interaction workflow. Use when the user wants research, verification, or question-answering through ChatGPT's website, with findings written to notes for later reuse.
+description: Perform web research through ChatGPT using the local camofox-browser workflow and optional noVNC login. Use when the user wants research, verification, or question-answering through ChatGPT's website.
 ---
 
 # ChatGPT Research
@@ -18,65 +18,69 @@ Typical requests:
 
 ## Prerequisites
 
-- Load `browser-interact` first.
-- Load `chrome` and start a Chrome instance.
-- If either requirement is missing, report the limitation immediately and stop.
+- Load `camofox-browser` first.
+- If a human login step is needed, use the noVNC path from `camofox-browser`.
 
 ## Workflow
 
-### Step 1: Start Chrome and Navigate
-1. Load `browser-interact`.
-2. Start Chrome if needed.
-3. Navigate to `https://chatgpt.com/` using the browser workflow.
+### Step 1: Start Camofox And Navigate
+1. Load `camofox-browser`.
+2. Reuse a healthy local Camofox server when possible; otherwise start it locally.
+3. Create or reuse a ChatGPT tab at `https://chatgpt.com/` using a stable durable `userId` such as `general`.
 
 ### Step 2: Verify Login Status
-1. Take a full-desktop screenshot with cursor visible.
+1. Read the page with a Camofox snapshot.
 2. Look for login indicators:
-   - Logged in: user profile name visible, `New chat` sidebar present.
-   - Not logged in: `Log in` or `Sign up for free` visible.
-3. If not logged in, inform the user and wait for them to log in before continuing.
+   - Logged in: profile menu present, chat history visible, no primary `Log in` prompt blocking use.
+   - Not logged in: `Log in`, `Sign up`, or auth page visible.
+3. If not logged in:
+   - restart with `ENABLE_VNC=1` if needed,
+   - first try the normal ChatGPT login path,
+   - if clicking `Log in` from `chatgpt.com` does not produce a usable auth flow in snapshots, navigate directly to `https://auth.openai.com/log-in`,
+   - direct Master to `http://localhost:6080/vnc.html`,
+   - wait for Master to complete login,
+   - then re-check the snapshot.
+4. If the login flow destroys or replaces the tab/session, recreate it with the same durable `userId` and then verify login state again.
+5. Even after Master successfully logs in during the current run, do not assume future recreated sessions will still be authenticated. Reopen or recreate and verify explicitly whenever continuity matters.
 
 ### Step 3: Submit the Research Query
-1. Verify the chat input is visible.
-2. Click into the input if focus is uncertain.
-3. Type the research query in short chunks, verifying between chunks.
-4. Submit with `enter`.
-5. Wait for ChatGPT to generate a response and verify the page state.
+1. Verify the chat input ref is visible in the snapshot.
+2. Type the research query through the Camofox `type` endpoint.
+3. Submit with `pressEnter=true`.
+4. Wait for ChatGPT to generate a response and verify the conversation URL/state.
+5. Prefer waiting until the response visibly stabilizes and the input area appears idle again rather than assuming the first visible answer is complete.
+6. Do not start extracting findings until generation is complete; otherwise you may capture a partial answer.
 
 ### Step 4: Read the Full Response
 This is the critical step. Read every part of the response.
 
-1. Press `home` to scroll to the top.
-2. Verify that the original question is visible at the top of the response.
-3. Use `pagedown` to scroll through the response one section at a time.
-4. After each `pagedown`, take a full-desktop screenshot to capture the visible content.
-5. Continue until you reach the bottom and further scrolling produces no new content.
-6. Do not skip sections and do not summarize prematurely.
+1. Fetch a snapshot and read the response from the `main` content area.
+2. If the snapshot is truncated, continue with `offset=nextOffset` until complete.
+3. If the response extends beyond the current viewport, scroll with the Camofox `scroll` endpoint and fetch a fresh snapshot.
+4. Continue until you reach the bottom and further scrolling produces no new content.
+5. Do not skip sections and do not summarize prematurely.
 
 ### Step 5: Document the Findings
 1. Write the research findings to `notes/research/<topic-slug>.md`.
 2. Use a clear structure with headings, tables, and bullet points as appropriate.
 3. Include all key information gathered.
+4. If extraction became partial because the browser state failed mid-run, report that plainly, include whatever was successfully captured, and record the conversation URL if available.
 
 ### Step 6: Close Up
-1. Close the ChatGPT tab with `Ctrl+W`.
-2. Close the Chrome window with `Ctrl+Shift+W`.
-3. Kill the Chrome PTY session via `pty_kill`.
+1. Close the ChatGPT session/tab when done.
+2. Unless Master explicitly asks to keep the browser warm, kill the Camofox PTY session.
+3. Verify cleanup of leftover `Xvfb`, `x11vnc`, and `websockify` processes and confirm ports `9377`, `6080`, and `5900` are closed.
 
 ## Rules
 
 - Always verify login before interacting.
-- Use the browser workflow from `browser-interact`.
-- Prefer full-desktop screenshots with cursor visible.
+- Always use the `camofox-browser` workflow.
 - Read the full response from top to bottom.
 - Document findings in `notes/research/` every time.
-- If screenshot-based verification is failing, inform the user and pause the task.
+- If noVNC is needed and fails, follow the `camofox-browser` troubleshooting guidance and pause if recovery is unclear.
+- If browser instability interrupts extraction, report partial capture clearly instead of pretending the full answer was read.
 
-## Keyboard Shortcuts Reference
+## Session Convention
 
-| Action | Shortcut |
-| :--- | :--- |
-| Scroll to top | `home` |
-| Scroll one section | `pagedown` |
-| Close tab | `Ctrl + W` |
-| Close window | `Ctrl + Shift + W` |
+- Recommended ChatGPT session keys: `chatgpt-research`, `chatgpt-login`, or another stable task label
+- Recommended durable ChatGPT profile: reuse the same `userId`, e.g. `general`, across login, retries, and future research runs when shared browser history/login continuity is desired.

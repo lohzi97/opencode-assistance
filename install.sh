@@ -33,6 +33,8 @@
 #    - required for antigravity-websearch skill
 # 14. Install rclone + sqlite3
 #    - required for Google Drive backup and qmd SQLite snapshots
+# 15. Install camofox-browser and VNC dependencies
+#    - required for camofox-browser skill and ChatGPT research via noVNC login
 
 
 set -euo pipefail
@@ -87,6 +89,7 @@ else
   HOME_DIR="${HOME:-/home/${USER_NAME}}"
 fi
 HOME_DIR="${HOME_DIR:-/home/${USER_NAME}}"
+USER_GROUP="$(id -gn "$USER_NAME")"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 run_as_user() {
@@ -149,7 +152,11 @@ ensure_sudo() {
 }
 
 install_prereqs() {
-  apt_install curl wget unzip ca-certificates gnupg lsb-release software-properties-common python3-tk python3-dev rclone sqlite3
+  apt_install git curl wget unzip ca-certificates gnupg lsb-release software-properties-common python3-tk python3-dev rclone sqlite3
+}
+
+install_camofox_system_deps() {
+  apt_install xvfb x11vnc novnc python3-websockify net-tools procps
 }
 
 install_bun() {
@@ -306,6 +313,66 @@ install_nvm_and_node() {
       run_as_user env HOME="$HOME_DIR" bash -lc 'export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"; nvm install --lts && nvm alias default lts/*'
     fi
   fi
+}
+
+CAMOFOX_BROWSER_REPO="https://github.com/jo-inc/camofox-browser.git"
+CAMOFOX_BROWSER_DIR="${PROJECT_ROOT}/../camofox-browser"
+
+ensure_camofox_vnc_log_file() {
+  local log_file="$1"
+
+  if [ -e "$log_file" ]; then
+    INFO "Ensuring $log_file is writable by $USER_NAME"
+    sudo chown "$USER_NAME:$USER_GROUP" "$log_file"
+    sudo chmod 600 "$log_file"
+    return
+  fi
+
+  INFO "Creating $log_file for local Camofox VNC logging"
+  sudo install -o "$USER_NAME" -g "$USER_GROUP" -m 600 /dev/null "$log_file"
+}
+
+install_camofox_browser() {
+  if [ ! -d "$CAMOFOX_BROWSER_DIR/.git" ]; then
+    INFO "Cloning camofox-browser into $CAMOFOX_BROWSER_DIR"
+    run_as_user git clone "$CAMOFOX_BROWSER_REPO" "$CAMOFOX_BROWSER_DIR"
+  else
+    INFO "camofox-browser already cloned at $CAMOFOX_BROWSER_DIR; pulling latest"
+    run_as_user git -C "$CAMOFOX_BROWSER_DIR" pull --ff-only || \
+      WARN "Failed to pull latest camofox-browser. Continuing with existing version."
+  fi
+
+  INFO "Preparing local Camofox VNC log files"
+  ensure_camofox_vnc_log_file /var/log/novnc.log
+  ensure_camofox_vnc_log_file /var/log/x11vnc.log
+
+  INFO "Installing camofox-browser npm dependencies"
+  WARN "The first camofox-browser install may download several hundred MBs and can exceed 700MB depending on version/platform."
+  run_as_user env HOME="$HOME_DIR" CAMOFOX_CRASH_REPORT_ENABLED=false bash -lc "
+    set -euo pipefail
+    export NVM_DIR=\"\$HOME/.nvm\"
+    if [ -s \"\$NVM_DIR/nvm.sh\" ]; then
+      . \"\$NVM_DIR/nvm.sh\"
+      nvm use --lts >/dev/null || nvm use default >/dev/null || true
+    fi
+    if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+      echo 'node and npm are required for camofox-browser; run install_nvm_and_node first.' >&2
+      exit 1
+    fi
+    node_major=\$(node -p 'Number(process.versions.node.split(\".\")[0])')
+    if [ \"\$node_major\" -lt 22 ] && command -v nvm >/dev/null 2>&1; then
+      echo \"Current Node \$(node --version) is too old for camofox-browser; installing latest LTS with nvm.\" >&2
+      nvm install --lts >/dev/null
+      nvm use --lts >/dev/null
+      node_major=\$(node -p 'Number(process.versions.node.split(\".\")[0])')
+    fi
+    if [ \"\$node_major\" -lt 22 ]; then
+      echo \"camofox-browser requires Node >=22; found \$(node --version).\" >&2
+      exit 1
+    fi
+    cd '$CAMOFOX_BROWSER_DIR'
+    npm install
+  "
 }
 
 install_google_chrome() {
@@ -488,6 +555,8 @@ main() {
   setup_sudoers_for_opencode
   install_uv
   install_nvm_and_node
+  install_camofox_system_deps
+  install_camofox_browser
   install_google_chrome
   install_docker_engine
   install_tmux

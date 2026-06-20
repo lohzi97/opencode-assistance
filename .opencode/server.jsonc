@@ -202,7 +202,7 @@
       {
         "id": "daily-journal-cleanup",
         "name": "Daily Journal Cleanup",
-        "enabled": true,
+        "enabled": false,
         "purpose": "Delete journal files older than retention windows (session 30d, session-summary 90d, daily 365d) before the daily diary workflow runs.",
         "trigger": {
           "kind": "cron",
@@ -226,7 +226,7 @@
       {
         "id": "daily-diary-with-refresh",
         "name": "Daily Diary with Refresh",
-        "enabled": true,
+        "enabled": false,
         "purpose": "Summarize yesterday's sessions, write the daily diary, identify memorizable info, update memory, then refresh the qmd index.",
         "trigger": {
           "kind": "cron",
@@ -255,7 +255,7 @@
       {
         "id": "weekly-opencode-assistance-backup",
         "name": "Weekly OpenCode Assistance Backup",
-        "enabled": true,
+        "enabled": false,
         "purpose": "Back up gitignored Sebastian knowledge and qmd state to Google Drive once per week.",
         "trigger": {
           "kind": "cron",
@@ -284,7 +284,7 @@
       {
         "id": "master-diary",
         "name": "Master's Diary",
-        "enabled": true,
+        "enabled": false,
         "purpose": "Ask the Master about their day every evening and write a personal diary entry into ~/diary/.",
         "trigger": {
           "kind": "cron",
@@ -313,7 +313,7 @@
       {
         "id": "master-finance-tracking",
         "name": "Master's Weekly Finance Tracking",
-        "enabled": true,
+        "enabled": false,
         "purpose": "Weekly anchor session where the Master reports spending throughout the week and Sebastian records each transaction into the Beancount ledger.",
         "trigger": {
           "kind": "cron",
@@ -337,7 +337,7 @@
       {
         "id": "finance-recurring-daily",
         "name": "Finance Recurring Transactions",
-        "enabled": true,
+        "enabled": false,
         "purpose": "Auto-generate recurring transaction entries (subscriptions, auto-deductions) and commit to the finance ledger.",
         "trigger": {
           "kind": "cron",
@@ -364,7 +364,7 @@
       {
         "id": "monthly-investment-reminder",
         "name": "Monthly Investment Portfolio Revaluation",
-        "enabled": true,
+        "enabled": false,
         "purpose": "Monthly reminder for the Master to report investment portfolio market values for revaluation entries and price directive updates.",
         "trigger": {
           "kind": "cron",
@@ -423,7 +423,7 @@
       {
         "id": "freelance-reimbursement-reminder",
         "name": "Monthly Freelance Reimbursement",
-        "enabled": true,
+        "enabled": false,
         "purpose": "Monthly reminder to reimburse the owner for business expenses paid with personal funds. Shows the outstanding balance and records the reimbursement transfer when confirmed.",
         "trigger": {
           "kind": "cron",

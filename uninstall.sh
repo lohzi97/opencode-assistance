@@ -7,6 +7,7 @@ set -euo pipefail
 # - Removes Google Chrome, Docker engine packages and related apt sources
 # - Removes tmux, rclone, sqlite3, and sudoers entry created for opencode
 # - Removes Antigravity CLI (agy) binary and config directories
+# - Removes camofox-browser checkout, Camofox profile/cache data, VNC log files, and VNC packages
 # Usage:
 #   ./uninstall.sh            # interactive
 #   ./uninstall.sh -y         # non-interactive (assume yes)
@@ -88,6 +89,22 @@ safe_remove_user_dir() {
   fi
 }
 
+safe_remove_user_file() {
+  local file="$1"
+  if [ -e "$file" ]; then
+    local owner
+    owner=$(stat -c %U "$file" 2>/dev/null || true)
+    if [ "$owner" = "$USER_NAME" ] || [ -z "$owner" ]; then
+      INFO "Removing $file"
+      sudo rm -f "$file" || true
+    else
+      WARN "File $file is owned by '$owner' not '$USER_NAME'; skipping to avoid removing other user's data"
+    fi
+  else
+    INFO "File $file not present; skipping"
+  fi
+}
+
 INFO "This script will attempt to undo changes made by install.sh for user '$USER_NAME' (home: $HOME_DIR)."
 cat <<EOF
 Planned actions:
@@ -100,6 +117,8 @@ Planned actions:
 - Remove Antigravity CLI binary (~/.local/bin/agy) and config/data under ~/.antigravitycli
 - Remove OpenChamber (bun package or binary) and config/data under ~/.config/openchamber
 - Remove per-user bun (~/.bun), uv, and nvm (~/.nvm) directories and their shell boot lines
+- Remove camofox-browser repo at ../camofox-browser, ~/.camofox profile data, ~/.cache/camoufox browser cache, and local VNC log files
+- Purge Camofox VNC packages: xvfb, x11vnc, novnc, python3-websockify, net-tools (will NOT purge procps)
 - Purge Google Chrome package
 - Purge Docker Engine packages and remove Docker apt source + keyring (will NOT remove /var/lib/docker by default)
 - Purge tmux
@@ -396,6 +415,19 @@ safe_remove_user_dir "${HOME_DIR}/.imap-mcp"
 # 13b) Remove computer-control-mcp fork repo
 COMPUTER_CONTROL_MCP_DIR="${PROJECT_ROOT}/../computer-control-mcp"
 safe_remove_user_dir "$COMPUTER_CONTROL_MCP_DIR"
+
+# 13c) Remove camofox-browser checkout, profile/cache data, and local VNC log files
+CAMOFOX_BROWSER_DIR="${PROJECT_ROOT}/../camofox-browser"
+safe_remove_user_dir "$CAMOFOX_BROWSER_DIR"
+safe_remove_user_dir "$HOME_DIR/.camofox"
+safe_remove_user_dir "$HOME_DIR/.cache/camoufox"
+safe_remove_user_dir "$HOME_DIR/.cache/camofox"
+safe_remove_user_file /var/log/novnc.log
+safe_remove_user_file /var/log/x11vnc.log
+
+# 13d) Remove Camofox VNC packages installed by install.sh. Do not purge procps.
+INFO "Purging Camofox VNC packages"
+sudo apt-get purge -y xvfb x11vnc novnc python3-websockify net-tools || true
 
 INFO "Final apt-get autoremove/autoclean to tidy packages"
 sudo apt-get autoremove -y || true
