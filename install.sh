@@ -31,12 +31,15 @@
 #    - required for antigravity-websearch skill
 # 13. Install Antigravity CLI (agy)
 #    - required for antigravity-websearch skill
+# 14. Install rclone + sqlite3
+#    - required for Google Drive backup and qmd SQLite snapshots
 
 
 set -euo pipefail
 
 # Idempotent installer for Linux Mint / Ubuntu (apt-based)
 # - Installs bun, opencode (global), qmd (global), uv/uvx, nvm + Node LTS, Google Chrome, Docker engine
+# - Installs rclone and sqlite3 for Google Drive backups
 # - Creates sudoers entry to allow running opencode with NOPASSWD
 # Usage:
 #   ./install.sh
@@ -146,7 +149,7 @@ ensure_sudo() {
 }
 
 install_prereqs() {
-  apt_install curl wget unzip ca-certificates gnupg lsb-release software-properties-common python3-tk python3-dev
+  apt_install curl wget unzip ca-certificates gnupg lsb-release software-properties-common python3-tk python3-dev rclone sqlite3
 }
 
 install_bun() {

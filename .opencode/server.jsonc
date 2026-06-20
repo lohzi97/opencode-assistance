@@ -253,6 +253,35 @@
       },
 
       {
+        "id": "weekly-opencode-assistance-backup",
+        "name": "Weekly OpenCode Assistance Backup",
+        "enabled": true,
+        "purpose": "Back up gitignored Sebastian knowledge and qmd state to Google Drive once per week.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "0 2 * * 0" // every Sunday 2:00 AM MYT
+        },
+        "mode": "exec",
+        "instructions": "Run the opencode-assistance Google Drive backup.",
+        "command": [
+          "sh",
+          "-c",
+          ".opencode/scripts/backup.sh"
+        ],
+        "priority": 3,
+        "policy": {
+          "no_overlap": true,
+          "silence_ok": true,
+          "max_runtime_ms": 7200000,
+          "ttl_ms": 21600000,
+          "retry": {
+            "max_attempts": 2,
+            "delay_ms": 300000
+          }
+        }
+      },
+
+      {
         "id": "master-diary",
         "name": "Master's Diary",
         "enabled": true,

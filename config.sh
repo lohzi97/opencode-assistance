@@ -21,6 +21,9 @@ EXISTING_OPENCHAMBER_HOST=""
 EXISTING_OPENCHAMBER_UI_PASSWORD=""
 EXISTING_VOYAGE_API_KEY=""
 EXISTING_DEEPSEEK_API_KEY=""
+EXISTING_BACKUP_ENABLED=""
+EXISTING_BACKUP_RCLONE_REMOTE=""
+EXISTING_BACKUP_RCLONE_PATH=""
 
 INFO() { printf "==> %s\n" "$*"; }
 WARN() { printf "!! %s\n" "$*" >&2; }
@@ -77,6 +80,18 @@ load_existing_config_values() {
       OPENCHAMBER_UI_PASSWORD=*)
         EXISTING_OPENCHAMBER_UI_PASSWORD="${line#OPENCHAMBER_UI_PASSWORD=}"
         EXISTING_OPENCHAMBER_UI_PASSWORD="${EXISTING_OPENCHAMBER_UI_PASSWORD%$'\r'}"
+        ;;
+      BACKUP_ENABLED=*)
+        EXISTING_BACKUP_ENABLED="${line#BACKUP_ENABLED=}"
+        EXISTING_BACKUP_ENABLED="${EXISTING_BACKUP_ENABLED%$'\r'}"
+        ;;
+      BACKUP_RCLONE_REMOTE=*)
+        EXISTING_BACKUP_RCLONE_REMOTE="${line#BACKUP_RCLONE_REMOTE=}"
+        EXISTING_BACKUP_RCLONE_REMOTE="${EXISTING_BACKUP_RCLONE_REMOTE%$'\r'}"
+        ;;
+      BACKUP_RCLONE_PATH=*)
+        EXISTING_BACKUP_RCLONE_PATH="${line#BACKUP_RCLONE_PATH=}"
+        EXISTING_BACKUP_RCLONE_PATH="${EXISTING_BACKUP_RCLONE_PATH%$'\r'}"
         ;;
     esac
   done < "$config_env"
@@ -268,11 +283,17 @@ write_config_env() {
   local openchamber_port="$3"
   local openchamber_host="$4"
   local openchamber_ui_password="$5"
+  local backup_enabled="$6"
+  local backup_rclone_remote="$7"
+  local backup_rclone_path="$8"
   local escaped_key
   local escaped_password
   local escaped_chamber_port
   local escaped_chamber_host
   local escaped_chamber_password
+  local escaped_backup_enabled
+  local escaped_backup_rclone_remote
+  local escaped_backup_rclone_path
   local tmp_file
 
   escaped_key="$(escape_sed_replacement "$brave_api_key")"
@@ -280,6 +301,9 @@ write_config_env() {
   escaped_chamber_port="$(escape_sed_replacement "$openchamber_port")"
   escaped_chamber_host="$(escape_sed_replacement "$openchamber_host")"
   escaped_chamber_password="$(escape_sed_replacement "$openchamber_ui_password")"
+  escaped_backup_enabled="$(escape_sed_replacement "$backup_enabled")"
+  escaped_backup_rclone_remote="$(escape_sed_replacement "$backup_rclone_remote")"
+  escaped_backup_rclone_path="$(escape_sed_replacement "$backup_rclone_path")"
   tmp_file="$(mktemp)"
   sed \
     -e "s|__BRAVE_API_KEY__|$escaped_key|g" \
@@ -287,9 +311,45 @@ write_config_env() {
     -e "s|__OPENCHAMBER_PORT__|$escaped_chamber_port|g" \
     -e "s|__OPENCHAMBER_HOST__|$escaped_chamber_host|g" \
     -e "s|__OPENCHAMBER_UI_PASSWORD__|$escaped_chamber_password|g" \
+    -e "s|__BACKUP_ENABLED__|$escaped_backup_enabled|g" \
+    -e "s|__BACKUP_RCLONE_REMOTE__|$escaped_backup_rclone_remote|g" \
+    -e "s|__BACKUP_RCLONE_PATH__|$escaped_backup_rclone_path|g" \
     "$config_template" > "$tmp_file"
   mv "$tmp_file" "$config_env"
   chmod 600 "$config_env"
+}
+
+rclone_remote_exists() {
+  local remote="$1"
+
+  rclone listremotes 2>/dev/null | grep -Fxq "${remote}:"
+}
+
+configure_backup_remote() {
+  local backup_enabled="$1"
+  local backup_rclone_remote="$2"
+
+  if [[ "$backup_enabled" != "true" ]]; then
+    return 0
+  fi
+
+  require_command rclone
+
+  if rclone_remote_exists "$backup_rclone_remote"; then
+    INFO "rclone remote '$backup_rclone_remote' is configured"
+    return 0
+  fi
+
+  WARN "rclone remote '$backup_rclone_remote' is not configured."
+  if prompt_yes_no "Run rclone config now?" "Y"; then
+    rclone config
+  fi
+
+  if rclone_remote_exists "$backup_rclone_remote"; then
+    INFO "rclone remote '$backup_rclone_remote' is configured"
+  else
+    WARN "Backup is enabled, but rclone remote '$backup_rclone_remote' still does not exist. Run 'rclone config' before running backups."
+  fi
 }
 
 write_telegram_config() {
@@ -387,6 +447,10 @@ main() {
   local openchamber_ui_password
   local telegram_bot_token
   local telegram_chat_id
+  local backup_enabled
+  local backup_enabled_default
+  local backup_rclone_remote
+  local backup_rclone_path
 
   require_command docker
   require_command opencode
@@ -413,8 +477,26 @@ main() {
   voyage_api_key="$(prompt_secret "Voyage AI API key (for qmd cloud embeddings)" "$EXISTING_VOYAGE_API_KEY")"
   deepseek_api_key="$(prompt_secret "DeepSeek API key (for qmd query expansion)" "$EXISTING_DEEPSEEK_API_KEY")"
 
-  write_config_env "$brave_api_key" "$opencode_server_password" "$openchamber_port" "$openchamber_host" "$openchamber_ui_password"
+  if [[ "$EXISTING_BACKUP_ENABLED" == "true" ]]; then
+    backup_enabled_default="Y"
+  else
+    backup_enabled_default="N"
+  fi
+
+  if prompt_yes_no "Enable Google Drive backup via rclone?" "$backup_enabled_default"; then
+    backup_enabled="true"
+    backup_rclone_remote="$(prompt_value "Backup rclone remote name" "${EXISTING_BACKUP_RCLONE_REMOTE:-gdrive}")"
+    backup_rclone_path="$(prompt_value "Google Drive backup folder path" "${EXISTING_BACKUP_RCLONE_PATH:-opencode-assistance-backup}")"
+  else
+    backup_enabled="false"
+    backup_rclone_remote="${EXISTING_BACKUP_RCLONE_REMOTE:-gdrive}"
+    backup_rclone_path="${EXISTING_BACKUP_RCLONE_PATH:-opencode-assistance-backup}"
+  fi
+
+  write_config_env "$brave_api_key" "$opencode_server_password" "$openchamber_port" "$openchamber_host" "$openchamber_ui_password" "$backup_enabled" "$backup_rclone_remote" "$backup_rclone_path"
   INFO "Wrote $config_env"
+
+  configure_backup_remote "$backup_enabled" "$backup_rclone_remote"
 
   stage_google_drive_oauth_credentials "$google_drive_oauth_credentials_source"
   INFO "Staged Google Drive OAuth credentials at $google_drive_oauth_credentials"

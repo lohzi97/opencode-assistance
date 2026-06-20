@@ -5,7 +5,7 @@ set -euo pipefail
 # - Stops and removes brave-search-mcp container + image
 # - Removes opencode, qmd, agent-tui (installed by bun), bun runtime, uv/uvx, nvm, Node (nvm-managed)
 # - Removes Google Chrome, Docker engine packages and related apt sources
-# - Removes tmux and sudoers entry created for opencode
+# - Removes tmux, rclone, sqlite3, and sudoers entry created for opencode
 # - Removes Antigravity CLI (agy) binary and config directories
 # Usage:
 #   ./uninstall.sh            # interactive
@@ -103,6 +103,7 @@ Planned actions:
 - Purge Google Chrome package
 - Purge Docker Engine packages and remove Docker apt source + keyring (will NOT remove /var/lib/docker by default)
 - Purge tmux
+- Purge rclone and sqlite3 backup dependencies
 - Remove imap-mcp-server repo at ~/imap-mcp-server and its config at ~/.imap-mcp
 
 You can skip confirmations by running with '-y' or setting FORCE=yes in the environment.
@@ -370,6 +371,21 @@ if command -v tmux >/dev/null 2>&1 || dpkg -s tmux >/dev/null 2>&1; then
   sudo apt-get autoremove -y || true
 else
   INFO "tmux not installed; skipping"
+fi
+
+# 12b) Remove backup dependencies installed by install.sh
+if command -v rclone >/dev/null 2>&1 || dpkg -s rclone >/dev/null 2>&1; then
+  INFO "Purging rclone"
+  sudo apt-get purge -y rclone || true
+else
+  INFO "rclone not installed via apt or PATH; skipping"
+fi
+
+if command -v sqlite3 >/dev/null 2>&1 || dpkg -s sqlite3 >/dev/null 2>&1; then
+  INFO "Purging sqlite3"
+  sudo apt-get purge -y sqlite3 || true
+else
+  INFO "sqlite3 not installed via apt or PATH; skipping"
 fi
 
 # 13) Remove imap-mcp-server repo and config
