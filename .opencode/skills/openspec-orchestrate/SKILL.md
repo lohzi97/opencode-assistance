@@ -56,6 +56,13 @@ The planner must persist workflow state to a JSON file in the target project dir
       "timestamp": "<ISO-8601>"
     }
   ],
+  "intent": {
+    "problem": "<what problem the master is trying to solve>",
+    "motivation": "<why this matters, the original trigger>",
+    "scope": "<what is in scope and explicitly out of scope>",
+    "constraints": ["<non-obvious constraints or tradeoffs>"],
+    "preferences": ["<master preferences that should guide decisions>"]
+  },
   "config": {
     "codeReview": "disabled | enabled | auto-skip-non-code",
     "commitMode": "disabled | ask_each_checkpoint | auto_at_checkpoints",
@@ -66,6 +73,19 @@ The planner must persist workflow state to a JSON file in the target project dir
   "roomId": "<room-name or null>",
   "proposalQueue": [],
   "currentQueueIndex": 0,
+  "decisionLog": [
+    {
+      "timestamp": "<ISO-8601>",
+      "phase": "<phase>",
+      "workerAlias": "<alias>",
+      "trigger": "<worker question or issue, summarized>",
+      "assumptions": ["<assumption 1>", "<assumption 2>"],
+      "decision": "<what the planner decided>",
+      "rationale": "<why, tied to intent/scope/proposal>",
+      "disposition": "decided | deferred_to_worker | escalated",
+      "escalated": false
+    }
+  ],
   "lastUpdated": "<ISO-8601>"
 }
 ```
@@ -74,18 +94,19 @@ The planner must persist workflow state to a JSON file in the target project dir
 
 - **Read** the state file at the start of every planner turn to recover context, especially after compaction or session resumption.
 - **Write** the state file immediately after:
-  - Intake completes and the workflow configuration is established.
+  - Intent capture completes and the workflow configuration is established.
   - Each phase transition decision (update `currentPhase`, `previousPhase`, and append to `phaseHistory`).
   - Capturing the proposal name from a `proposal_needed` worker report.
   - Capturing the proposal queue from PRD decomposition.
   - Advancing `currentQueueIndex` to the next proposal.
   - Room creation or closeout.
+  - Recording an autonomous decision in the decision log, before answering the worker (see Autonomous Decision Protocol).
 - **Never** update the state file while a worker is still in progress. Write only after receiving and processing the worker's report.
 - The state file supplements but does not replace the planner's own reasoning. It is a persistence layer, not a decision maker.
 
 ### State File Recovery
 
-If the state file is missing or corrupted, reconstruct from the latest planner report, room status, worker reports, and proposal files. Write the reconstructed state immediately so the next turn has a clean reference.
+If the state file is missing or corrupted, reconstruct from the latest planner report, room status, worker reports, and proposal files. If the intent cannot be reconstructed from these sources, ask the master to re-confirm the original intent before continuing. Write the reconstructed state immediately so the next turn has a clean reference.
 
 ## Skill Assignment Rule
 
@@ -121,7 +142,29 @@ When spawning through `agent-collab`, pass both `--provider <provider>` and `--m
 
 ## Intake
 
-Before creating or using a room, establish the orchestration inputs. Ask the user only for missing details that cannot be safely inferred.
+Before creating or using a room, the planner must first understand what the master wants to build and why. Do not begin orchestration until the intent is clear.
+
+### Intent Capture
+
+Have a short clarifying discussion with the master to form a mental model of the requirement. The goal is not to write a PRD — it is to understand the problem well enough to make sound autonomous decisions throughout the workflow.
+
+Ask about:
+
+- **The problem**: What is the master trying to solve? What is the current pain point or gap?
+- **The motivation**: Why now? What triggered this request? What happens if this is not built?
+- **The scope**: What is explicitly in scope? What is explicitly out of scope or deferred?
+- **Constraints**: Are there technical, time, or resource constraints? Non-negotiable requirements?
+- **Preferences**: Does the master have a preferred approach, stack, or pattern? Any anti-patterns to avoid?
+
+Do not ask all questions mechanically. Use judgment — if the master's initial request already answers some of these, acknowledge what is clear and ask only about what is ambiguous or missing.
+
+After the discussion, summarize your understanding back to the master for confirmation. Once confirmed, persist it as the `intent` object in the state file. This intent is the planner's reference for all subsequent autonomous decisions.
+
+If the master provides a PRD instead of a feature request, read the PRD first and use the same questions to fill any gaps the PRD does not cover. A PRD that is thorough on requirements but silent on motivation or constraints still needs clarification.
+
+### Orchestration Configuration
+
+After intent is captured, collect the orchestration inputs. Ask only for missing details that cannot be safely inferred.
 
 Required inputs:
 
@@ -150,13 +193,13 @@ For brownfield work, a proposal name is required only when starting from an exis
 
 For greenfield PRD work, capture the proposal queue from `prd-implementation-sequence.md` after PRD decomposition and decomposition review are complete. Process one proposal at a time through the brownfield state machine.
 
-After intake is complete, write the initial state file to `<project>/openspec/.orchestration-state.json` with the resolved configuration, workflow mode, and starting phase. The state file must exist before any worker is spawned.
+After intake is complete, write the initial state file to `<project>/openspec/.orchestration-state.json` with the captured intent, resolved configuration, workflow mode, and starting phase. The state file must exist before any worker is spawned.
 
 ## Resume Existing Orchestration
 
 When resuming an interrupted workflow, read the state file at `<project>/openspec/.orchestration-state.json` first. It is the primary source of truth for current phase, proposal name, configuration, and phase history.
 
-If the state file is missing or corrupted, fall back to reconstructing from the latest planner report, room status, worker reports, and proposal files. Write the reconstructed state immediately.
+If the state file is missing or corrupted, fall back to reconstructing from the latest planner report, room status, worker reports, and proposal files. If the intent cannot be recovered, ask the master to re-confirm before proceeding. Write the reconstructed state immediately.
 
 Do not rerun completed phases unless the previous result is missing, blocked, invalid, or explicitly superseded by the user.
 
@@ -241,7 +284,7 @@ For each phase:
 
 Removing a worker from the room removes it from collaboration context; it is not a guarantee that the spawned OpenCode session process is terminated. Do not rely on removed workers for future context.
 
-If the worker asks a tracked question, answer through `agent-collab answer --parent <message_id>` or ask the user if the decision belongs to the user.
+If the worker asks a tracked question, reports `blocked`, or flags an issue, do not reflexively escalate to the user. Route the question through the **Autonomous Decision Protocol** below. The protocol decides whether the planner resolves it, defers to the worker, or escalates. Deliver any autonomous answer to the worker through `agent-collab answer --parent <message_id>`.
 
 Use hard interrupts only when a worker is clearly stuck or running the wrong task.
 
@@ -260,6 +303,49 @@ Use hard interrupts only when a worker is clearly stuck or running the wrong tas
 - Remove completed workers from the room before spawning the next phase worker.
 - Keep room public context minimal or absent.
 - Keep the state file in sync. Every phase transition must produce a state file write before the next worker is spawned. If the planner suspects the state file is stale, read it and verify before proceeding.
+
+## Autonomous Decision Protocol
+
+When a worker raises a blocking question, reports `blocked`, or flags an issue, the planner triages it instead of defaulting to escalation. The goal is to keep the workflow moving autonomously on the decisions the planner is competent to make, while protecting the decisions that actually cost the user something.
+
+### Decision Boundary
+
+The planner reasons from: the captured `intent` (problem, motivation, scope, constraints, preferences), the PRD, the proposal, and the worker's framing of the question. It does not inspect implementation diffs or code to reach a decision. If a question cannot be resolved without judging implementation correctness, defer or escalate rather than reading diffs.
+
+The `intent` object is the planner's primary anchor for autonomous decisions. When a question touches on scope, tradeoffs, or preferences, consult the intent first. If the intent is silent on the matter and the decision is low-risk, defer to the worker's recommendation. If the decision would redefine the goal or change scope, escalate.
+
+### Triage
+
+Apply this order to every raised question or issue:
+
+1. **Decide autonomously** when all of the following hold:
+   - The question is resolvable from the captured intent, PRD, proposal, or high-level design.
+   - The decision is reversible or low-risk.
+   - The decision does not change external state: commit, push, credentials, accounts, infrastructure.
+   - The decision does not redefine the goal or materially change scope.
+2. **Defer to the worker's recommendation** when the worker already proposed a sound path that aligns with the captured intent but flagged it for confirmation. Treat the worker's recommendation as the decision, record the assumption that the worker's judgement is trusted on this point, and proceed.
+3. **Escalate to the user** only when:
+   - The decision would redefine the goal or materially change scope.
+   - The decision is irreversible or high-risk.
+   - The decision changes external state (commit, push, credentials, accounts, infrastructure).
+   - The question cannot be resolved from the captured intent, PRD, or proposal even after the planner reviews the high-level artifacts.
+
+When in genuine doubt between autonomous and escalate, escalate. The bias is toward autonomy, not toward guessing on stakes.
+
+### Recording Requirement
+
+For every `decided` or `deferred_to_worker` disposition, append an entry to `decisionLog` in the state file **before** answering the worker. An entry that is not persisted does not count as a decision. Each entry must capture:
+
+- the phase and worker alias that raised it,
+- the trigger (the worker's question or issue, summarized),
+- the assumptions the planner made,
+- the decision,
+   - the rationale (tied to the captured intent, scope, or the proposal),
+- the disposition.
+
+Escalations do not require a log entry unless the user later resolves the question, in which case record the user's resolution as a `decided` entry with rationale "per user direction" so the closeout summary reflects it.
+
+After recording and answering, continue the workflow immediately. Do not pause for confirmation unless the triage escalated.
 
 ## Review Gate Protocol
 
@@ -439,6 +525,9 @@ After each phase or checkpoint, report concisely:
 ### Commit Checkpoint
 yes/no; if yes, commit worker result
 
+### Decisions This Phase
+<list each autonomous decision and deferred-to-worker decision recorded this phase: trigger, decision, disposition; or "none">
+
 ### Notes
 <brief operational notes only>
 ```
@@ -447,7 +536,7 @@ Do not include implementation-level details unless they are present in the worke
 
 ## Failure Handling
 
-- If a worker reports `blocked`, ask the user or spawn a discussion worker with `openspec-discuss`.
+- If a worker reports `blocked`, route through the Autonomous Decision Protocol first. Only escalate to the user or spawn a discussion worker with `openspec-discuss` if the triage outcome is escalate.
 - If a worker runs the wrong skill or changes unrelated files, stop the workflow and report the incident.
 - If a required skill is unavailable, stop and report which `openspec-*` skill is missing.
 - If the collab service is unavailable, report the control failure and pause.
@@ -462,4 +551,5 @@ When the workflow is complete:
 3. Remove any remaining workers.
 4. Close the collaboration room.
 5. Update the state file with `currentPhase: "completed"` and final `phaseHistory`.
-6. Report completion to the user with the final proposal/archive status and commit information.
+6. If `decisionLog` is non-empty, render a "Decisions Made During Orchestration" section in the completion report. For each entry, surface the trigger, assumptions, decision, rationale, and disposition. Do not summarize away the assumptions or rationale; the user needs enough detail to audit each autonomous call.
+7. Report completion to the user with the final proposal/archive status, commit information, and the decisions summary (if any).
