@@ -7,7 +7,7 @@ description: Expose a local web app to the public internet via Cloudflare Tunnel
 
 ## When to use me
 
-Use this skill when the user wants to expose a local web app to the public internet on a `*.lohzi.com` subdomain. This covers static sites, single-page apps, and backend services running on localhost.
+Use this skill when the user wants to expose a local web app to the public internet on a `*.lohzi.com` subdomain. This covers static sites, single-page apps, and backend services running on the host machine.
 
 ## Architecture Reference
 
@@ -22,15 +22,19 @@ Key facts from that document:
 - Tunnel wildcard ingress `*.lohzi.com` routes to `nginx-proxy`, which uses `server_name` virtual host routing.
 - A catch-all `000-default.conf` returns 444 for unrecognized hostnames.
 - Zero Trust policy protects all `*.lohzi.com` with email OTP.
+- Optional apps should usually be managed on demand with `lohzi-apps` instead of left running 24/7.
 
 ## Rules
 
 - Always confirm the subdomain name with the user before proceeding.
 - Always add new server block configs to `~/nginx-proxy/conf.d/`.
-- Always add new volume mounts to `~/nginx-proxy/docker-compose.yml`.
+- Add new volume mounts to `~/nginx-proxy/docker-compose.yml` only for static-file apps that need nginx container filesystem access.
 - Always test nginx config (`docker exec nginx-proxy nginx -t`) before reloading.
 - Never modify the catch-all `000-default.conf` unless the user requests it.
 - If the nginx-proxy container is not running, start it with `docker compose up -d` from `~/nginx-proxy/`.
+- For backend services running on the host, proxy to `http://host.docker.internal:<port>`, not `http://localhost:<port>`, because nginx runs inside Docker.
+- Ask whether the app should be always-on or on-demand. Prefer on-demand unless the user explicitly wants 24/7 availability.
+- For on-demand apps, add lifecycle support to `~/.local/bin/lohzi-apps` after creating the nginx route and service/static route.
 
 ## Workflow
 
@@ -39,7 +43,9 @@ Key facts from that document:
 Ask the user (if not already provided):
 
 - Subdomain name (e.g. `myapp` for `myapp.lohzi.com`).
-- App type: static files (directory path) or backend service (localhost port).
+- App type: static files (directory path) or backend service (host-local port).
+- Lifecycle preference: on-demand (recommended) or always-on.
+- For backend services: exact start/stop commands, working directory, required environment variables, and intended bind host/port.
 
 ### Step 2 -- Create nginx server block
 
@@ -69,14 +75,20 @@ server {
     server_name <subdomain>.lohzi.com;
 
     location / {
-        proxy_pass http://localhost:<port>;
+        proxy_pass http://host.docker.internal:<port>;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
     }
 }
 ```
+
+For host backend services that should only be reachable by nginx-proxy, prefer binding them to the Docker bridge gateway (commonly `172.17.0.1`) instead of `0.0.0.0`.
 
 ### Step 3 -- Mount the app directory (static files only)
 
@@ -88,7 +100,19 @@ Edit `~/nginx-proxy/docker-compose.yml`. Add under `volumes`:
 
 Skip this step for backend service proxy.
 
-### Step 4 -- Apply changes
+### Step 4 -- Add lifecycle controls
+
+For static apps, add `<subdomain>` to `~/.local/bin/lohzi-apps` so `start` enables the nginx config and `stop` moves it to `~/nginx-proxy/conf.disabled/`.
+
+For backend apps, create a user systemd service under `~/.config/systemd/user/<app>.service` when there is no existing supervisor. Then add `lohzi-apps` handlers so:
+
+- `lohzi-apps start <app>` enables the nginx route and starts the service.
+- `lohzi-apps stop <app>` stops the service and disables the nginx route.
+- `lohzi-apps status <app>` reports service and route state.
+
+Do not enable user-service autostart unless the user asked for an always-on app.
+
+### Step 5 -- Apply changes
 
 ```bash
 # If docker-compose.yml changed (new volume mount):
@@ -98,19 +122,33 @@ docker compose up -d --force-recreate
 docker exec nginx-proxy nginx -t && docker exec nginx-proxy nginx -s reload
 ```
 
-### Step 5 -- Verify locally
+For on-demand apps, verify the lifecycle command too:
+
+```bash
+lohzi-apps start <app>
+lohzi-apps status <app>
+lohzi-apps stop <app>
+```
+
+### Step 6 -- Verify locally
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}" -H "Host: <subdomain>.lohzi.com" http://localhost:80
 # Should return 200
 ```
 
-### Step 6 -- Confirm Cloudflare dashboard
+For routes that redirect to login or auth, `302` can also be a valid local result.
+
+### Step 7 -- Confirm Cloudflare dashboard
 
 If the wildcard `*.lohzi.com` tunnel ingress rule is already in place, no dashboard action is needed. Confirm with the user.
 
 If not, instruct the user to add a public hostname in the Cloudflare Zero Trust dashboard (see reference doc for details).
 
-### Step 7 -- Verify end-to-end
+### Step 8 -- Verify end-to-end
 
 Ask the user to visit `https://<subdomain>.lohzi.com/` from a browser and confirm it loads.
+
+### Step 9 -- Document
+
+Update the relevant project note and `notes/environment/cloudflare-tunnel-setup.md` with the subdomain, route target, service/lifecycle behavior, and `lohzi-apps` command if applicable. Update `notes/README.md` only when the note summary changes.
