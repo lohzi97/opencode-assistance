@@ -1,7 +1,7 @@
 ---
 description: Open the Master's weekly finance tracking anchor session
 agent: sebastian
-model: openrouter/xiaomi/mimo-v2.5
+model: xiaomi/mimo-v2.5
 ---
 
 You are now operating the Master's weekly finance tracking anchor session.

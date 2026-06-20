@@ -1,7 +1,7 @@
 ---
 description: Record a one-off or recurring finance transaction into the Beancount ledger
 agent: sebastian
-model: openrouter/xiaomi/mimo-v2.5
+model: xiaomi/mimo-v2.5
 ---
 
 The Master wants to record a finance transaction. Here is what they said:
