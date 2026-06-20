@@ -34,10 +34,10 @@ Typical requests:
    - Logged in: profile menu present, chat history visible, no primary `Log in` prompt blocking use.
    - Not logged in: `Log in`, `Sign up`, or auth page visible.
 3. If not logged in:
-   - restart with `ENABLE_VNC=1` if needed,
+   - start or restart VNC through the `camofox-browser` workflow, preferring `lohzi-apps start vnc` for public access,
    - first try the normal ChatGPT login path,
    - if clicking `Log in` from `chatgpt.com` does not produce a usable auth flow in snapshots, navigate directly to `https://auth.openai.com/log-in`,
-   - direct Master to `http://localhost:6080/vnc.html`,
+   - direct Master to the noVNC URL from `camofox-browser`, using `https://vnc.lohzi.com/vnc.html?autoconnect=1&host=vnc.lohzi.com&port=443&encrypt=1&path=websockify` when Master is outside the Linux Mint machine,
    - wait for Master to complete login,
    - then re-check the snapshot.
 4. If the login flow destroys or replaces the tab/session, recreate it with the same durable `userId` and then verify login state again.
@@ -68,8 +68,8 @@ This is the critical step. Read every part of the response.
 
 ### Step 6: Close Up
 1. Close the ChatGPT session/tab when done.
-2. Unless Master explicitly asks to keep the browser warm, kill the Camofox PTY session.
-3. Verify cleanup of leftover `Xvfb`, `x11vnc`, and `websockify` processes and confirm ports `9377`, `6080`, and `5900` are closed.
+2. Unless Master explicitly asks to keep the browser warm, stop the managed VNC app with `lohzi-apps stop vnc` when it was used, or kill the Camofox PTY session for manual runs.
+3. Verify cleanup of leftover `Xvfb`, `x11vnc`, and `websockify` processes and confirm ports `9377`, `6080`, and `5900` are closed when the browser is meant to be stopped.
 
 ## Rules
 

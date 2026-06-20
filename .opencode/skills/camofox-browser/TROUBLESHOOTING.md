@@ -59,8 +59,9 @@ If auth is enabled, include the correct bearer token or ask Master for the inten
 
 ## Login, CAPTCHA, MFA, Or Human Checks
 
-- Restart with `ENABLE_VNC=1` if visual access is needed.
-- Direct Master to `http://localhost:6080/vnc.html`.
+- Prefer `lohzi-apps start vnc` if Master needs public access through `vnc.lohzi.com`.
+- Restart with `ENABLE_VNC=1` if visual access is needed and the managed app is not appropriate.
+- Direct Master to `https://vnc.lohzi.com/vnc.html?autoconnect=1&host=vnc.lohzi.com&port=443&encrypt=1&path=websockify` for public access, or `http://localhost:6080/vnc.html` for local-only access.
 - Resume API-driven browsing after the human step completes.
 - Do not silently fall back to another browser workflow.
 - Do not assume VNC is available just because `GET /health` is green; verify the helper ports and page reachability separately.
@@ -76,6 +77,7 @@ If auth is enabled, include the correct bearer token or ask Master for the inten
 
 Likely causes:
 
+- tab was reaped by `TAB_INACTIVITY_MS` while noVNC/websockify stayed alive
 - `x11vnc` attached to an old `Xvfb` display
 - stale `Xvfb`, `x11vnc`, or `websockify` processes from an earlier failed run
 - VNC helper processes survived while the main browser session changed displays
@@ -93,7 +95,7 @@ pkill -x Xvfb || true
 
 These commands are broad. They are acceptable on a dedicated local development machine, but on a shared host prefer targeted PID cleanup.
 
-3. Restart cleanly with `ENABLE_VNC=1`.
+3. Restart cleanly with `lohzi-apps restart vnc`, or manually with `ENABLE_VNC=1`, `VNC_BIND=172.17.0.1`, `TAB_INACTIVITY_MS=3600000`, `SESSION_TIMEOUT_MS=3600000`, and `BROWSER_IDLE_TIMEOUT_MS=3600000` for public access. For local-only access, omit `VNC_BIND` so noVNC binds to `127.0.0.1:6080`.
 4. Recreate the target tab and ask Master to refresh noVNC.
 
 Prefer a clean restart over ad-hoc manual reattachment unless you are already mid-recovery and need to salvage the current run.
@@ -106,6 +108,30 @@ Kill the stale process and restart cleanly.
 If `x11vnc` reports it could not obtain port `5900`, stale VNC helpers are still running. Kill `x11vnc` and `websockify`, then restart.
 
 Broad `pkill` cleanup is acceptable on a dedicated local development machine, but on a shared host prefer targeted PID cleanup.
+
+## Public noVNC Connect Fails
+
+If `vnc.lohzi.com` loads but clicking Connect fails:
+
+1. Verify nginx can reach the WebSocket path:
+
+```bash
+curl -si --max-time 3 -H "Host: vnc.lohzi.com" http://localhost:80/websockify \
+  -H "Connection: Upgrade" \
+  -H "Upgrade: websocket" \
+  -H "Sec-WebSocket-Version: 13" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="
+```
+
+2. If the response is not `101`, inspect nginx and Cloudflare routing.
+3. If the response is `101` followed by `Failed to connect to downstream server`, websockify is alive but x11vnc on `5900` is down; restart VNC.
+4. If the response includes `RFB 003.008`, the backend path is healthy; ask Master to hard refresh the noVNC page.
+
+Use the parameterized public URL so noVNC selects the correct public WebSocket endpoint:
+
+```text
+https://vnc.lohzi.com/vnc.html?autoconnect=1&host=vnc.lohzi.com&port=443&encrypt=1&path=websockify
+```
 
 ## Login Did Not Persist Across Runs
 

@@ -102,13 +102,57 @@ Use selector-based waits only when the expected selector is known.
 
 ## 8. Start With VNC For Human Login
 
+Preferred on this host for public noVNC access:
+
+```bash
+lohzi-apps start vnc
+lohzi-apps status vnc
+```
+
+Then direct Master to:
+
+```text
+https://vnc.lohzi.com/vnc.html?autoconnect=1&host=vnc.lohzi.com&port=443&encrypt=1&path=websockify
+```
+
+When finished:
+
+```bash
+lohzi-apps stop vnc
+```
+
+Manual public/server start (nginx-proxy can reach this because websockify binds to the Docker bridge gateway):
+
 Run from `../camofox-browser`:
 
 ```bash
-ENABLE_VNC=1 CAMOFOX_CRASH_REPORT_ENABLED=false npm start
+ENABLE_VNC=1 \
+CAMOFOX_CRASH_REPORT_ENABLED=false \
+VNC_BIND=172.17.0.1 \
+TAB_INACTIVITY_MS=3600000 \
+SESSION_TIMEOUT_MS=3600000 \
+BROWSER_IDLE_TIMEOUT_MS=3600000 \
+npm start
 ```
 
 If `5900`, `6080`, or `9377` is unexpectedly already in use before startup, clean up stale helpers or stale server state first rather than assuming safe reuse.
+
+Then direct Master to:
+
+```text
+https://vnc.lohzi.com/vnc.html?autoconnect=1&host=vnc.lohzi.com&port=443&encrypt=1&path=websockify
+```
+
+Manual local-only start (localhost access, not public nginx access):
+
+```bash
+ENABLE_VNC=1 \
+CAMOFOX_CRASH_REPORT_ENABLED=false \
+TAB_INACTIVITY_MS=3600000 \
+SESSION_TIMEOUT_MS=3600000 \
+BROWSER_IDLE_TIMEOUT_MS=3600000 \
+npm start
+```
 
 Then direct Master to:
 
@@ -133,6 +177,18 @@ pkill -x Xvfb || true
 ```
 
 These `pkill` commands are broad. They are acceptable on a dedicated local development machine, but on a shared host prefer targeted PID cleanup.
+
+Verify public WebSocket path through nginx:
+
+```bash
+curl -si --max-time 3 -H "Host: vnc.lohzi.com" http://localhost:80/websockify \
+  -H "Connection: Upgrade" \
+  -H "Upgrade: websocket" \
+  -H "Sec-WebSocket-Version: 13" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="
+```
+
+Expected output starts with `HTTP/1.1 101 Switching Protocols` and includes `RFB 003.008`.
 
 ## 9. Close The Session
 

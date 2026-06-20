@@ -23,6 +23,7 @@ Do not use this skill for ordinary desktop browsing. That remains `browser-inter
 - Source checkout: `../camofox-browser`
 - Default API URL: `http://localhost:9377`
 - Default noVNC URL when enabled: `http://localhost:6080/vnc.html`
+- Public noVNC route when managed by `lohzi-apps`: `https://vnc.lohzi.com/vnc.html?autoconnect=1&host=vnc.lohzi.com&port=443&encrypt=1&path=websockify`
 - Preferred runtime: local source checkout started by `pty_spawn`
 
 ## Rules
@@ -39,8 +40,11 @@ Do not use this skill for ordinary desktop browsing. That remains `browser-inter
 10. If VNC is needed and the running server was started without `ENABLE_VNC=1`, stop it and restart cleanly with VNC enabled.
 11. Do not assume a healthy `GET /health` response means VNC is healthy. If the task requires VNC, separately verify that noVNC is reachable and that helper startup did not fail.
 12. If VNC is required, do a stale-process and stale-port preflight before startup or restart. Unexpected listeners on `5900` or `6080` usually mean leftover helpers; unexpected ownership of `9377` usually means a stale Camofox server. Clean those up before assuming reuse is safe.
-13. Unless Master explicitly asks to keep the browser warm, always clean up the Camofox PTY first, then any leftover `Xvfb`, `x11vnc`, and `websockify` processes, and verify ports `9377`, `6080`, and `5900` are closed.
-14. When the server fails to start or the API contract does not behave as documented, report it and pause instead of guessing.
+13. For public human login/CAPTCHA/OAuth work, prefer the managed lifecycle: `lohzi-apps start vnc`, create the target tab, direct Master to the public noVNC URL, then `lohzi-apps stop vnc` when done.
+14. For public VNC, websockify must bind to the Docker bridge gateway with `VNC_BIND=172.17.0.1`; default `127.0.0.1` only works locally and cannot be reached by nginx-proxy.
+15. For VNC sessions that need human time, set `TAB_INACTIVITY_MS`, `SESSION_TIMEOUT_MS`, and `BROWSER_IDLE_TIMEOUT_MS` to a large positive value such as `3600000` (one hour). `TAB_INACTIVITY_MS=0` falls back to the 5-minute default in the current config parser.
+16. Unless Master explicitly asks to keep the browser warm, always clean up the Camofox PTY first, then any leftover `Xvfb`, `x11vnc`, and `websockify` processes, and verify ports `9377`, `6080`, and `5900` are closed.
+17. When the server fails to start or the API contract does not behave as documented, report it and pause instead of guessing.
 
 ## Startup Workflow
 
@@ -80,10 +84,13 @@ Use a local-only default such as:
 ```text
 command: "npm"
 args: ["start"]
-workdir: "/home/<user>/Projects/camofox-browser"
+workdir: "/home/<user>/camofox-browser"
 env:
   CAMOFOX_CRASH_REPORT_ENABLED: "false"
   ENABLE_VNC: "1"   # only when a human login/CAPTCHA step is expected
+  TAB_INACTIVITY_MS: "3600000"   # recommended for VNC login sessions
+  SESSION_TIMEOUT_MS: "3600000"
+  BROWSER_IDLE_TIMEOUT_MS: "3600000"
 title: "Camofox Browser"
 description: "Local camofox browser server"
 ```
@@ -112,14 +119,15 @@ description: "Local camofox browser server"
 
 Use VNC only when a human-visible step is required.
 
-1. Start the server with `ENABLE_VNC=1`.
+1. For public access, start the managed app with `lohzi-apps start vnc`; for local-only access, start the server with `ENABLE_VNC=1` and do not set `VNC_BIND`.
 2. Create or reuse the target session with the same persistent `userId` you intend to keep using later.
-3. Verify that noVNC is actually reachable on `http://localhost:6080/vnc.html`; if not, check helper processes and ports before asking Master to use it.
-4. Direct Master to `http://localhost:6080/vnc.html` to log in, solve CAPTCHA, or approve MFA.
+3. Verify that noVNC is actually reachable before asking Master to use it. For public access, check the local nginx route with `Host: vnc.lohzi.com` and confirm websockify listens on `172.17.0.1:6080`. For local-only access, check `http://localhost:6080/vnc.html`.
+4. If Master is outside the Linux Mint machine, direct Master to `https://vnc.lohzi.com/vnc.html?autoconnect=1&host=vnc.lohzi.com&port=443&encrypt=1&path=websockify`; otherwise direct Master to `http://localhost:6080/vnc.html`.
 5. Resume API-driven browsing after the human step is complete.
 6. If noVNC loads but shows a black screen, suspect stale `Xvfb` / `x11vnc` / `websockify` processes or attachment to the wrong display. Restart cleanly instead of editing upstream code.
 7. If the VNC watcher dies but the main browser stays healthy, treat that as a VNC failure. Clean up helper processes and restart rather than assuming the visual path still works.
 8. If you had to start manual VNC helper processes as a recovery step, terminate them during cleanup as well.
+9. For public VNC verification, the WebSocket probe through nginx should return `HTTP/1.1 101 Switching Protocols` followed by `RFB 003.008`.
 
 ## Files
 

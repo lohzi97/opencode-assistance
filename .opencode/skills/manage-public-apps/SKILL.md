@@ -1,6 +1,6 @@
 ---
 name: manage-public-apps
-description: Start, stop, restart, or check existing lohzi.com public apps using lohzi-apps. Use when the user asks to turn on/off code.lohzi.com, finance.lohzi.com, property-invest.lohzi.com, public apps, exposed apps, or hosted local web apps.
+description: Start, stop, restart, or check existing lohzi.com public apps using lohzi-apps. Use when the user asks to turn on/off code.lohzi.com, finance.lohzi.com, property-invest.lohzi.com, vnc.lohzi.com, public apps, exposed apps, or hosted local web apps.
 ---
 
 # Manage Public Apps
@@ -16,6 +16,8 @@ Trigger examples:
 - "is the property investing app running?"
 - "stop all public apps"
 - "bring up my browser code editor"
+- "start vnc.lohzi.com"
+- "turn on noVNC for camofox login"
 - "shut down exposed apps"
 - "check what lohzi apps are running"
 
@@ -41,8 +43,9 @@ It manages optional app services and their nginx routes.
 - `code`: `code.lohzi.com`, code-server browser editor.
 - `finance`: `finance.lohzi.com`, Fava finance dashboard.
 - `property-invest`: `property-invest.lohzi.com`, static property investing app route.
+- `vnc`: `vnc.lohzi.com`, camofox noVNC for temporary human login/CAPTCHA/OAuth work.
 - `gateway`: shared `nginx-proxy` Docker reverse proxy.
-- `all`: shorthand for `code`, `finance`, and `property-invest`.
+- `all`: for `start`/`restart`, shorthand for `code`, `finance`, and `property-invest`; it intentionally does not start `vnc`. For `status`/`stop`, it includes `vnc` so passwordless noVNC is not overlooked or left running.
 
 Keep `gateway` running by default. It is lightweight and shared by all app routes. Only stop `gateway` if the user explicitly asks to stop the shared gateway/nginx proxy itself.
 
@@ -55,6 +58,7 @@ lohzi-apps status all
 lohzi-apps status code
 lohzi-apps status finance
 lohzi-apps status property-invest
+lohzi-apps status vnc
 ```
 
 Start:
@@ -63,6 +67,7 @@ Start:
 lohzi-apps start code
 lohzi-apps start finance
 lohzi-apps start property-invest
+lohzi-apps start vnc
 lohzi-apps start all
 ```
 
@@ -72,6 +77,7 @@ Stop:
 lohzi-apps stop code
 lohzi-apps stop finance
 lohzi-apps stop property-invest
+lohzi-apps stop vnc
 lohzi-apps stop all
 ```
 
@@ -81,6 +87,7 @@ Restart:
 lohzi-apps restart code
 lohzi-apps restart finance
 lohzi-apps restart property-invest
+lohzi-apps restart vnc
 lohzi-apps restart all
 ```
 
@@ -102,6 +109,7 @@ After starting an app, optionally verify the local route if useful:
 curl -s -o /dev/null -w "%{http_code}\n" -H "Host: code.lohzi.com" http://127.0.0.1:80/
 curl -s -o /dev/null -w "%{http_code}\n" -H "Host: finance.lohzi.com" http://127.0.0.1:80/
 curl -s -o /dev/null -w "%{http_code}\n" -H "Host: property-invest.lohzi.com" http://127.0.0.1:80/
+curl -s -o /dev/null -w "%{http_code}\n" -H "Host: vnc.lohzi.com" http://127.0.0.1:80/vnc.html
 ```
 
 Expected local route results:
@@ -109,12 +117,14 @@ Expected local route results:
 - `code`: usually `302` because code-server redirects to login.
 - `finance`: usually `302` if Fava redirects, or `200` depending on its current behavior.
 - `property-invest`: usually `200`.
+- `vnc`: `200` for `/vnc.html`; `lohzi-apps status vnc` should report `api=up novnc=up vnc=up`; WebSocket verification should return `101` plus the `RFB 003.008` downstream VNC banner.
 
 After stopping an app, the route should be disabled and `lohzi-apps status` should show `route=disabled`.
 
 ## Safety Notes
 
 - Do not reveal code-server passwords or other secrets in the final response.
+- Do not start `vnc` via `all`; start it only when explicitly requested because the noVNC endpoint is passwordless behind Cloudflare Access. `status all` and `stop all` may include `vnc` for safety.
 - Do not edit nginx configs manually for routine start/stop requests; use `lohzi-apps`.
 - Do not start all apps unless the user asks for all apps or the request clearly implies it.
 - Do not stop `sebastian.lohzi.com` or the OpenCode assistant stack unless explicitly requested; this skill is for optional public apps only.

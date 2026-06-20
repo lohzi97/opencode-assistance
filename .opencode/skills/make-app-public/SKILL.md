@@ -33,8 +33,10 @@ Key facts from that document:
 - Never modify the catch-all `000-default.conf` unless the user requests it.
 - If the nginx-proxy container is not running, start it with `docker compose up -d` from `~/nginx-proxy/`.
 - For backend services running on the host, proxy to `http://host.docker.internal:<port>`, not `http://localhost:<port>`, because nginx runs inside Docker.
+- For WebSocket services, include `proxy_http_version 1.1` plus `Upgrade` and `Connection` headers, and verify an actual WebSocket upgrade when possible.
 - Ask whether the app should be always-on or on-demand. Prefer on-demand unless the user explicitly wants 24/7 availability.
 - For on-demand apps, add lifecycle support to `~/.local/bin/lohzi-apps` after creating the nginx route and service/static route.
+- For noVNC/camofox-style services, prefer a managed lifecycle entry rather than leaving a passwordless browser-control service running; on this host `vnc.lohzi.com` is already managed by `lohzi-apps vnc`.
 
 ## Workflow
 
@@ -90,6 +92,8 @@ server {
 
 For host backend services that should only be reachable by nginx-proxy, prefer binding them to the Docker bridge gateway (commonly `172.17.0.1`) instead of `0.0.0.0`.
 
+For noVNC/websockify specifically, bind the websockify/noVNC port to the Docker bridge gateway (for example `VNC_BIND=172.17.0.1`) so `nginx-proxy` can reach it through `host.docker.internal` without exposing the noVNC port on normal LAN interfaces.
+
 ### Step 3 -- Mount the app directory (static files only)
 
 Edit `~/nginx-proxy/docker-compose.yml`. Add under `volumes`:
@@ -138,6 +142,18 @@ curl -s -o /dev/null -w "%{http_code}" -H "Host: <subdomain>.lohzi.com" http://l
 ```
 
 For routes that redirect to login or auth, `302` can also be a valid local result.
+
+For WebSocket routes, also verify the upgrade path. Example:
+
+```bash
+curl -si --max-time 3 -H "Host: <subdomain>.lohzi.com" http://localhost:80/websockify \
+  -H "Connection: Upgrade" \
+  -H "Upgrade: websocket" \
+  -H "Sec-WebSocket-Version: 13" \
+  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="
+```
+
+For noVNC routes, `HTTP/1.1 101 Switching Protocols` confirms nginx/WebSocket handling; `RFB 003.008` confirms the downstream VNC backend is alive.
 
 ### Step 7 -- Confirm Cloudflare dashboard
 

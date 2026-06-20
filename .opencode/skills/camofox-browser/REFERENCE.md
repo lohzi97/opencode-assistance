@@ -43,6 +43,7 @@ Core:
 
 - `CAMOFOX_PORT`: API port, default `9377`
 - `SESSION_TIMEOUT_MS`: session inactivity timeout
+- `TAB_INACTIVITY_MS`: tab inactivity timeout, default `300000`; use a large positive value for VNC sessions
 - `BROWSER_IDLE_TIMEOUT_MS`: browser shutdown after idle
 - `MAX_SESSIONS`: concurrent session cap
 - `MAX_TABS_PER_SESSION`: tab cap per session
@@ -63,8 +64,16 @@ Persistence:
 VNC:
 
 - `ENABLE_VNC=1`
+- `VNC_BIND`: noVNC/websockify bind address; use `172.17.0.1` for nginx-proxy access on this host
 - `VNC_PASSWORD`
 - `NOVNC_PORT`, default `6080`
+
+Public route on this host:
+
+- `vnc.lohzi.com` proxies through nginx to `host.docker.internal:6080`.
+- Start through `lohzi-apps start vnc` when possible.
+- Manual one-hour VNC defaults are `ENABLE_VNC=1`, `VNC_BIND=172.17.0.1`, `TAB_INACTIVITY_MS=3600000`, `SESSION_TIMEOUT_MS=3600000`, and `BROWSER_IDLE_TIMEOUT_MS=3600000`.
+- Public noVNC URL: `https://vnc.lohzi.com/vnc.html?autoconnect=1&host=vnc.lohzi.com&port=443&encrypt=1&path=websockify`.
 
 Privacy:
 
@@ -153,9 +162,11 @@ Useful macros include:
 - If VNC will be required, check for unexpected existing listeners on `5900` and `6080` before starting or restarting.
 - If `9377` is already in use but not by the intended reusable Camofox PTY, suspect a stale server rather than safe reuse.
 - Clean up stale helpers or stale server processes before assuming the next start will attach to the correct display.
+- If using the public route, verify websockify listens on `172.17.0.1:6080`, not only `127.0.0.1:6080`.
 
 ## VNC Health Versus Browser Health
 
 - A healthy `GET /health` response only confirms the main browser server is up.
 - It does not guarantee that VNC helper processes started correctly.
 - If VNC is required, verify noVNC reachability on `6080`, verify `5900` when `x11vnc` should be attached, and inspect helper startup if the screen is blank or the watcher exited.
+- Public WebSocket verification through nginx should return `HTTP/1.1 101 Switching Protocols` and include `RFB 003.008`; a `101` followed by "Failed to connect to downstream server" means websockify is alive but x11vnc on `5900` is not.
