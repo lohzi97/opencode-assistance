@@ -17,7 +17,9 @@ Use these defaults unless the task requires otherwise:
 - no `CAMOFOX_ACCESS_KEY` for localhost-only use
 - no `CAMOFOX_API_KEY` unless cookie import or protected storage export is needed
 - `ENABLE_VNC=1` only for login or CAPTCHA tasks
-- keep the default `CAMOFOX_PROFILE_DIR` so repeated use of the same `userId` reuses the same browser profile
+- always use the same `CAMOFOX_PROFILE_DIR`, normally `/home/linux-mint/.camofox/profiles` on this machine
+- always use exactly `userId=general` for reusable login state; never invent, randomize, ask for, or silently switch `userId`
+- always call `DELETE /sessions/general` before stopping Camofox so cookies/storage are checkpointed
 
 ## Local VNC Prerequisite On This Host
 
@@ -58,7 +60,7 @@ Security and auth:
 Persistence:
 
 - `CAMOFOX_COOKIES_DIR`: default `~/.camofox/cookies`
-- `CAMOFOX_PROFILE_DIR`: default `~/.camofox/profiles`
+- `CAMOFOX_PROFILE_DIR`: default `~/.camofox/profiles`; on this machine persistent work should explicitly preserve `/home/linux-mint/.camofox/profiles`
 - `CAMOFOX_TRACES_DIR`: default `~/.camofox/traces`
 
 VNC:
@@ -83,13 +85,13 @@ Privacy:
 ## Session Model
 
 - One browser instance can host many user sessions.
-- Each `userId` maps to an isolated browser context with its own cookies and local storage.
-- Each `sessionKey` groups related tabs within that user session.
-- Profiles persist under `~/.camofox/profiles`, so repeated use of the same `userId` can preserve login state.
-- For repeatable browser work on this machine, prefer a generic durable profile such as `userId=general`.
-- Treat `userId` as the durable browser profile identity. Change `sessionKey` freely per task, but keep the same `userId` when you want the same login/profile back.
-- Reusing the same `userId` improves the chance of restoring login state, but does not guarantee it.
-- Use a different `userId` when stronger isolation or privacy separation matters more than continuity.
+- Durable login identity is `CAMOFOX_PROFILE_DIR + userId`.
+- Each `userId` maps to an isolated browser context with its own cookies and local storage under the configured profile directory.
+- Each `sessionKey` groups related tabs within that user session; it is not the persistent login identity.
+- Profiles persist under `CAMOFOX_PROFILE_DIR`, so repeated use of `userId=general` can preserve login state.
+- Always use exactly `userId=general`. Do not ask Master for a `userId`, do not make one up, and do not use any alternative.
+- Reusing the same `userId` is not enough if `CAMOFOX_PROFILE_DIR` changes; both values must remain stable.
+- A different `userId` means a different isolated profile/state, even on the same Camofox server.
 
 ## Endpoints To Prefer
 
@@ -98,7 +100,7 @@ Lifecycle:
 - `POST /tabs`
 - `GET /tabs?userId=...`
 - `DELETE /tabs/:tabId`
-- `DELETE /sessions/:userId`
+- `DELETE /sessions/general`
 
 Interaction:
 
@@ -153,8 +155,9 @@ Useful macros include:
 ## Cleanup Guidance
 
 - Close tabs you no longer need.
-- Close the full session when the task is complete if no persistent login state is needed immediately.
-- Prefer PTY-first cleanup: stop the Camofox PTY server when the browser service is no longer needed, then kill any leftover helpers only if they remain.
+- Always checkpoint the `general` profile with `DELETE /sessions/general` before stopping or restarting Camofox.
+- Confirm the delete call returns success before killing the PTY when login/session changes matter.
+- Prefer session checkpoint first, then PTY cleanup, then kill any leftover helpers only if they remain.
 - Unless Master explicitly wants the server left running, also ensure `Xvfb`, `x11vnc`, and `websockify` are gone and ports `9377`, `6080`, and `5900` are closed.
 
 ## VNC Preflight On Reuse Or Restart

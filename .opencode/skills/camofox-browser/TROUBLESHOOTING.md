@@ -135,17 +135,19 @@ https://vnc.lohzi.com/vnc.html?autoconnect=1&host=vnc.lohzi.com&port=443&encrypt
 
 ## Login Did Not Persist Across Runs
 
-- Reuse the same `userId`; that is the durable browser-profile identity.
-- Keep the default `~/.camofox/profiles` path.
+- Reuse `userId=general`; that is part of the durable browser-profile identity.
+- Keep the same `CAMOFOX_PROFILE_DIR`, normally `/home/linux-mint/.camofox/profiles` on this machine.
+- Remember that durable login identity is `CAMOFOX_PROFILE_DIR + userId`; both values must match the previous run.
+- Before stopping or restarting Camofox, call `DELETE /sessions/general` so the persistence plugin checkpoints storage.
 - Verify login state after recreating a session; do not assume persistence restored successfully.
-- Reusing the same `userId` improves the chance of restoring login state, but does not guarantee it.
-- For this machine, prefer the generic persistent profile `userId=general` and use site/task-specific `sessionKey` values.
+- Never invent, randomize, ask for, or switch `userId`; always use `general` unless Master explicitly changes this skill.
 
 ## Session Or Tab Disappeared After Login
 
 - Some login flows may replace the current page, destroy the tab, or leave the original session empty.
 - Recreate the tab or session with the same durable `userId` and then verify login state again.
-- Do not switch to a fresh random `userId`, or you may lose the persisted login/profile.
+- Do not switch to a fresh `userId`, or you will use a different persisted login/profile.
+- After recovering from login, call `DELETE /sessions/general` before restart or cleanup to checkpoint the recovered state.
 
 ## Privacy Concerns
 

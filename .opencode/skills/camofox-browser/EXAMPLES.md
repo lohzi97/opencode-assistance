@@ -19,10 +19,16 @@ If not healthy, run from `../camofox-browser`:
 
 ```bash
 npm install
-CAMOFOX_CRASH_REPORT_ENABLED=false npm start
+CAMOFOX_CRASH_REPORT_ENABLED=false CAMOFOX_PROFILE_DIR=/home/linux-mint/.camofox/profiles npm start
 ```
 
 For PTY usage, spawn `npm start` in that directory and verify health again.
+
+For persistent login work, always use the single durable identity `userId=general` in examples below. Do not ask for, invent, randomize, or substitute another `userId`. Keep `CAMOFOX_PROFILE_DIR` fixed at `/home/linux-mint/.camofox/profiles`.
+
+```bash
+export CAMOFOX_PROFILE_DIR=/home/linux-mint/.camofox/profiles
+```
 
 ## 2. Open A Page
 
@@ -115,9 +121,10 @@ Then direct Master to:
 https://vnc.lohzi.com/vnc.html?autoconnect=1&host=vnc.lohzi.com&port=443&encrypt=1&path=websockify
 ```
 
-When finished:
+When finished, checkpoint the `general` profile before stopping VNC:
 
 ```bash
+curl -X DELETE http://localhost:9377/sessions/general
 lohzi-apps stop vnc
 ```
 
@@ -128,6 +135,7 @@ Run from `../camofox-browser`:
 ```bash
 ENABLE_VNC=1 \
 CAMOFOX_CRASH_REPORT_ENABLED=false \
+CAMOFOX_PROFILE_DIR=/home/linux-mint/.camofox/profiles \
 VNC_BIND=172.17.0.1 \
 TAB_INACTIVITY_MS=3600000 \
 SESSION_TIMEOUT_MS=3600000 \
@@ -148,6 +156,7 @@ Manual local-only start (localhost access, not public nginx access):
 ```bash
 ENABLE_VNC=1 \
 CAMOFOX_CRASH_REPORT_ENABLED=false \
+CAMOFOX_PROFILE_DIR=/home/linux-mint/.camofox/profiles \
 TAB_INACTIVITY_MS=3600000 \
 SESSION_TIMEOUT_MS=3600000 \
 BROWSER_IDLE_TIMEOUT_MS=3600000 \
@@ -192,6 +201,8 @@ Expected output starts with `HTTP/1.1 101 Switching Protocols` and includes `RFB
 
 ## 9. Close The Session
 
+Always close the session through the API before stopping Camofox. This checkpoints cookies and storage for `userId=general`.
+
 ```bash
 curl -X DELETE http://localhost:9377/sessions/general
 ```
@@ -200,11 +211,13 @@ curl -X DELETE http://localhost:9377/sessions/general
 
 Preferred order:
 
-1. Kill the Camofox PTY session first.
-2. Only if helpers remain, clean them up.
-3. Verify ports are closed.
+1. Call `DELETE /sessions/general` and verify success.
+2. Kill the Camofox PTY session.
+3. Only if helpers remain, clean them up.
+4. Verify ports are closed.
 
 ```bash
+curl -X DELETE http://localhost:9377/sessions/general || true
 pkill -f "node server.js" || true
 pkill -x x11vnc || true
 pkill -f websockify || true
