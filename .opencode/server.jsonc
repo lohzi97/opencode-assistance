@@ -411,6 +411,30 @@
       },
 
       {
+        "id": "monthly-freelance-receipt-audit",
+        "name": "Monthly Freelance Receipt/Invoice Audit",
+        "enabled": true,
+        "purpose": "Audit the previous month's freelance transactions for missing receipts and invoices. Report gaps to the Master so they can upload missing files to Google Drive.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "0 10 5 * *" // 5th of each month at 10:00 AM MYT
+        },
+        "mode": "isolated-session",
+        "instructions": "/receipt-audit",
+        "agent": "sebastian",
+        "priority": 3,
+        "policy": {
+          "no_overlap": true,
+          "silence_ok": true,
+          "ttl_ms": 86400000,
+          "retry": {
+            "max_attempts": 1,
+            "delay_ms": 3600000
+          }
+        }
+      },
+
+      {
         "id": "weekly-ml-lesson",
         "name": "Weekly ML Lesson Prep",
         "enabled": false,
