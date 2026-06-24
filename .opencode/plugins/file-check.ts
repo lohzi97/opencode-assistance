@@ -64,9 +64,10 @@
  * - rules (array, required): Array of validation rules
  *   - glob (string, required): Glob pattern to match files (e.g., "*.ts", "src/*.{js,ts}")
  *   - script (string, required): Path to validation script (relative to project root or absolute)
+ *   - args (string[], optional): Extra arguments passed to the script before the file path
  * 
  * Script Interface:
- * - Script is executed with: `bun <script> <file_path>`
+ * - Script is executed with: `bun <script> [...args] <file_path>`
  * - Exit code 0: Validation passed
  * - Exit code 1: Validation failed (output shown to user)
  * - Exit code other: Script crashed (logged as error)
@@ -79,6 +80,7 @@ import path from "node:path";
 type Rule = {
   glob: string;
   script: string;
+  args?: string[];
 };
 
 type Cfg = {
@@ -249,6 +251,11 @@ function invalid(cfg: Cfg) {
     if (typeof rule.script !== "string" || !rule.script) {
       return `rules[${i}].script must be a non-empty string`;
     }
+    if (rule.args !== undefined) {
+      if (!Array.isArray(rule.args) || rule.args.some((a) => typeof a !== "string")) {
+        return `rules[${i}].args must be an array of strings`;
+      }
+    }
   }
 }
 
@@ -368,7 +375,7 @@ export const FileCheckPlugin: Plugin = async ({ client, directory }) => {
           }
 
           try {
-            const proc = Bun.spawn(["bun", script, file], {
+            const proc = Bun.spawn(["bun", script, ...(rule.args ?? []), file], {
               cwd: directory,
               stdout: "pipe",
               stderr: "pipe",

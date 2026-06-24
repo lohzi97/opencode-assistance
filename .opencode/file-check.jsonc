@@ -8,7 +8,8 @@
   "rules": [
     {
       "glob": "journals/daily/*.md",
-      "script": ".opencode/scripts/check-max-size-25000.ts"
+      "script": ".opencode/scripts/check-max-size.ts",
+      "args": ["--limit", "25000"]
     },
     {
       "glob": "memory/canonical/*.md",

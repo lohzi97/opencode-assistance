@@ -77,6 +77,29 @@ If approval is not given, stop after presenting the plan.
 
 If approval is given, continue in the same conversation and apply the changes.
 
+## Reorganize On Size Pressure
+
+Canonical and private memory files are capped at 5000 bytes by the `file-check` plugin (`.opencode/scripts/validate-memory-file.ts`). When a write is rejected for exceeding that limit, or when adding an entry would clearly push a file over it, do not default to trimming. Prefer reorganization:
+
+1. Find a topical cluster of two or more related existing entries whose combined detail is large and self-contained (for example banking, health, commute, or roles in `master.md`).
+2. Create or append a note under the matching notes subdir (see mapping below) holding the full detail, preserving provenance and last-confirmed so origin stays traceable.
+3. Replace those entries in the canonical file with one condensed summary bullet that links to the note.
+4. Add the new entry and retry.
+
+Trimming punctuation, abbreviation, or dropping older facts remains a valid tool when it genuinely improves clarity, but it is the fallback, not the reflex. The preferred response to size pressure is moving volume into notes.
+
+### Note Directory Mapping
+
+Each canonical/private file links out to its own notes subdir, created on demand:
+
+- `master.md` → `notes/master/`
+- `projects.md` → `notes/projects/`
+- `working-preferences.md` → `notes/preferences/`
+- `environment.md` → `notes/environment/`
+- `private/private.md` → `notes/private/`
+
+Pointers use body text "See notes/<path>." to match the existing `projects.md` convention.
+
 ## Apply Changes
 
 On approval:
@@ -94,8 +117,9 @@ On approval:
 - Preserve file headings.
 - Preserve unrelated existing entries.
 - For removals, delete or refine only the targeted remembered statement.
-- For project-note routing, prefer `notes/projects/<slug>.md`.
-- For non-project supporting detail, choose a sensible freeform note path under `notes/`, such as `notes/preferences/`, `notes/environment/`, `notes/people/`, or `notes/relationship/`.
+- Link out to notes selectively: only when a cluster carries substantial detail worth a standalone note. Do not force a link on every terse single fact.
+- `projects.md` keeps its existing always-link habit (every project entry points to a project note).
+- When linking out, follow the Note Directory Mapping in `## Reorganize On Size Pressure`.
 
 ## Final Report
 

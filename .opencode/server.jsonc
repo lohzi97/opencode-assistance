@@ -282,6 +282,30 @@
       },
 
       {
+        "id": "weekly-memory-reorganize",
+        "name": "Weekly Memory Reorganize",
+        "enabled": true,
+        "purpose": "Weekly structural housekeeping of approved canonical and private memory: dedup, refine-merge, note hygiene, and stale flagging with journal cross-check.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "0 18 * * 0" // every Sunday 6:00 PM MYT, clear of the 5 AM daily run and 2 AM Sunday backup
+        },
+        "mode": "isolated-session",
+        "instructions": "/reorganize-memory",
+        "agent": "sebastian",
+        "priority": 3,
+        "policy": {
+          "no_overlap": true,
+          "silence_ok": false,
+          "ttl_ms": 86400000,
+          "retry": {
+            "max_attempts": 1,
+            "delay_ms": 3600000
+          }
+        }
+      },
+
+      {
         "id": "master-diary",
         "name": "Master's Diary",
         "enabled": true,
@@ -339,6 +363,7 @@
         "name": "Finance Recurring Transactions",
         "enabled": true,
         "purpose": "Auto-generate recurring transaction entries (subscriptions, auto-deductions) and commit to the finance ledger.",
+        "instructions": "Generate recurring finance transaction entries and commit to ledger.",
         "trigger": {
           "kind": "cron",
           "expr": "0 9 * * *" // daily 9:00 AM MYT
