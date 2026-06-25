@@ -17,6 +17,10 @@ INFO() { printf "==> %s\n" "$*"; }
 WARN() { printf "!! %s\n" "$*" >&2; }
 ERR() { printf "ERROR: %s\n" "$*" >&2; exit 1; }
 
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/platform.sh
+source "${PROJECT_ROOT}/lib/platform.sh"
+
 AUTO_YES=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -30,12 +34,11 @@ if [ "${FORCE:-}" = "yes" ] 2>/dev/null; then AUTO_YES=1; fi
 # Determine the real user and their home directory. If run under sudo, act on SUDO_USER.
 USER_NAME="${SUDO_USER:-$(whoami)}"
 if [ -n "${SUDO_USER:-}" ]; then
-  HOME_DIR="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+  HOME_DIR="$(user_home_dir "$SUDO_USER")"
 else
-  HOME_DIR="${HOME:-/home/${USER_NAME}}"
+  HOME_DIR="${HOME:-}"
 fi
-HOME_DIR="${HOME_DIR:-/home/${USER_NAME}}"
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOME_DIR="${HOME_DIR:-$(default_home_prefix "$USER_NAME")}"
 
 confirm() {
   local prompt="${1:-Proceed?}"
@@ -71,9 +74,9 @@ user_command_path() {
 safe_remove_user_dir() {
   local dir="$1"
   if [ -d "$dir" ]; then
-    # Determine owner (GNU stat)
+    # Determine owner (GNU stat on Linux, BSD stat on macOS)
     local owner
-    owner=$(stat -c %U "$dir" 2>/dev/null || true)
+    owner=$(stat_owner "$dir")
     if [ "$owner" = "$USER_NAME" ] || [ -z "$owner" ]; then
       INFO "Removing $dir"
       if [ -n "${SUDO_USER:-}" ] && command -v sudo >/dev/null 2>&1; then
@@ -93,7 +96,7 @@ safe_remove_user_file() {
   local file="$1"
   if [ -e "$file" ]; then
     local owner
-    owner=$(stat -c %U "$file" 2>/dev/null || true)
+    owner=$(stat_owner "$file")
     if [ "$owner" = "$USER_NAME" ] || [ -z "$owner" ]; then
       INFO "Removing $file"
       sudo rm -f "$file" || true
@@ -105,24 +108,24 @@ safe_remove_user_file() {
   fi
 }
 
-INFO "This script will attempt to undo changes made by install.sh for user '$USER_NAME' (home: $HOME_DIR)."
+INFO "This script will attempt to undo changes made by install.sh for user '$USER_NAME' (home: $HOME_DIR) on $(os_family)."
 cat <<EOF
 Planned actions:
 - Stop & remove 'brave-search-mcp' docker container (if present) and remove its image
 - Remove opencode (bun package) and related sudoers file /etc/sudoers.d/opencode-assistant
 - Remove qmd (npm/bun global install) and qmd cache/config data under ~/.cache/qmd and ~/.config/qmd
-- Remove qmd fork repo at ~/Projects/qmd
+- Remove qmd fork repo at ~/qmd
 - Remove computer-control-mcp fork repo at ../computer-control-mcp
 - Remove agent-tui (bun package) and agent-tui state data under ~/.agent-tui
 - Remove Antigravity CLI binary (~/.local/bin/agy) and config/data under ~/.antigravitycli
 - Remove OpenChamber (bun package or binary) and config/data under ~/.config/openchamber
 - Remove per-user bun (~/.bun), uv, and nvm (~/.nvm) directories and their shell boot lines
 - Remove camofox-browser repo at ../camofox-browser, ~/.camofox profile data, ~/.cache/camoufox browser cache, and local VNC log files
-- Purge Camofox VNC packages: xvfb, x11vnc, novnc, python3-websockify, net-tools (will NOT purge procps)
-- Purge Google Chrome package
-- Purge Docker Engine packages and remove Docker apt source + keyring (will NOT remove /var/lib/docker by default)
-- Purge tmux
-- Purge rclone and sqlite3 backup dependencies
+- Linux only: purge Camofox VNC packages (xvfb, x11vnc, novnc, python3-websockify, net-tools)
+- Remove Google Chrome (Linux: apt purge; macOS: brew cask uninstall or remove app bundle)
+- Remove Docker (Linux: apt purge + source/keyring cleanup + docker group; macOS: brew cask or manual)
+- Remove tmux (Linux: apt purge; macOS: brew uninstall)
+- Remove rclone and sqlite3 backup dependencies (Linux: apt purge; macOS: brew uninstall)
 - Remove imap-mcp-server repo at ~/imap-mcp-server and its config at ~/.imap-mcp
 
 You can skip confirmations by running with '-y' or setting FORCE=yes in the environment.
@@ -216,7 +219,7 @@ else
   INFO "No qmd binary found in PATH"
 fi
 
-QMD_FORK_DIR="${HOME_DIR}/Projects/qmd"
+QMD_FORK_DIR="${HOME_DIR}/qmd"
 safe_remove_user_dir "$QMD_FORK_DIR"
 
 # 5) Remove qmd cache and config
@@ -326,8 +329,20 @@ for f in "${SHELL_FILES[@]}"; do
   fi
 done
 
-# 10) Remove Google Chrome package
-if dpkg -s google-chrome-stable >/dev/null 2>&1; then
+# 10) Remove Google Chrome
+if is_mac; then
+  if chrome_is_installed; then
+    INFO "Removing Google Chrome (macOS app + brew cask if applicable)"
+    # If installed via Homebrew cask, uninstall it cleanly; otherwise remove the app bundle.
+    if command -v brew >/dev/null 2>&1 && brew list --cask google-chrome >/dev/null 2>&1; then
+      run_as_user brew uninstall --cask google-chrome || true
+    else
+      sudo rm -rf "/Applications/Google Chrome.app" || true
+    fi
+  else
+    INFO "Google Chrome not found on macOS; skipping"
+  fi
+elif dpkg -s google-chrome-stable >/dev/null 2>&1; then
   INFO "Purging google-chrome-stable"
   sudo apt-get purge -y google-chrome-stable || true
   sudo apt-get autoremove -y || true
@@ -336,8 +351,22 @@ else
   INFO "Google Chrome not installed via apt; skipping"
 fi
 
-# 11) Remove Docker Engine packages and apt sources/keyring
-if command -v docker >/dev/null 2>&1 || dpkg -s docker-ce >/dev/null 2>&1 || dpkg -s docker.io >/dev/null 2>&1; then
+# 11) Remove Docker
+if is_mac; then
+  if docker_installed; then
+    INFO "Stopping Docker Desktop (if running)"
+    stop_docker_service
+    if command -v brew >/dev/null 2>&1 && brew list --cask docker >/dev/null 2>&1; then
+      INFO "Uninstalling Docker Desktop via brew cask"
+      run_as_user brew uninstall --cask docker || true
+    else
+      WARN "Docker found at $(command -v docker); if installed outside Homebrew, remove Docker.app manually from /Applications"
+    fi
+  else
+    INFO "Docker not found on macOS; skipping"
+  fi
+  INFO "Note: Docker Desktop data lives under ~/Library/Containers/com.docker.docker and is NOT removed by this script."
+elif command -v docker >/dev/null 2>&1 || dpkg -s docker-ce >/dev/null 2>&1 || dpkg -s docker.io >/dev/null 2>&1; then
   INFO "Stopping Docker service (if running)"
   sudo systemctl stop docker >/dev/null 2>&1 || true
   INFO "Removing Docker Engine packages"
@@ -348,43 +377,52 @@ else
   INFO "Docker packages not present (by name); attempting to clean Docker apt source/keyring"
 fi
 
-if [ -f /etc/apt/keyrings/docker.asc ]; then
-  INFO "Removing /etc/apt/keyrings/docker.asc"
-  sudo rm -f /etc/apt/keyrings/docker.asc || true
-fi
-if [ -f /etc/apt/keyrings/docker.gpg ]; then
-  INFO "Removing legacy /etc/apt/keyrings/docker.gpg"
-  sudo rm -f /etc/apt/keyrings/docker.gpg || true
-fi
-if [ -f /etc/apt/sources.list.d/docker.sources ]; then
-  INFO "Removing /etc/apt/sources.list.d/docker.sources"
-  sudo rm -f /etc/apt/sources.list.d/docker.sources || true
-fi
-if [ -f /etc/apt/sources.list.d/docker.list ]; then
-  INFO "Removing legacy /etc/apt/sources.list.d/docker.list"
-  sudo rm -f /etc/apt/sources.list.d/docker.list || true
-fi
-
-# Remove user from docker group and delete the group if empty
-if getent group docker >/dev/null 2>&1; then
-  INFO "Removing user $USER_NAME from docker group (if present)"
-  sudo gpasswd -d "$USER_NAME" docker >/dev/null 2>&1 || true
-  # Check group members
-  members=$(getent group docker | cut -d: -f4 || true)
-  if [ -z "$members" ]; then
-    INFO "Docker group is now empty; removing group"
-    sudo groupdel docker >/dev/null 2>&1 || true
-  else
-    INFO "Docker group still has members: $members; not deleting group"
+if ! is_mac; then
+  if [ -f /etc/apt/keyrings/docker.asc ]; then
+    INFO "Removing /etc/apt/keyrings/docker.asc"
+    sudo rm -f /etc/apt/keyrings/docker.asc || true
   fi
-else
-  INFO "Docker group not present; skipping"
-fi
+  if [ -f /etc/apt/keyrings/docker.gpg ]; then
+    INFO "Removing legacy /etc/apt/keyrings/docker.gpg"
+    sudo rm -f /etc/apt/keyrings/docker.gpg || true
+  fi
+  if [ -f /etc/apt/sources.list.d/docker.sources ]; then
+    INFO "Removing /etc/apt/sources.list.d/docker.sources"
+    sudo rm -f /etc/apt/sources.list.d/docker.sources || true
+  fi
+  if [ -f /etc/apt/sources.list.d/docker.list ]; then
+    INFO "Removing legacy /etc/apt/sources.list.d/docker.list"
+    sudo rm -f /etc/apt/sources.list.d/docker.list || true
+  fi
 
-INFO "Note: this script does NOT remove Docker data directories (eg. /var/lib/docker). If you want to delete Docker data, run: sudo rm -rf /var/lib/docker /var/lib/containerd"
+  # Remove user from docker group and delete the group if empty
+  if getent group docker >/dev/null 2>&1; then
+    INFO "Removing user $USER_NAME from docker group (if present)"
+    sudo gpasswd -d "$USER_NAME" docker >/dev/null 2>&1 || true
+    # Check group members
+    members=$(getent group docker | cut -d: -f4 || true)
+    if [ -z "$members" ]; then
+      INFO "Docker group is now empty; removing group"
+      sudo groupdel docker >/dev/null 2>&1 || true
+    else
+      INFO "Docker group still has members: $members; not deleting group"
+    fi
+  else
+    INFO "Docker group not present; skipping"
+  fi
+
+  INFO "Note: this script does NOT remove Docker data directories (eg. /var/lib/docker). If you want to delete Docker data, run: sudo rm -rf /var/lib/docker /var/lib/containerd"
+fi
 
 # 12) Remove tmux
-if command -v tmux >/dev/null 2>&1 || dpkg -s tmux >/dev/null 2>&1; then
+if is_mac; then
+  if command -v tmux >/dev/null 2>&1 && command -v brew >/dev/null 2>&1 && brew list tmux >/dev/null 2>&1; then
+    INFO "Uninstalling tmux via brew"
+    run_as_user brew uninstall tmux || true
+  else
+    INFO "tmux not installed via brew on macOS (or brew unavailable); skipping"
+  fi
+elif command -v tmux >/dev/null 2>&1 || dpkg -s tmux >/dev/null 2>&1; then
   INFO "Purging tmux"
   sudo apt-get purge -y tmux || true
   sudo apt-get autoremove -y || true
@@ -393,18 +431,33 @@ else
 fi
 
 # 12b) Remove backup dependencies installed by install.sh
-if command -v rclone >/dev/null 2>&1 || dpkg -s rclone >/dev/null 2>&1; then
-  INFO "Purging rclone"
-  sudo apt-get purge -y rclone || true
+if is_mac; then
+  if command -v brew >/dev/null 2>&1; then
+    for pkg in rclone sqlite3; do
+      if brew list "$pkg" >/dev/null 2>&1; then
+        INFO "Uninstalling $pkg via brew"
+        run_as_user brew uninstall "$pkg" || true
+      else
+        INFO "$pkg not installed via brew; skipping"
+      fi
+    done
+  else
+    INFO "brew not available on macOS; cannot uninstall rclone/sqlite3"
+  fi
 else
-  INFO "rclone not installed via apt or PATH; skipping"
-fi
+  if command -v rclone >/dev/null 2>&1 || dpkg -s rclone >/dev/null 2>&1; then
+    INFO "Purging rclone"
+    sudo apt-get purge -y rclone || true
+  else
+    INFO "rclone not installed via apt or PATH; skipping"
+  fi
 
-if command -v sqlite3 >/dev/null 2>&1 || dpkg -s sqlite3 >/dev/null 2>&1; then
-  INFO "Purging sqlite3"
-  sudo apt-get purge -y sqlite3 || true
-else
-  INFO "sqlite3 not installed via apt or PATH; skipping"
+  if command -v sqlite3 >/dev/null 2>&1 || dpkg -s sqlite3 >/dev/null 2>&1; then
+    INFO "Purging sqlite3"
+    sudo apt-get purge -y sqlite3 || true
+  else
+    INFO "sqlite3 not installed via apt or PATH; skipping"
+  fi
 fi
 
 # 13) Remove imap-mcp-server repo and config
@@ -425,13 +478,24 @@ safe_remove_user_dir "$HOME_DIR/.cache/camofox"
 safe_remove_user_file /var/log/novnc.log
 safe_remove_user_file /var/log/x11vnc.log
 
-# 13d) Remove Camofox VNC packages installed by install.sh. Do not purge procps.
-INFO "Purging Camofox VNC packages"
-sudo apt-get purge -y xvfb x11vnc novnc python3-websockify net-tools || true
+# 13d) Remove Camofox VNC packages installed by install.sh. Linux only; macOS does not install them.
+if is_mac; then
+  INFO "Skipping Camofox VNC package purge on macOS (packages were not installed)"
+else
+  INFO "Purging Camofox VNC packages"
+  sudo apt-get purge -y xvfb x11vnc novnc python3-websockify net-tools || true
 
-INFO "Final apt-get autoremove/autoclean to tidy packages"
-sudo apt-get autoremove -y || true
-sudo apt-get autoclean -y || true
+  INFO "Final apt-get autoremove/autoclean to tidy packages"
+  sudo apt-get autoremove -y || true
+  sudo apt-get autoclean -y || true
+fi
+
+if is_mac; then
+  INFO "Running brew autoremove to tidy unneeded formulae"
+  if command -v brew >/dev/null 2>&1; then
+    run_as_user brew autoremove 2>/dev/null || true
+  fi
+fi
 
 INFO "Uninstall complete."
 INFO "Recommended manual follow-ups (if desired):"

@@ -1,8 +1,20 @@
 ### Install opencode-assistant
 
+Supported platforms: Linux Mint / Ubuntu (apt-based), WSL2 Ubuntu, and macOS (Homebrew).
+
 ```bash
 ./install.sh
 ```
+
+**macOS notes:**
+- The installer bootstraps Homebrew for you if it is missing (uses `NONINTERACTIVE=1`).
+- Google Chrome and Docker Desktop are installed via `brew install --cask` if not already present. Launch Docker Desktop once to accept its license before using `docker`.
+- Camofox VNC packages (`xvfb`, `x11vnc`, `novnc`) are skipped on macOS. Use the built-in Screen Sharing service for remote access instead.
+- A sudoers drop-in is created at `/etc/sudoers.d/opencode-assistant`. On macOS the installer also ensures `/etc/sudoers` contains `@includedir /etc/sudoers.d`, since not all macOS versions ship with that line.
+
+**WSL2 notes:**
+- Install `wslu` (`sudo apt install wslu`) so `start.sh` can open the web UI in your Windows browser via `wslview`. Without it, the URL is printed for manual opening.
+- If you use Docker Desktop's WSL2 integration, skip the apt-installed Docker engine by leaving Docker Desktop running before running `./install.sh`; the installer detects existing `docker` and skips reinstall.
 
 ### Configure opencode-assistant
 

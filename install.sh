@@ -39,16 +39,20 @@
 
 set -euo pipefail
 
-# Idempotent installer for Linux Mint / Ubuntu (apt-based)
+# Idempotent installer for Linux Mint / Ubuntu / WSL2 (apt-based) and macOS (Homebrew)
 # - Installs bun, opencode (global), qmd (global), uv/uvx, nvm + Node LTS, Google Chrome, Docker engine
 # - Installs rclone and sqlite3 for Google Drive backups
-# - Creates sudoers entry to allow running opencode with NOPASSWD
+# - Creates sudoers entry to allow running opencode with NOPASSWD (Linux only)
 # Usage:
 #   ./install.sh
 
 INFO() { printf "==> %s\n" "$*"; }
 WARN() { printf "!! %s\n" "$*" >&2; }
 ERR() { printf "ERROR: %s\n" "$*" >&2; exit 1; }
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/platform.sh
+source "${PROJECT_ROOT}/lib/platform.sh"
 
 INSTALL_WARNINGS=()
 record_warning() {
@@ -74,23 +78,29 @@ print_warning_summary() {
   done
 }
 
-if [ "$(uname -s)" != "Linux" ]; then
-  ERR "This script targets Debian/Ubuntu based Linux (Linux Mint). Aborting."
+if [ "$(os_family)" = "unknown" ]; then
+  ERR "Unsupported platform: $(uname -s). Supported: Linux (Ubuntu/Mint), WSL2, macOS."
 fi
 
-if ! command -v apt-get >/dev/null 2>&1; then
-  ERR "apt-get not found. This script requires a Debian/Ubuntu based system."
-fi
+case "$(os_family)" in
+  linux|wsl)
+    if ! command -v apt-get >/dev/null 2>&1; then
+      ERR "apt-get not found. This script requires a Debian/Ubuntu based Linux (including WSL2)."
+    fi
+    ;;
+  mac)
+    : # macOS is supported; Homebrew is installed below if missing
+    ;;
+esac
 
 USER_NAME="${SUDO_USER:-$(whoami)}"
 if [ -n "${SUDO_USER:-}" ]; then
-  HOME_DIR="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+  HOME_DIR="$(user_home_dir "$SUDO_USER")"
 else
-  HOME_DIR="${HOME:-/home/${USER_NAME}}"
+  HOME_DIR="${HOME:-}"
 fi
-HOME_DIR="${HOME_DIR:-/home/${USER_NAME}}"
+HOME_DIR="${HOME_DIR:-$(default_home_prefix "$USER_NAME")}"
 USER_GROUP="$(id -gn "$USER_NAME")"
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 run_as_user() {
   if [ -n "${SUDO_USER:-}" ] && command -v sudo >/dev/null 2>&1; then
@@ -151,11 +161,70 @@ ensure_sudo() {
   fi
 }
 
+ensure_homebrew() {
+  if ! is_mac; then
+    return
+  fi
+  if command -v brew >/dev/null 2>&1; then
+    return
+  fi
+  INFO "Installing Homebrew for current user (NONINTERACTIVE)"
+  run_as_user env HOME="$HOME_DIR" bash -lc \
+    'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+
+  # The Homebrew installer may not add the shellenv to user profiles on Apple Silicon.
+  # Ensure at least one profile file sources brew shellenv so subsequent `run_as_user` shells see it.
+  local brew_sh
+  if [ -x /opt/homebrew/bin/brew ]; then
+    brew_sh='eval "$(/opt/homebrew/bin/brew shellenv)"'
+  elif [ -x /usr/local/bin/brew ]; then
+    brew_sh='eval "$(/usr/local/bin/brew shellenv)"'
+  else
+    brew_sh=""
+  fi
+
+  if [ -n "$brew_sh" ]; then
+    # Make brew visible to the current script process for any immediate checks
+    eval "$brew_sh"
+    local profile_file
+    for profile_file in "$HOME_DIR/.zprofile" "$HOME_DIR/.profile"; do
+      if [ -f "$profile_file" ] && grep -Fq '/bin/brew shellenv' "$profile_file"; then
+        break
+      fi
+      INFO "Adding 'brew shellenv' to $profile_file"
+      # Pass values via positional args to avoid quoting headaches with $brew_sh containing double quotes.
+      run_as_user bash -c 'printf "\n%s\n" "$1" >> "$2"' _ "$brew_sh" "$profile_file"
+    done
+  fi
+
+  if ! command -v brew >/dev/null 2>&1; then
+    ERR "Homebrew installation did not add 'brew' to PATH. Open a new terminal (or follow https://brew.sh) and rerun ./install.sh."
+  fi
+}
+
+brew_install() {
+  if ! command -v brew >/dev/null 2>&1; then
+    ERR "Homebrew is required but was not found. Install it from https://brew.sh and rerun."
+  fi
+  INFO "Installing via brew: $*"
+  run_as_user brew install "$@"
+}
+
 install_prereqs() {
+  if is_mac; then
+    ensure_homebrew
+    # macOS ships curl/unzip/gnupg; we only install the missing pieces.
+    brew_install wget rclone sqlite3 gnupg ca-certificates
+    return
+  fi
   apt_install git curl wget unzip ca-certificates gnupg lsb-release software-properties-common python3-tk python3-dev rclone sqlite3
 }
 
 install_camofox_system_deps() {
+  if is_mac; then
+    INFO "Skipping apt-only Camofox VNC packages on macOS (use built-in Screen Sharing for remote access)"
+    return
+  fi
   apt_install xvfb x11vnc novnc python3-websockify net-tools procps
 }
 
@@ -282,6 +351,17 @@ setup_sudoers_for_opencode() {
     INFO "Sudoers file $SUDOERS_FILE already exists, skipping"
     return
   fi
+
+  # macOS does not always include /etc/sudoers.d/ in /etc/sudoers by default.
+  # Ensure the @includedir directive exists so our drop-in file is honored.
+  if is_mac; then
+    if ! sudo grep -Eiq '^[#@]includedir\s+/etc/sudoers.d' /etc/sudoers 2>/dev/null; then
+      INFO "Adding '@includedir /etc/sudoers.d' to /etc/sudoers (macOS default omits it)"
+      echo '@includedir /etc/sudoers.d' | sudo tee -a /etc/sudoers >/dev/null
+      sudo chmod 0440 /etc/sudoers
+    fi
+  fi
+
   OPENCODE_PATH="$(user_command_path opencode)"
   if [ -z "$OPENCODE_PATH" ]; then
     OPENCODE_PATH="${HOME_DIR}/.bun/bin/opencode"
@@ -332,21 +412,7 @@ ensure_camofox_vnc_log_file() {
   sudo install -o "$USER_NAME" -g "$USER_GROUP" -m 600 /dev/null "$log_file"
 }
 
-install_camofox_browser() {
-  if [ ! -d "$CAMOFOX_BROWSER_DIR/.git" ]; then
-    INFO "Cloning camofox-browser into $CAMOFOX_BROWSER_DIR"
-    run_as_user git clone "$CAMOFOX_BROWSER_REPO" "$CAMOFOX_BROWSER_DIR"
-  else
-    INFO "camofox-browser already cloned at $CAMOFOX_BROWSER_DIR; pulling latest"
-    run_as_user git -C "$CAMOFOX_BROWSER_DIR" pull --ff-only || \
-      WARN "Failed to pull latest camofox-browser. Continuing with existing version."
-  fi
-
-  INFO "Preparing local Camofox VNC log files"
-  ensure_camofox_vnc_log_file /var/log/novnc.log
-  ensure_camofox_vnc_log_file /var/log/x11vnc.log
-
-  INFO "Installing camofox-browser npm dependencies"
+run_camofox_npm_install() {
   WARN "The first camofox-browser install may download several hundred MBs and can exceed 700MB depending on version/platform."
   run_as_user env HOME="$HOME_DIR" CAMOFOX_CRASH_REPORT_ENABLED=false bash -lc "
     set -euo pipefail
@@ -375,7 +441,48 @@ install_camofox_browser() {
   "
 }
 
+install_camofox_browser() {
+  if [ ! -d "$CAMOFOX_BROWSER_DIR/.git" ]; then
+    INFO "Cloning camofox-browser into $CAMOFOX_BROWSER_DIR"
+    run_as_user git clone "$CAMOFOX_BROWSER_REPO" "$CAMOFOX_BROWSER_DIR"
+  else
+    INFO "camofox-browser already cloned at $CAMOFOX_BROWSER_DIR; pulling latest"
+    run_as_user git -C "$CAMOFOX_BROWSER_DIR" pull --ff-only || \
+      WARN "Failed to pull latest camofox-browser. Continuing with existing version."
+  fi
+
+  if ! is_mac; then
+    INFO "Preparing local Camofox VNC log files"
+    ensure_camofox_vnc_log_file /var/log/novnc.log
+    ensure_camofox_vnc_log_file /var/log/x11vnc.log
+  else
+    INFO "Skipping Camofox VNC log setup on macOS (Screen Sharing provides VNC access)"
+  fi
+
+  INFO "Installing camofox-browser npm dependencies"
+  run_camofox_npm_install
+}
+
 install_google_chrome() {
+  if is_mac; then
+    if chrome_is_installed; then
+      INFO "Google Chrome already installed at $(chrome_binary_path)"
+      return
+    fi
+    if ! command -v brew >/dev/null 2>&1; then
+      WARN "Homebrew not available; install Google Chrome manually from https://www.google.com/chrome/"
+      return
+    fi
+    INFO "Installing Google Chrome via brew cask"
+    run_as_user brew install --cask google-chrome
+    if chrome_is_installed; then
+      INFO "Google Chrome installed at $(chrome_binary_path)"
+    else
+      WARN "Google Chrome cask install finished but app not found at /Applications/Google Chrome.app"
+    fi
+    return
+  fi
+
   if command -v google-chrome >/dev/null 2>&1 || dpkg -s google-chrome-stable >/dev/null 2>&1; then
     INFO "Google Chrome already installed, skipping"
     return
@@ -394,6 +501,22 @@ install_google_chrome() {
 }
 
 install_docker_engine() {
+  if is_mac; then
+    if docker_installed; then
+      INFO "Docker already installed, skipping"
+      return
+    fi
+    if ! command -v brew >/dev/null 2>&1; then
+      WARN "Homebrew not available; install Docker Desktop manually from https://www.docker.com/products/docker-desktop"
+      return
+    fi
+    INFO "Installing Docker Desktop via brew cask"
+    run_as_user brew install --cask docker
+    WARN "Docker Desktop was installed. Launch it from /Applications/Docker.app to complete setup and accept the license."
+    WARN "The docker CLI will not be usable until Docker Desktop has been launched at least once."
+    return
+  fi
+
   if command -v docker >/dev/null 2>&1; then
     INFO "Docker already installed, skipping"
   else
@@ -417,8 +540,8 @@ EOF
     apt_update_if_needed
     sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
   fi
-  # Ensure the user is in the docker group
-  if groups "$USER_NAME" | grep -qw docker; then
+  # Ensure the user is in the docker group (Linux only; Docker Desktop on Mac does not use a group)
+  if docker_group_member "$USER_NAME"; then
     INFO "User $USER_NAME is already in the docker group"
   else
     INFO "Adding $USER_NAME to docker group"
@@ -435,7 +558,11 @@ install_tmux() {
     INFO "tmux already installed"
     return
   fi
-  apt_install tmux
+  if is_mac; then
+    brew_install tmux
+  else
+    apt_install tmux
+  fi
 }
 
 WORKSPACE_MCP_REPO="https://github.com/taylorwilsdon/google_workspace_mcp.git"

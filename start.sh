@@ -3,6 +3,9 @@
 set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/platform.sh
+source "${root}/lib/platform.sh"
+
 cfg="$root/.opencode/server.jsonc"
 config_env="$root/.opencode/config.env"
 dir="$root/.opencode/server"
@@ -251,12 +254,8 @@ if command -v openchamber >/dev/null 2>&1; then
   webui_url="http://$OPENCHAMBER_HOST:$OPENCHAMBER_PORT"
 fi
 
-if command -v xdg-open >/dev/null 2>&1; then
-  if xdg-open "$webui_url" >/dev/null 2>&1; then
-    INFO "Opened web UI in default browser"
-  else
-    WARN "Failed to open browser automatically; open $webui_url manually"
-  fi
+if open_browser "$webui_url"; then
+  INFO "Opened web UI in default browser"
 else
-  WARN "xdg-open not found; open $webui_url manually"
+  WARN "No browser opener available; open $webui_url manually"
 fi
