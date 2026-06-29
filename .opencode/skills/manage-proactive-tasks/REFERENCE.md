@@ -88,6 +88,131 @@ Rules:
 - all fields are optional
 - only include fields that should change
 
+## Queue Item Field Semantics
+
+Each field controls a specific runtime behavior. Semantics verified against
+`.opencode/server/proactive.ts` and `.opencode/server/shared.ts`.
+
+### `instructions` (required for add)
+
+The literal prompt text delivered to the agent session at dispatch time. This is
+not a label or description — it IS the task. Two execution paths:
+
+- If the trimmed text starts with `/`, it is dispatched as a slash command
+  (e.g. `/my-command arg1 arg2`).
+- Otherwise, it is sent as a plain text prompt via `promptAsync`.
+
+Never replace with placeholder text when editing — the agent receives the string
+verbatim. Only edit to refine or improve the actual instruction content.
+
+### `not_before` (epoch milliseconds)
+
+Unix timestamp in ms. The dispatcher will not dispatch until current time exceeds
+this value. Default: current time (immediate eligibility). Compute with:
+
+```sh
+date -d "2026-07-06 08:00:00 +0800" +%s%3N
+```
+
+### `priority` (integer, default 0)
+
+Higher number = dispatched first. Items are sorted by priority (descending), then
+by creation time (FIFO) within the same priority.
+
+### `ttl_ms` (milliseconds)
+
+If a queued item waits longer than `ttl_ms` from creation, it expires and is
+dropped without executing. Default: 1800000 (30 min). For future-scheduled items
+with a distant `not_before`, set `ttl_ms` high enough to cover the full wait
+period plus a grace window.
+
+### `agent` (string)
+
+The OpenCode agent for the session (e.g. `sebastian`, `levi`). If omitted, the
+default agent is used.
+
+### `model` (object: `{ providerID, modelID, variant? }`)
+
+Overrides the model for the dispatched session:
+
+- `providerID` (required with modelID): e.g. `deepseek`, `zai-coding-plan`
+- `modelID` (required with providerID): e.g. `deepseek-v4-flash`, `glm-5.1`
+- `variant` (optional): reasoning effort — `low`, `medium`, `high`, `max`.
+  Fully supported and threaded through to the API at dispatch time.
+
+If `providerID` or `modelID` is missing, the entire model field is silently
+ignored and the default model is used.
+
+### `context` (object)
+
+**Metadata only — NOT injected into the agent session.**
+
+Stored on the queue item for inspection via `get-all-tasks` and included in
+exec-mode failure artifacts. The isolated-session execution path passes only
+`instructions`, `agent`, and `model` — `context` is never referenced at runtime.
+
+If the agent needs contextual information, embed it directly in `instructions`.
+
+### `dedupe_key` (string)
+
+Idempotency guard. If an item with the same key already exists in the queue or
+active runs, the new item is **rejected** (suppressed with reason "dedupe key
+already queued or active"). Prevents duplicate tasks from accumulating when a
+script enqueues repeatedly. If omitted, no dedup check occurs.
+
+## Queue Item Lifecycle
+
+```
+add-task-to-queue
+       |
+       v
+   [ queued ]<------ not_before > now, stays waiting
+       |
+       | not_before <= now, lane available
+       v
+  [ dispatched ]   removed from queue, moved to state.active
+       |
+       | run completes
+       v
+   [ consumed ]    removed from active, logged to proactive-runs.jsonl
+```
+
+Key points:
+
+- **No manual cleanup needed.** Dispatched items are removed from `state.queue`
+  and moved to `state.active`. On completion they are removed from `state.active`
+  and appended to the run ledger. Nothing lingers to clean up.
+- **Survives restart.** State persists to `.opencode/server/state/proactive-state.json`
+  on every mutation (locked read-mutate-write). A restart recycles processes only;
+  the JSON state file is untouched. The dispatcher loads state fresh from disk on
+  startup.
+- **Only actionable while queued.** `edit-queued-task` and `remove-queued-task`
+  work only on items still in the queue. Once dispatched, the item is consumed
+  and no longer exists to edit or remove.
+
+## `get-all-tasks` Output Structure
+
+```json
+{
+  "enabled": true,
+  "configured_tasks": [
+    { "id": "...", "name": "...", "queued_count": N, "active_count": N }
+  ],
+  "queue": [
+    { "queue_id": "pq_...", "instructions": "...", "not_before": N,
+      "priority": N, "agent": "...", "model": {...}, "context": {...},
+      "dedupe_key": "...", "ttl_ms": N, "status": "queued" }
+  ],
+  "active_runs": [ { "run_id": "run_...", "status": "running" } ],
+  "anchors": [ ... ]
+}
+```
+
+- `queue`: all pending items sorted by priority (descending). Inspect to find
+  `queue_id` values before editing or removing.
+- `configured_tasks`: task definitions from `server.jsonc` with live counts.
+- `active_runs`: currently executing tasks.
+
 ## Anchor Runtime Notes
 
 When operating anchor tasks at runtime, keep these behaviors in mind:
@@ -120,6 +245,22 @@ Common mistake: providing `model.providerID` without `model.modelID`. The CLI wi
 ### Avoid editing configured tasks through this skill
 
 Common mistake: trying to use `edit-queued-task` to change the schedule or trigger of a configured task. That is the wrong layer. Use `configure-proactive-task` instead.
+
+### Avoid editing instructions to placeholder text
+
+Common mistake: setting `instructions` to a generic string like "updated" when editing. The agent receives the `instructions` string verbatim as its prompt at dispatch time. Only edit instructions to refine the actual task content.
+
+### Avoid relying on `context` for runtime behavior
+
+Common mistake: putting critical information in `context` expecting the agent to see it. The `context` field is metadata only — it is never injected into the session prompt. Embed any information the agent needs directly in `instructions`.
+
+### Avoid default TTL for future-scheduled items
+
+Common mistake: using `not_before` to schedule a reminder days away but leaving `ttl_ms` at the default 30 minutes. The item expires and is dropped before it ever becomes eligible. Always set `ttl_ms` to exceed the gap between creation and `not_before`.
+
+### Avoid confusion about queue persistence
+
+Common mistake: assuming queued items are lost on restart. Queue state is persisted to `proactive-state.json` on every mutation. Restarts recycle processes only; the state file survives untouched.
 
 ## Quick Reference
 

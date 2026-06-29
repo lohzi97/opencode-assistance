@@ -51,6 +51,16 @@ Choose commands using this rule set:
 | `add-task-to-queue` | -- (new item) | Create a new ad-hoc queued item. Payload must include `instructions`. |
 | `edit-queued-task <queue-id>` | Queue item ID | Modify an existing queued item. All fields optional. Not for configured task definitions. |
 
+## Critical Field Notes
+
+Source-verified semantics that prevent common mistakes:
+
+- **`instructions` is the literal agent prompt.** Not a label. If edited to placeholder text, the agent receives it verbatim. Only edit to refine the actual instruction.
+- **`context` is NOT injected into the session.** It is metadata for inspection and debugging only. If the agent needs context, embed it in `instructions`.
+- **`model.variant` is supported.** Use `{"providerID": "...", "modelID": "...", "variant": "high"}` to control reasoning effort.
+- **Queued items self-clean on dispatch.** No manual cleanup needed after a task fires.
+- **Queued items survive restart.** State persists to `proactive-state.json` on every mutation.
+
 ## Operational Workflow
 
 1. **Inspect first when IDs are unclear** -- Run `get-all-tasks` to determine whether the target is a configured task, a queued item, or missing.

@@ -50,6 +50,9 @@ Do not use this skill for ordinary desktop browsing. That remains `browser-inter
 18. For VNC sessions that need human time, set `TAB_INACTIVITY_MS`, `SESSION_TIMEOUT_MS`, and `BROWSER_IDLE_TIMEOUT_MS` to a large positive value such as `3600000` (one hour). `TAB_INACTIVITY_MS=0` falls back to the 5-minute default in the current config parser.
 19. Unless Master explicitly asks to keep the browser warm, checkpoint with `DELETE /sessions/general`, then clean up the Camofox PTY, then any leftover `Xvfb`, `x11vnc`, and `websockify` processes, and verify ports `9377`, `6080`, and `5900` are closed.
 20. When the server fails to start or the API contract does not behave as documented, report it and pause instead of guessing.
+21. If an OAuth or login popup is visually clipped in noVNC, prefer resizing the native X11 popup window on the active `Xvfb` display instead of changing page zoom, CSS zoom, or browser zoom.
+22. On this host, clipped Google/Shopee popups were fixable by identifying the popup window from `DISPLAY=:<n> xwininfo -root -tree` and resizing it with `wmctrl -i -r <window-id> -e 0,<x>,<y>,<width>,<height>`.
+23. Do not use content zoom, CSS zoom, or browser zoom as a readability fix for clipped popups unless Master explicitly asks; those can make the popup unusable and may leave the browser showing a reduced zoom percentage.
 
 ## Startup Workflow
 
@@ -137,6 +140,16 @@ Use VNC only when a human-visible step is required.
 8. If the VNC watcher dies but the main browser stays healthy, treat that as a VNC failure. Clean up helper processes and restart rather than assuming the visual path still works.
 9. If you had to start manual VNC helper processes as a recovery step, terminate them during cleanup as well.
 10. For public VNC verification, the WebSocket probe through nginx should return `HTTP/1.1 101 Switching Protocols` followed by `RFB 003.008`.
+11. If a popup is clipped in VNC, inspect the real X11 window tree on the active display rather than assuming the page viewport is the problem. On this host the active display looked like `:267`, the main Shopee window was `1920x1080`, and the Google popup was a separate X11 window.
+12. Useful popup-resize sequence:
+
+```bash
+DISPLAY=:267 xwininfo -root -tree
+DISPLAY=:267 xwininfo -id 0x2002c4
+DISPLAY=:267 wmctrl -i -r 0x2002c4 -e 0,20,30,1880,1000
+```
+
+13. Use `xwininfo` to verify the popup geometry before and after resize. If the popup becomes too large or misplaced, adjust only the native window geometry and avoid page-level zoom hacks.
 
 ## Files
 
