@@ -37,6 +37,7 @@ export type ProactiveQueueItem = {
   anchor_window_id?: string;
   agent?: string;
   model?: ModelRef;
+  title?: string;
   instructions: string;
   context: Record<string, unknown>;
   status: ProactiveQueueStatus;
@@ -626,6 +627,7 @@ function parseQueueItem(input: unknown): ProactiveQueueItem | undefined {
     anchor_window_id: asString(input.anchor_window_id),
     agent: asString(input.agent),
     model: parseModelRef(input.model),
+    title: asString(input.title),
     instructions: input.instructions,
     context: record(input.context) ? input.context : {},
     status: input.status,

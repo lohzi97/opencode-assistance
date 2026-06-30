@@ -32,9 +32,13 @@ and belong to `configure-proactive-task`, not here.
 5. Always compute `ttl_ms` to cover the gap between now and `not_before` plus a
    1-hour grace window. Never use default TTL for future-scheduled items.
 6. Phrase `instructions` as a complete directive to the agent at fire time. The
-   agent session has zero context about why the reminder was created — it only
-   sees the `instructions` text.
-7. Use `Asia/Kuala_Lumpur` (UTC+8) for all date/time interpretation unless the
+   fired session has zero context — it **cannot tell a fired reminder apart from
+   a fresh request to schedule a reminder**. So the instructions must explicitly
+   frame themselves as a deliver-now nudge and forbid rescheduling, or the fired
+   agent will try to re-schedule instead of delivering. Use the Create template.
+7. Set a short `title` for every reminder so its dispatched session has a
+   recognizable name instead of the generic "Proactive Isolated Run".
+8. Use `Asia/Kuala_Lumpur` (UTC+8) for all date/time interpretation unless the
    Master specifies otherwise.
 
 ## Workflow: Create
@@ -55,26 +59,35 @@ and belong to `configure-proactive-task`, not here.
    ttl_ms = (not_before - now_ms) + 3600000
    ```
 
-4. Build `instructions` as a self-contained directive:
-   ```
-   "Remind the Master that [content]. Deliver this as a concise personal
-   reminder in your butler voice."
-   ```
+4. Build `instructions` AND a short `title`. The fired session sees ONLY this
+   text, so it must be unambiguous:
+   - **instructions** — lead with a framing tag so the fired agent knows to
+     DELIVER now and never schedule/reschedule/re-queue; phrase the action in
+     the agent's own voice ("Send the Master a nudge that...") rather than the
+     skill-triggering imperative "Remind the Master to <do X>":
+     ```
+     [FIRED REMINDER — deliver now. Do NOT schedule, reschedule, or re-queue anything.]
+     Send the Master a short personal nudge in your butler voice: he asked to be reminded that [content].
+     Stop after delivering.
+     ```
+   - **title** — a short, human-readable label (e.g. "Reminder: Glen Court
+     meeting WhatsApp") that becomes the dispatched session's name.
 
 5. Check quiet hours (23:00-08:00 MYT). If the reminder fires during quiet
    hours, warn the Master that telegram delivery may be suppressed.
 
 6. Display parameters for approval:
    ```
+   Title:  [short title]
    What:   [instruction text]
    When:   [human-readable date/time MYT]
    TTL:    [human-readable duration]
    Agent:  sebastian
    ```
 
-7. On approval, execute:
+7. On approval, execute (include `title` in the payload):
    ```sh
-   printf '%s' '{...json...}' | bun .opencode/scripts/proactive-cli.ts add-task-to-queue --stdin
+   printf '%s' '{"instructions":"...","title":"Reminder: ...","not_before":N,"ttl_ms":N,"agent":"sebastian"}' | bun .opencode/scripts/proactive-cli.ts add-task-to-queue --stdin
    ```
 
 8. Report the returned `queue_id` so the Master can reference it later.
@@ -84,7 +97,7 @@ and belong to `configure-proactive-task`, not here.
 1. Run `get-all-tasks` to list queued items.
 2. Identify the target. Match by instruction content, or list candidates and
    ask the Master to confirm which `queue_id`.
-3. Collect new values (new date/time, new content, new priority).
+3. Collect new values (new date/time, new content, new title, new priority).
 4. Recompute `not_before` and `ttl_ms` if the date/time changed.
 5. Display current values and proposed new values side by side.
 6. On approval, execute:

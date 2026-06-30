@@ -32,6 +32,7 @@ Treat this CLI as the canonical interface. Do not rely on thin wrapper scripts u
   "priority": 0,
   "ttl_ms": 1800000,
   "agent": "sebastian",
+  "title": "optional session title",
   "model": {
     "providerID": "provider",
     "modelID": "model",
@@ -69,13 +70,11 @@ The edit payload supports this partial shape:
   "priority": 5,
   "ttl_ms": 900000,
   "agent": "sebastian",
+  "title": "optional session title",
   "model": {
     "providerID": "provider",
     "modelID": "model",
     "variant": "optional"
-  },
-  "context": {
-    "reason": "optional"
   },
   "dedupe_key": "optional-string",
   "not_before": 1760000000000
@@ -153,6 +152,18 @@ exec-mode failure artifacts. The isolated-session execution path passes only
 
 If the agent needs contextual information, embed it directly in `instructions`.
 
+### `title` (string)
+
+Optional human-readable label used as the OpenCode **session title** for the
+dispatched isolated session. When omitted, the title falls back to
+`"Proactive Isolated Run"` for ad-hoc items, or the rendered task name for
+configured tasks.
+
+This is a display concern only — it is never injected into the agent prompt
+(`instructions` remains the sole runtime input). Set it for ad-hoc items that
+deserve a recognizable name in the session list (e.g. reminders). Survives
+state persistence and queue edits. Editable via `edit-queued-task`.
+
 ### `dedupe_key` (string)
 
 Idempotency guard. If an item with the same key already exists in the queue or
@@ -199,7 +210,7 @@ Key points:
     { "id": "...", "name": "...", "queued_count": N, "active_count": N }
   ],
   "queue": [
-    { "queue_id": "pq_...", "instructions": "...", "not_before": N,
+    { "queue_id": "pq_...", "instructions": "...", "title": "...", "not_before": N,
       "priority": N, "agent": "...", "model": {...}, "context": {...},
       "dedupe_key": "...", "ttl_ms": N, "status": "queued" }
   ],

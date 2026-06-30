@@ -11,6 +11,7 @@ type AddPayload = {
   ttl_ms?: number;
   agent?: string;
   model?: ModelRef;
+  title?: string;
   context?: Record<string, unknown>;
   dedupe_key?: string;
   not_before?: number;
@@ -27,6 +28,7 @@ type EditPayload = Partial<{
   ttl_ms: number;
   agent: string;
   model: ModelRef;
+  title: string;
   context: Record<string, unknown>;
   dedupe_key: string;
   not_before: number;
@@ -120,6 +122,7 @@ function parseAddPayload(input: unknown): AddPayload {
     ttl_ms: asNumber(input.ttl_ms),
     agent: asString(input.agent),
     model: parseModel(input.model),
+    title: asString(input.title),
     context: record(input.context) ? input.context : undefined,
     dedupe_key: asString(input.dedupe_key),
     not_before: asNumber(input.not_before),
@@ -143,6 +146,7 @@ function parseEditPayload(input: unknown): EditPayload {
     ttl_ms: asNumber(input.ttl_ms),
     agent: asString(input.agent),
     model: parseModel(input.model),
+    title: asString(input.title),
     context: record(input.context) ? input.context : undefined,
     dedupe_key: asString(input.dedupe_key),
     not_before: asNumber(input.not_before),

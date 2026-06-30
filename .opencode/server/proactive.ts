@@ -63,6 +63,7 @@ type AdmissionInput = {
   taskID?: string;
   taskName?: string;
   triggerKind?: string;
+  title?: string;
   instructions: string;
   mode: ProactiveExecutionMode;
   anchorAction?: ProactiveAnchorAction;
@@ -279,6 +280,7 @@ export class ProactiveService {
     dedupe_key?: string;
     not_before?: number;
     source?: ProactiveQueueSource;
+    title?: string;
   }) {
     await this.ensureLoaded();
     await this.requestConfigReload();
@@ -295,6 +297,7 @@ export class ProactiveService {
         kind: "ad_hoc",
         instructions: input.instructions,
         mode: "isolated-session",
+        title: input.title,
         priority: input.priority ?? 0,
         ttlMs: input.ttl_ms ?? config.defaults.ttl_ms,
         notBefore: input.not_before ?? now,
@@ -340,7 +343,7 @@ export class ProactiveService {
     patch: Partial<
       Pick<
         ProactiveQueueItem,
-        "instructions" | "priority" | "ttl_ms" | "not_before" | "agent" | "model" | "context" | "dedupe_key"
+        "instructions" | "priority" | "ttl_ms" | "not_before" | "agent" | "model" | "context" | "dedupe_key" | "title"
       >
     >,
   ) {
@@ -367,6 +370,7 @@ export class ProactiveService {
       if (patch.model !== undefined) item.model = patch.model;
       if (patch.context !== undefined) item.context = patch.context;
       if (patch.dedupe_key !== undefined) item.dedupe_key = patch.dedupe_key;
+      if (patch.title !== undefined) item.title = patch.title;
       state.queue = sortQueue(state.queue);
       return item;
     });
@@ -1006,7 +1010,9 @@ export class ProactiveService {
       rootSessionID = anchorWindow.current_session_id!;
       title = anchorWindow.rendered_title;
     } else {
-      title = task ? renderIsolatedTitle(task, claim.queueItem.scheduled_at ?? Date.now(), this.timezone()) : "Proactive Isolated Run";
+      title =
+        claim.queueItem.title ??
+        (task ? renderIsolatedTitle(task, claim.queueItem.scheduled_at ?? Date.now(), this.timezone()) : "Proactive Isolated Run");
       const session = await this.client.createSession(title);
       rootSessionID = session.id;
     }
@@ -1477,6 +1483,7 @@ export class ProactiveService {
       anchor_window_id: input.anchorWindowID,
       agent: input.agent,
       model: input.model,
+      title: input.title,
       instructions: input.instructions,
       context: input.context ?? {},
       status: "queued",
