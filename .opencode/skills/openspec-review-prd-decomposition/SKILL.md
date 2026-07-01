@@ -30,6 +30,7 @@ Use this skill when the user asks to:
 - Preserve independent implementability and independent verifiability for every proposal.
 - Do NOT move missed verification into a final testing stage.
 - Add verification to the same proposal that owns the behavior.
+- Prefer actual end-to-end verification (run the real system through its real interface) over static assertions when patching task-level checks.
 - Do not implement application code.
 - Ask focused clarification questions only when the PRD itself is ambiguous or contradictory.
 
@@ -139,6 +140,7 @@ If paths are unclear, infer obvious sibling paths. If still unclear, ask.
 - Do not expand scope beyond the PRD unless the user confirms it.
 - Preserve the original decomposition where it is correct.
 - Prefer adding missing scenarios and tasks over rewriting entire proposals.
+- Upgrade unit-only checks to end-to-end checks where the behavior is observable through the real system interface; keep unit assertions only for pure logic that has no external surface.
 - When adding a new change, make it independently implementable and independently verifiable.
 - Keep OpenSpec requirement headers and `#### Scenario:` formatting exact.
 

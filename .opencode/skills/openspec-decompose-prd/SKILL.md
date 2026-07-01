@@ -26,6 +26,7 @@ Use this skill when the user asks to:
 - Every proposal MUST be independently verifiable.
 - Do NOT lump testing into a final stage.
 - Verification MUST happen at every step through scenarios in specs and concrete test/check tasks in `tasks.md`.
+- Prefer actual end-to-end verification (run the real system through its real interface) over static assertions when writing task-level checks.
 - Each change MUST reference the original PRD with file path and section or line anchors when available.
 - Keep each change atomic: one coherent capability or contract surface per change.
 - Respect dependency order, but avoid creating changes that are useless unless all later changes are implemented.
@@ -135,6 +136,8 @@ If no PRD path is clear, ask for it.
    - [ ] 1.1 Implement room creation, then integration-test required fields and persisted state.
    - [ ] 1.2 Add authorization guard, then test allowed and rejected callers.
    ```
+
+   Prefer end-to-end checks that exercise the real system (running server, CLI invocation, actual API/HTTP response, persisted state) over internal unit assertions. Phrase each check so the implementer verifies observable behavior, for example `then start the server and confirm it returns the expected JSON for the new endpoint` rather than `then add a unit test for the handler`. Keep unit assertions only for pure logic with no external surface.
 
    Do not create a final-only testing group. A verification-only task is acceptable only when it verifies the same slice and appears in that slice's own change.
 

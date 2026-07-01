@@ -86,6 +86,22 @@ The planner must persist workflow state to a JSON file in the target project dir
       "escalated": false
     }
   ],
+  "gateLoopState": {
+    "<proposal-name>": {
+      "<gate-phase>": {
+        "criticalLoops": 0,
+        "smallLoops": 0
+      }
+    }
+  },
+  "phaseLoopState": {
+    "<proposal-name>": {
+      "testingFixing": { "count": 0, "limit": 10 },
+      "codeReviewFix": { "count": 0, "limit": 5 },
+      "blockedWorker": { "count": 0, "limit": 2 },
+      "unclearReport": { "count": 0, "limit": 5 }
+    }
+  },
   "lastUpdated": "<ISO-8601>"
 }
 ```
@@ -122,23 +138,23 @@ Spawn each worker with the model assigned to its phase unless the user explicitl
 
 All workers must be spawned with `--agent levi`. Do not omit the agent flag or let it fall back to the planner default. If a future run requires a different agent, the user must explicitly override this for that run.
 
-| Worker phase | Skill | Provider | Model |
-| --- | --- | --- | --- |
-| Proposal creation | `openspec-propose` | `deepseek` | `deepseek-v4-pro` |
-| Proposal review | `openspec-review-proposal` | `deepseek` | `deepseek-v4-pro` |
-| PRD decomposition | `openspec-decompose-prd` | `deepseek` | `deepseek-v4-pro` |
-| PRD decomposition review | `openspec-review-prd-decomposition` | `deepseek` | `deepseek-v4-pro` |
-| Implementation | `openspec-apply-change` | `deepseek` | `deepseek-v4-pro` |
-| Implementation review/resume | `openspec-apply-resume` | `deepseek` | `deepseek-v4-pro` |
-| Testing | `openspec-test` | `deepseek` | `deepseek-v4-pro` |
-| Fixing | `openspec-fix` | `deepseek` | `deepseek-v4-pro` |
-| Code review | `openspec-code-review` | `openai` | `gpt-5.5` |
-| Design discussion | `openspec-discuss` | `openai` | `gpt-5.5` |
-| Alignment | `openspec-align` | `deepseek` | `deepseek-v4-flash` |
-| Archive | `openspec-archive-change` | `deepseek` | `deepseek-v4-pro` |
-| Commit checkpoint | commit worker | `deepseek` | `deepseek-v4-flash` |
+| Worker phase | Skill | Provider | Model | Variant |
+| --- | --- | --- | --- | --- |
+| Proposal creation | `openspec-propose` | `deepseek` | `deepseek-v4-pro` | `max` |
+| Proposal review | `openspec-review-proposal` | `deepseek` | `deepseek-v4-pro` | `max` |
+| PRD decomposition | `openspec-decompose-prd` | `deepseek` | `deepseek-v4-pro` | `max` |
+| PRD decomposition review | `openspec-review-prd-decomposition` | `deepseek` | `deepseek-v4-pro` | `max` |
+| Implementation | `openspec-apply-change` | `deepseek` | `deepseek-v4-pro` | `max` |
+| Implementation review/resume | `openspec-apply-resume` | `deepseek` | `deepseek-v4-pro` | `max` |
+| Testing | `openspec-test` | `deepseek` | `deepseek-v4-pro` | `max` |
+| Fixing | `openspec-fix` | `deepseek` | `deepseek-v4-pro` | `max` |
+| Code review | `openspec-code-review` | `openai` | `gpt-5.5` | `medium` |
+| Design discussion | `openspec-discuss` | `openai` | `gpt-5.5` | `medium` |
+| Alignment | `openspec-align` | `deepseek` | `deepseek-v4-flash` | `max` |
+| Archive | `openspec-archive-change` | `deepseek` | `deepseek-v4-pro` | `max` |
+| Commit checkpoint | commit worker | `deepseek` | `deepseek-v4-flash` | `max` |
 
-When spawning through `agent-collab`, pass both `--provider <provider>` and `--model <model>` from this table. Do not omit model routing and rely on planner defaults. If a configured provider/model pair is unavailable at spawn time, stop and ask the user for a model override instead of silently falling back to the planner default.
+When spawning through `agent-collab`, pass both `--provider <provider>`, `--model <model>` and `--variant <variant>` from this table. Do not omit model routing and rely on planner defaults. If a configured provider/model pair is unavailable at spawn time, stop and ask the user for a model override instead of silently falling back to the planner default.
 
 ## Intake
 
@@ -217,10 +233,8 @@ If the prior state is unclear even after state file recovery and artifact inspec
 3. Create an `agent-collab` room as planner for the target project directory.
 4. Preserve the full room name returned by `room create`.
 5. Keep the room password private.
-6. Do not use a detailed room public message. Leave it unset unless a minimal neutral note is necessary.
+6. Do not set a room public message. Workers in a sequential orchestration flow receive their full assignment from the spawn prompt. The public message feature is designed for collaborative discussion rooms, not sequential worker dispatch. Setting one wastes context window on every delivery and adds noise the worker does not need.
 7. Update the state file `roomId` field with the created room name.
-
-The worker does not need the project path, change id, phase, global workflow, reporting schema, or orchestration rules in the room public message. Spawn the worker in the correct project directory and send the immediate assignment directly.
 
 ## Worker Assignment Pattern
 
@@ -284,7 +298,7 @@ For each phase:
 
 Removing a worker from the room removes it from collaboration context; it is not a guarantee that the spawned OpenCode session process is terminated. Do not rely on removed workers for future context.
 
-If the worker asks a tracked question, reports `blocked`, or flags an issue, do not reflexively escalate to the user. Route the question through the **Autonomous Decision Protocol** below. The protocol decides whether the planner resolves it, defers to the worker, or escalates. Deliver any autonomous answer to the worker through `agent-collab answer --parent <message_id>`.
+If the worker asks a tracked question, reports `blocked`, or flags an issue, do not reflexively escalate to the user. Route the question through the **Autonomous Decision Protocol** below. The protocol decides whether the planner resolves it, defers to the worker, or escalates. Deliver any autonomous answer to the worker through `agent-collab answer --parent <message_id>`. The blocked-worker re-dispatch cycle has a hard limit of 2 rounds (see Phase Loop Protocol).
 
 Use hard interrupts only when a worker is clearly stuck or running the wrong task.
 
@@ -298,10 +312,10 @@ Use hard interrupts only when a worker is clearly stuck or running the wrong tas
 - Do not personally stage, commit, or push. Use a commit worker whenever checkpoint commits are enabled.
 - Act on worker reports, not planner-side implementation analysis.
 - Do not let a worker choose the next phase; workers may recommend, but the planner decides.
-- If a worker report is unclear, spawn a fresh reviewer or ask a clarification instead of guessing.
+- If a worker report is unclear, spawn a fresh reviewer or ask a clarification instead of guessing. The unclear-report clarification cycle has a hard limit of 5 rounds (see Phase Loop Protocol).
 - Keep one active worker per phase unless the user explicitly requests parallel review.
 - Remove completed workers from the room before spawning the next phase worker.
-- Keep room public context minimal or absent.
+- Do not set room public messages. Workers get their full assignment from the spawn prompt.
 - Keep the state file in sync. Every phase transition must produce a state file write before the next worker is spawned. If the planner suspects the state file is stale, read it and verify before proceeding.
 
 ## Autonomous Decision Protocol
@@ -351,7 +365,7 @@ After recording and answering, continue the workflow immediately. Do not pause f
 
 Four phases act as review gates. A gate worker must report a **clean pass** before the planner may advance to the next phase. A clean pass means the worker found zero issues in that specific run and made zero changes.
 
-A run where the worker found issues and fixed them is a **dirty pass**, even if the worker then concludes everything is now fine. The fixes themselves must survive a fresh gate run. The planner must re-run the same gate phase after any dirty pass.
+A run where the worker found issues and fixed them is a **dirty pass**, even if the worker then concludes everything is now fine. The fixes themselves must survive a fresh gate run. The planner must re-run the same gate phase after any dirty pass. How the re-run is dispatched (fix critical vs refine small, with loop limits) is governed by the **Gate Loop Protocol** below.
 
 ### Gate Definitions
 
@@ -369,6 +383,139 @@ A run where the worker found issues and fixed them is a **dirty pass**, even if 
 - If the report explicitly states no issues were found and no changes were made, the gate is a clean pass. Proceed to the next phase.
 - The gate worker's orchestration signal must include `Gate verdict: clean_pass | dirty_pass` for gate phases.
 - Do not advance past a gate on a generic `ready` outcome alone. The explicit clean-pass verdict is required.
+
+## Gate Loop Protocol
+
+When a review gate reports a dirty pass, the planner must classify the findings before dispatching the fix. Two issue classes drive independent loops with separate limits.
+
+### Issue Classification
+
+Apply the Autonomous Decision Protocol triage to classify gate findings.
+
+**Critical issues** block implementation. They indicate the proposal cannot be implemented as written:
+
+- Wrong scope, missing requirements, or contradictory design decisions
+- Feasibility problems or missing dependencies that change the approach
+- Spec requirements that conflict with the codebase in a way that needs re-design
+
+**Small issues** are refinements that do not block implementation:
+
+- Wording ambiguity, missing clarifications, or documentation gaps
+- Minor inconsistencies between proposal artifacts (e.g., design says one thing, spec says another, but the intent is clear)
+- Suggestions for completeness (additional test cases, naming improvements, doc additions)
+
+When findings contain both classes, handle critical issues first. If critical issues remain after their loop limit, escalate regardless of small-issue state.
+
+### Loop Limits
+
+Each gate phase for each proposal tracks two independent counters:
+
+| Counter | Max rounds | Behavior at limit |
+| --- | --- | --- |
+| `criticalLoops` | 3 | Escalate to user with summary of unresolved critical issues |
+| `smallLoops` | 3 | Continue to next step; the proposal is "good enough" |
+
+The counters are independent. The planner may run 2 critical loops and 3 small loops on the same gate. Counters reset when the proposal moves to a new gate phase.
+
+### State File Tracking
+
+Track gate loop state in the orchestration state file under `gateLoopState`:
+
+```json
+{
+  "gateLoopState": {
+    "<proposal-name>": {
+      "<gate-phase>": {
+        "criticalLoops": 0,
+        "smallLoops": 0
+      }
+    }
+  }
+}
+```
+
+Initialize counters to 0 when a proposal enters a gate phase for the first time. Increment the relevant counter after each re-run of the gate.
+
+### Planner Dispatch Behavior
+
+After classifying gate findings:
+
+1. **Critical issues found:**
+   - Check `criticalLoops < 3`. If at limit, escalate to user with a summary of the unresolved critical issues, the attempts made, and the planner's assessment. Do not proceed to implementation.
+   - If under limit, increment `criticalLoops`, record a decision log entry, and dispatch the worker (same or fresh) to fix the critical issues.
+   - After fixes, re-run the gate with a fresh worker.
+
+2. **Small issues found (no critical):**
+   - Check `smallLoops < 3`. If at limit, log the decision and proceed to the next step. Note in the planner report that the proposal has remaining small issues that were not resolved after 3 refinement rounds.
+   - If under limit, increment `smallLoops`, record a decision log entry, and dispatch the worker to refine the proposal artifacts.
+   - After refinement, re-run the gate with a fresh worker.
+
+3. **Both critical and small issues found:**
+   - Handle critical first (step 1). If critical issues are resolved, handle small issues (step 2) on the next gate run.
+   - If critical loop hits its limit, escalate regardless of small-issue state.
+
+4. **Clean pass (no issues):**
+   - Advance to the next phase. Reset the gate loop state for this proposal.
+
+### Fresh Worker Requirement
+
+After any dirty pass where the worker made fixes to proposal artifacts, the planner must spawn a fresh worker for the verification gate run. The fixing worker and the verifying worker must not be the same session. This ensures the fixes survive independent review.
+
+## Phase Loop Protocol
+
+Several phase transitions form loops that can cycle indefinitely without explicit limits. Each loop has a hard cap. When a loop reaches its limit, the planner must escalate to the user with a summary of the cycle history, the number of rounds attempted, and the planner's assessment.
+
+### Loop Limits
+
+| Loop | Phases | Max rounds | Behavior at limit |
+| --- | --- | --- | --- |
+| Testing <-> Fixing | `testing` <-> `fixing` | 10 | Escalate to user with summary of unresolved test failures |
+| Code Review <-> Quality Fix | `optional_code_review` <-> `quality_fix` | 5 | Escalate to user with summary of unresolved code quality issues |
+| Blocked Worker Re-dispatch | worker reports `blocked` | 2 | Escalate to user; the worker cannot self-resolve |
+| Unclear Report -> Clarification | unclear worker report | 5 | Stop and escalate; the worker is not producing actionable output |
+
+The final-test failure path (`final_test` -> `fixing` -> `testing` -> code-review decision) is naturally bounded by the testing-fixing loop (10) and the code-review loop (5) independently, giving a combined maximum of 15 rounds before both escalate.
+
+### State File Tracking
+
+Track phase loop state in the orchestration state file under `phaseLoopState`:
+
+```json
+{
+  "phaseLoopState": {
+    "<proposal-name>": {
+      "testingFixing": { "count": 0, "limit": 10 },
+      "codeReviewFix": { "count": 0, "limit": 5 },
+      "blockedWorker": { "count": 0, "limit": 2 },
+      "unclearReport": { "count": 0, "limit": 5 }
+    }
+  }
+}
+```
+
+Initialize counters to 0 when a proposal enters the workflow. Increment the relevant counter each time the loop cycles. Reset counters when the proposal advances past the loop's exit phase (e.g., `testingFixing` resets when testing passes and moves to code review or alignment).
+
+### Planner Dispatch Behavior
+
+**Testing <-> Fixing:**
+- Each time testing fails and the planner dispatches `openspec-fix`, increment `testingFixing`.
+- If `testingFixing >= 10`, escalate to the user. Do not send another fix worker.
+- Reset `testingFixing` when testing passes and the proposal exits the testing-fixing cycle.
+
+**Code Review <-> Quality Fix:**
+- Each time code review reports a dirty pass and the planner dispatches `openspec-fix` for quality issues, increment `codeReviewFix`.
+- If `codeReviewFix >= 5`, escalate to the user. Do not send another quality-fix worker.
+- Reset `codeReviewFix` when code review reports a clean pass.
+
+**Blocked Worker Re-dispatch:**
+- Each time a worker reports `blocked` and the planner unblocks it (via autonomous decision or deferred recommendation), increment `blockedWorker`.
+- If `blockedWorker >= 2`, escalate to the user. The worker is stuck beyond the planner's ability to resolve.
+- Reset `blockedWorker` when the worker completes its phase without re-blocking.
+
+**Unclear Report -> Clarification:**
+- Each time a worker produces an unclear report and the planner sends a clarification request or spawns a fresh reviewer, increment `unclearReport`.
+- If `unclearReport >= 5`, escalate to the user. The worker is not producing actionable output.
+- Reset `unclearReport` when the worker produces a clear, actionable report.
 
 ## Phase State Machine
 
@@ -404,14 +551,14 @@ Recommended transitions:
 - `implementation_review` uses `openspec-apply-resume` as a review gate. Do not advance until the worker reports a clean pass (zero files edited).
 - After implementation review reports ready, trigger the initial-implementation commit checkpoint according to commit and push modes.
 - `testing` uses `openspec-test`.
-- If testing fails or updates `issue.md`, go to `fixing` with `openspec-fix`, then return to `testing`.
+- If testing fails or updates `issue.md`, go to `fixing` with `openspec-fix`, then return to `testing`. The testing-fixing cycle has a hard limit of 10 rounds (see Phase Loop Protocol).
 - If testing passes and code review is disabled, trigger the tested-implementation commit checkpoint according to commit and push modes, then proceed to `alignment`.
 - If testing passes and code review is enabled, go to `optional_code_review`.
 - If code review is not applicable, proceed to `alignment`.
 - If code review finds issues, run `quality_fix` with `openspec-fix`, then run `final_test` with `openspec-test`.
-- If final test fails or updates `issue.md`, go to `fixing` with `openspec-fix`, then return to `testing` and re-enter the code-review decision from a passing test.
+- If final test fails or updates `issue.md`, go to `fixing` with `openspec-fix`, then return to `testing` and re-enter the code-review decision from a passing test. This path is bounded by the testing-fixing loop (10 rounds) and the code-review loop (5 rounds) independently (see Phase Loop Protocol).
 - If final test passes after quality fix, trigger the post-quality-fix tested commit checkpoint according to commit and push modes, then proceed to `alignment`.
-- If the quality fix was substantial, optionally run one more `optional_code_review`; if that review finds issues, return to `quality_fix`.
+- If the quality fix was substantial, optionally run one more `optional_code_review`; if that review finds issues, return to `quality_fix`. The code-review-to-quality-fix cycle has a hard limit of 5 rounds (see Phase Loop Protocol).
 - If code review finds no issues (clean pass), proceed to `alignment` without a quality-fix pass.
 - After `alignment` reports complete, trigger the aligned-proposal commit checkpoint according to commit and push modes.
 - After alignment, run `archive` with `openspec-archive-change`.
@@ -453,7 +600,7 @@ openspec-test PASS
   -> openspec-test final verification
   -> if final test fails, openspec-fix and return to normal testing loop
   -> openspec-code-review again (review gate: must report clean pass)
-  -> if still dirty, return to openspec-fix
+  -> if still dirty, return to openspec-fix (max 5 rounds, see Phase Loop Protocol)
   -> if clean pass, openspec-align
 ```
 
