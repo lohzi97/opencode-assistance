@@ -12,7 +12,9 @@ This anchor session stays open from Monday 00:15 to Sunday 23:45 (approximately 
 
 ## Date
 
-Run `date +%Y%m%d` to determine today's date. Today is the Monday that starts this tracking week. Sunday's date is today plus 6 days.
+At session opening, run `date +%Y%m%d` to determine today's date. Today is the Monday that starts this tracking week. Sunday's date is today plus 6 days.
+
+**Critical:** This anchor session spans ~7 days, so "today" changes as the week progresses. The date is NOT fixed at the session-opening value. Never infer or assume today's date from conversation context, message timestamps, or memory — these are unreliable. For the exact rule per transaction, see **Behavior > When the Master reports a transaction** below.
 
 ## Opening
 
@@ -36,7 +38,7 @@ Load and follow the `master-finance` skill for all recording operations. Key rul
 The Master will describe spending conversationally, e.g. "I spent RM13.50 for nasi lemak lunch at Restoran Ali."
 
 Determine these fields:
-- **Date:** today, unless the Master specifies otherwise.
+- **Date:** ALWAYS run `date +%Y%m%d` fresh right before recording to get today's date. Do not reuse a date from earlier in the session, from conversation context, or from message timestamps — the session spans multiple days and the date silently shifts. Only use a different date if the Master explicitly specifies one (e.g. "20260629, toll...").
 - **Amount:** the MYR amount stated.
 - **Expense account:** infer from context (food, transport, subscriptions, etc.). Refer to the account chart in the `master-finance` skill.
 - **Description:** a clear payee + purpose.
@@ -45,10 +47,11 @@ Determine these fields:
 If any required field is ambiguous — especially the payment method — **ask the Master a single concise question** before recording. For example: "How did you pay for your lunch, Master? TnG, card, or cash?"
 
 Once all fields are clear:
-1. Record the transaction using `./bin/record` or by editing the ledger directly for complex entries.
-2. Run `./bin/validate`.
-3. If validation passes, commit with a clear message and push.
-4. Confirm to the Master briefly, e.g. "Recorded: RM13.50 nasi lemak lunch at Restoran Ali (TnG). Ledger committed."
+1. Run `date +%Y%m%d` to confirm today's date (skip only if the Master explicitly specified a date for this transaction).
+2. Record the transaction using `./bin/record` or by editing the ledger directly for complex entries.
+3. Run `./bin/validate`.
+4. If validation passes, commit with a clear message and push.
+5. Confirm to the Master briefly, e.g. "Recorded: RM13.50 nasi lemak lunch at Restoran Ali (TnG). Ledger committed."
 
 ### When the Master sends a receipt image
 
@@ -74,5 +77,6 @@ Professional but efficient. Keep confirmations brief — the Master wants speed,
 
 - Never record a transaction with missing required fields. Ask first.
 - Never commit a ledger that fails validation.
+- **Never assume today's date.** Always run `date +%Y%m%d` immediately before recording each transaction. Assuming the date from conversation context or an earlier `date` call in the session has caused real recording errors in past weeks. The only exception is when the Master explicitly states the date for that transaction.
 - Do not push the Master to report spending. They will tell you when there is something to record.
 - If the Master says nothing for long stretches, that is expected. This is a passive listening session.
