@@ -98,6 +98,8 @@ Domain, Hosting, Software, Marketing, Subcontractors, Equipment, Travel, Banking
 ### Income
 - `Income:Salary` - DotDash salary (net)
 - `Income:Freelance:TeeSure`, `Income:Freelance:CamMillion`, `Income:Freelance:Other`
+- `Income:Investment:UnrealizedGains` - portfolio value growth (KWSP, Versa PRS, StashAway); also reflects lot-based holdings via price directives
+- `Income:Investment:Interest` - interest/yield on money-market & fixed-deposit holdings (VersaCash, KDI Save, Fixed Deposit)
 
 ### Category and Tag Reference
 The authoritative source for category descriptions, tag conventions, and account metadata is `config/accounts.yaml` in the finance repo. Run `./bin/categories` for a quick formatted reference. Always consult this before recording a transaction to select the correct category.
@@ -193,7 +195,12 @@ ledgers/documents/
 - **Balance assertions:** `2026-06-13 balance Assets:Wallet 30.20 MYR` verifies the balance matches. Use after reconciling.
 - **Multi-currency:** Ledger operates in MYR. IBKR positions are in USD with cost basis lots. Fava shows separate MYR/USD sections. Report script has a known limitation with commodity accounts (shows lot counts, not values) — use Fava for accurate investment valuations.
 - **Investment lots tracked:** DBB, IAUM, ICOP, LIT, SIVR, COIN, PYPL (USD). ALSREIT, AXREIT, MAHSING, SENTRAL, SUNREIT, TENAGA (MYR).
-- **Price updates:** Record price directives when making new purchases. Optionally do a monthly batch update. No daily/weekly cadence needed.
+- **Price updates:** Record price directives when making new purchases, plus a monthly batch update (no daily/weekly cadence needed).
+- **Monthly revaluation:** At month-end, reconcile aggregate accounts to current market value and book the delta:
+  - **Interest-bearing** (money market / fixed deposit: VersaCash, KDI Save, Fixed Deposit) -> `Income:Investment:Interest`. VersaCash yield drift posts to the `VersaCash:Unallocated` envelope.
+  - **Investment portfolios** (KWSP, Versa PRS, StashAway) -> `Income:Investment:UnrealizedGains`.
+  - **Lot-based holdings** (IBKR Metals/Stocks, M+ Global): do NOT revalue via postings -- add dated price directives instead (e.g. `2026-07-04 price COIN 165.70 USD`).
+  - Skip accounts with no change since last valuation.
 - **Property:** Glen Court recorded at book value (SPA price + furniture). Periodic revaluation (annual or when market data available) via adjusting entry.
 
 ## Reference

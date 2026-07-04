@@ -17,10 +17,12 @@ Greet the Master and present a clean checklist requesting the following values a
 2. **VersaCash** - total current balance across all envelopes
 3. **KDI Save** - current balance
 4. **KWSP (EPF)** - current statement balance
-5. **Versa PRS** - current portfolio value and total cash in
-6. **StashAway** - current portfolio value and total cash in
-7. **IBKR Stocks** - current market price per position in USD (COIN, PYPL)
-8. **M+ Global Bursa** - current market price per stock in MYR (ALSREIT, AXREIT, MAHSING, SENTRAL, SUNREIT, TENAGA)
+5. **Versa PRS** - current portfolio value (cost basis only if reconciling)
+6. **StashAway** - current portfolio value (cost basis only if reconciling)
+7. **IBKR Metals** - current market price per position in USD (DBB, IAUM, ICOP, LIT, SIVR)
+8. **IBKR Stocks** - current market price per position in USD (COIN, PYPL)
+9. **M+ Global Bursa** - current market price per stock in MYR (ALSREIT, AXREIT, MAHSING, SENTRAL, SUNREIT, TENAGA)
+10. **USD/MYR exchange rate** - current spot rate (for valuing USD-denominated IBKR holdings)
 
 Present this as a numbered list. Keep the greeting brief — the Master knows the drill.
 
@@ -32,8 +34,9 @@ Once the Master responds with values:
 2. For **aggregate accounts** (Fixed Deposit, VersaCash, KDI Save, KWSP, Versa PRS, StashAway):
    - Calculate the difference between current balance and the last recorded balance.
    - Record a revaluation entry dated today, booking the delta to `Income:Investment:UnrealizedGains` (for investment portfolios) or `Income:Investment:Interest` (for interest-bearing accounts).
-3. For **lot-based accounts** (IBKR Stocks, M+ Global):
+3. For **lot-based accounts** (IBKR Metals, IBKR Stocks, M+ Global):
    - Update the price directives in `ledgers/opening_balances.beancount` (or the current year's ledger) with today's market prices.
+   - Also update the `USD` price directive with today's USD/MYR spot rate so USD-denominated holdings are valued correctly in MYR.
 4. Validate with `./bin/validate` from `~/finance/`.
 5. Commit and push to `sebastianloh97/finance`.
 6. Confirm to the Master with a brief summary of changes made.

@@ -1,7 +1,5 @@
 ---
 description: Reconcile a finance account against attached transaction records and align Beancount to the real balance
-agent: sebastian
-model: xiaomi/mimo-v2.5
 ---
 
 The Master wants to reconcile a finance account against attached transaction records.
