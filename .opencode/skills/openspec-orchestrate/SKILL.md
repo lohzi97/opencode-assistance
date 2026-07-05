@@ -1,6 +1,6 @@
 ---
 name: openspec-orchestrate
-description: Orchestrate an OpenSpec proposal workflow through agent-collab. Use when the user wants Sebastian to coordinate propose, review, apply, resume, test, fix, optional code review, align, archive, and commit checkpoints using focused worker sessions.
+description: Orchestrate an OpenSpec proposal workflow through agent-collab. Use when the user wants you to coordinate propose, review, apply, resume, test, fix, optional code review, align, archive, and commit checkpoints using focused worker sessions.
 license: MIT
 compatibility: Requires agent-collab service, OpenCode session spawning, openspec CLI, and the OpenSpec skills used by the workflow.
 metadata:
@@ -247,36 +247,51 @@ Worker assignment prompts must name the `openspec-*` skill to load and use. Do n
 Example assignment prompts:
 
 ```text
-We have PRD '<prd-path>'. Use the `openspec-decompose-prd` skill to decompose it into independently implementable OpenSpec proposals and produce the PRD implementation sequence.
+Load the `openspec-decompose-prd` skill and follow its instructions to decompose a PRD into independently implementable and verifiable OpenSpec changes.
+
+`<prd-path>`
 ```
 
 ```text
-We have PRD '<prd-path>' and generated OpenSpec proposals. Use the `openspec-review-prd-decomposition` skill to audit the proposals against the PRD and update proposal artifacts if needed.
+Load the `openspec-review-prd-decomposition` skill and follow its instructions to audit and patch generated OpenSpec proposals against the original PRD.
+
+'<prd-path>'. Update proposal artifacts if needed.
 ```
 
 ```text
-We need a new OpenSpec proposal for this request: <feature-or-bug-request>. Use the `openspec-propose` skill to create the proposal.
+Load the `openspec-propose` skill and follow its instructions to propose a new OpenSpec change and generate all artifacts.
+
+<feature-or-bug-request>
 ```
 
 ```text
-We have OpenSpec proposal '<proposal-name>'. Use the `openspec-review-proposal` skill to review the proposal against the current codebase and update proposal artifacts if needed.
+Load the `openspec-review-proposal` skill and follow its instructions to review a change proposal against the codebase.
+
+<proposal-name>. Update proposal artifacts if needed.
 ```
 
 ```text
-We have OpenSpec proposal '<proposal-name>'. Use the `openspec-apply-change` skill to work on it.
+Load the `openspec-apply-change` skill and follow its instructions to implement tasks from an OpenSpec change.
+
+<proposal-name>
 ```
 
 ```text
-We have OpenSpec proposal '<proposal-name>'. Use the `openspec-fix` skill to fix the issues recorded in `openspec/changes/<proposal-name>/issue.md`.
-Use that file as the issue source. Address all unresolved issues relevant to this fix phase and report any issue you intentionally leave unresolved.
+Load the `openspec-fix` skill and follow its instructions to fix issues with an in-progress OpenSpec change implementation.
+
+<proposal-name>. `openspec/changes/<proposal-name>/issue.md`
 ```
 
 ```text
-We have OpenSpec proposal '<proposal-name>'. Use the `openspec-test` skill to test the implementation.
+Load the `openspec-test` skill and follow its instructions to perform end-to-end testing for a completed OpenSpec change.
+
+<proposal-name>
 ```
 
 ```text
-We have OpenSpec proposal '<proposal-name>'. Use the `openspec-code-review` skill to review code quality and update `openspec/changes/<proposal-name>/issue.md` if needed.
+Load the `openspec-code-review` skill and follow its instructions to review code quality for a completed OpenSpec implementation.
+
+<proposal-name>
 ```
 
 ```text
