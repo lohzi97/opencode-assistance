@@ -415,7 +415,8 @@ ensure_camofox_vnc_log_file() {
 run_camofox_npm_install() {
   WARN "The first camofox-browser install may download several hundred MBs and can exceed 700MB depending on version/platform."
   run_as_user env HOME="$HOME_DIR" CAMOFOX_CRASH_REPORT_ENABLED=false bash -lc "
-    set -euo pipefail
+    set -eo pipefail
+    # Note: cannot use -u here because nvm.sh references unset variables
     export NVM_DIR=\"\$HOME/.nvm\"
     if [ -s \"\$NVM_DIR/nvm.sh\" ]; then
       . \"\$NVM_DIR/nvm.sh\"
