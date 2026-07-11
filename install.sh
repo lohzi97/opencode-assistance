@@ -35,6 +35,8 @@
 #    - required for Google Drive backup and qmd SQLite snapshots
 # 15. Install camofox-browser and VNC dependencies
 #    - required for camofox-browser skill and ChatGPT research via noVNC login
+# 16. Install vision-mcp (forked)
+#    - optional MCP server for AI vision analysis via OpenRouter
 
 
 set -euo pipefail
@@ -575,6 +577,9 @@ COMPUTER_CONTROL_MCP_DIR="${PROJECT_ROOT}/../computer-control-mcp"
 IMAP_MCP_REPO="https://github.com/nikolausm/imap-mcp-server.git"
 IMAP_MCP_DIR="${HOME_DIR}/imap-mcp-server"
 
+VISION_MCP_REPO="git@github.com:lohzi97/vision-mcp.git"
+VISION_MCP_DIR="${HOME_DIR}/vision-mcp"
+
 install_workspace_mcp() {
   if [ ! -d "$WORKSPACE_MCP_DIR/.git" ]; then
     INFO "Cloning google_workspace_mcp into $WORKSPACE_MCP_DIR"
@@ -618,6 +623,21 @@ install_imap_mcp() {
   INFO "Installing imap-mcp-server dependencies and building"
   run_as_user env HOME="$HOME_DIR" PATH="${HOME_DIR}/.bun/bin:${PATH}" bash -lc \
     "cd '$IMAP_MCP_DIR' && npm install && npm run build"
+}
+
+install_vision_mcp() {
+  if [ ! -d "$VISION_MCP_DIR/.git" ]; then
+    INFO "Cloning vision-mcp fork into $VISION_MCP_DIR"
+    run_as_user git clone "$VISION_MCP_REPO" "$VISION_MCP_DIR"
+  else
+    INFO "vision-mcp fork already cloned at $VISION_MCP_DIR; pulling latest"
+    run_as_user git -C "$VISION_MCP_DIR" pull --ff-only || \
+      WARN "Failed to pull latest vision-mcp fork. Continuing with existing version."
+  fi
+
+  INFO "Installing vision-mcp dependencies and building"
+  run_as_user env HOME="$HOME_DIR" PATH="${HOME_DIR}/.bun/bin:${PATH}" bash -lc \
+    "cd '$VISION_MCP_DIR' && npm install && npm run build"
 }
 
 install_agent_tui() {
@@ -691,6 +711,7 @@ main() {
   install_workspace_mcp
   install_computer_control_mcp
   install_imap_mcp
+  install_vision_mcp
   install_qmd
   setup_qmd
   install_agent_tui

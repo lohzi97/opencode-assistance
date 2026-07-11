@@ -127,6 +127,7 @@ Planned actions:
 - Remove tmux (Linux: apt purge; macOS: brew uninstall)
 - Remove rclone and sqlite3 backup dependencies (Linux: apt purge; macOS: brew uninstall)
 - Remove imap-mcp-server repo at ~/imap-mcp-server and its config at ~/.imap-mcp
+- Remove vision-mcp fork repo at ~/vision-mcp
 
 You can skip confirmations by running with '-y' or setting FORCE=yes in the environment.
 EOF
@@ -464,6 +465,10 @@ fi
 IMAP_MCP_DIR="${HOME_DIR}/imap-mcp-server"
 safe_remove_user_dir "$IMAP_MCP_DIR"
 safe_remove_user_dir "${HOME_DIR}/.imap-mcp"
+
+# 13b) Remove vision-mcp fork repo
+VISION_MCP_DIR="${HOME_DIR}/vision-mcp"
+safe_remove_user_dir "$VISION_MCP_DIR"
 
 # 13b) Remove computer-control-mcp fork repo
 COMPUTER_CONTROL_MCP_DIR="${PROJECT_ROOT}/../computer-control-mcp"

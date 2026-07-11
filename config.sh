@@ -10,6 +10,9 @@ google_drive_oauth_credentials="$opencode_dir/gcp-oauth.keys.json"
 telegram_config="$opencode_dir/telegram-ping.jsonc"
 telegram_template="$opencode_dir/telegram-ping-example.jsonc"
 brave_container="brave-search-mcp"
+vision_mcp_dir="${HOME}/vision-mcp"
+vision_mcp_env="${vision_mcp_dir}/.env"
+vision_mcp_template="$opencode_dir/vision-mcp.env.example"
 
 EXISTING_BRAVE_API_KEY=""
 EXISTING_GOOGLE_DRIVE_OAUTH_CREDENTIALS=""
@@ -21,6 +24,8 @@ EXISTING_OPENCHAMBER_HOST=""
 EXISTING_OPENCHAMBER_UI_PASSWORD=""
 EXISTING_VOYAGE_API_KEY=""
 EXISTING_DEEPSEEK_API_KEY=""
+EXISTING_OPENROUTER_API_KEY=""
+EXISTING_OPENROUTER_MODELS=""
 EXISTING_BACKUP_ENABLED=""
 EXISTING_BACKUP_RCLONE_REMOTE=""
 EXISTING_BACKUP_RCLONE_PATH=""
@@ -129,6 +134,26 @@ load_existing_qmd_values() {
         ;;
     esac
   done < "$qmd_env"
+}
+
+load_existing_vision_mcp_values() {
+  if [[ ! -f "$vision_mcp_env" ]]; then
+    return 0
+  fi
+
+  local line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      OPENROUTER_API_KEY=*)
+        EXISTING_OPENROUTER_API_KEY="${line#OPENROUTER_API_KEY=}"
+        EXISTING_OPENROUTER_API_KEY="${EXISTING_OPENROUTER_API_KEY%$'\r'}"
+        ;;
+      OPENROUTER_MODELS=*)
+        EXISTING_OPENROUTER_MODELS="${line#OPENROUTER_MODELS=}"
+        EXISTING_OPENROUTER_MODELS="${EXISTING_OPENROUTER_MODELS%$'\r'}"
+        ;;
+    esac
+  done < "$vision_mcp_env"
 }
 
 prompt_value() {
@@ -407,6 +432,24 @@ ENVEOF
   chmod 600 "$qmd_env"
 }
 
+write_vision_mcp_env() {
+  local openrouter_api_key="$1"
+  local openrouter_models="$2"
+  local escaped_key
+  local escaped_models
+  local tmp_file
+
+  escaped_key="$(escape_sed_replacement "$openrouter_api_key")"
+  escaped_models="$(escape_sed_replacement "$openrouter_models")"
+  tmp_file="$(mktemp)"
+  sed \
+    -e "s|__OPENROUTER_API_KEY__|$escaped_key|g" \
+    -e "s|__OPENROUTER_MODELS__|$escaped_models|g" \
+    "$vision_mcp_template" > "$tmp_file"
+  mv "$tmp_file" "$vision_mcp_env"
+  chmod 600 "$vision_mcp_env"
+}
+
 stage_google_drive_oauth_credentials() {
   local source_path="$1"
 
@@ -461,6 +504,7 @@ main() {
   load_existing_config_values
   load_existing_telegram_values
   load_existing_qmd_values
+  load_existing_vision_mcp_values
   if [[ -f "$google_drive_oauth_credentials" ]]; then
     EXISTING_GOOGLE_DRIVE_OAUTH_CREDENTIALS="$google_drive_oauth_credentials"
   fi
@@ -506,6 +550,21 @@ main() {
 
   write_qmd_env "$voyage_api_key" "$deepseek_api_key"
   INFO "Wrote ~/.config/qmd/.env with cloud provider configuration"
+
+  # Vision MCP (optional)
+  if [[ -d "$vision_mcp_dir" ]]; then
+    if prompt_yes_no "Configure vision-mcp (OpenRouter vision analysis)?" "N"; then
+      local openrouter_api_key
+      local openrouter_models
+      openrouter_api_key="$(prompt_secret "OpenRouter API key" "$EXISTING_OPENROUTER_API_KEY")"
+      openrouter_models="$(prompt_value "Model fallback chain (comma-separated)" "${EXISTING_OPENROUTER_MODELS:-nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free,google/gemma-4-26b-a4b-it:free,nvidia/nemotron-nano-12b-v2-vl:free,google/gemma-4-31b-it:free,google/gemma-3-12b-it}")"
+      write_vision_mcp_env "$openrouter_api_key" "$openrouter_models"
+      INFO "Wrote $vision_mcp_env"
+      INFO "vision-mcp is installed. Enable it in opencode.json or via /mcp when needed."
+    fi
+  else
+    WARN "vision-mcp not found at $vision_mcp_dir. Run ./install.sh first to install it."
+  fi
 
   configure_brave_container "$brave_api_key"
   INFO "$brave_container is configured and running"

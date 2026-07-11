@@ -93,6 +93,15 @@
         "node",
         "/home/linux-mint/imap-mcp-server/dist/index.js"
       ]
+    },
+    "vision-mcp": {
+      "enabled": false,
+      "type": "local",
+      "command": [
+        "node",
+        "/home/linux-mint/vision-mcp/build/main.js"
+      ],
+      "timeout": 300000
     }
   }
 }
