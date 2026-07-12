@@ -104,12 +104,13 @@ load_config_env() {
 }
 
 curl_health_check() {
+  local health_url="$url/global/health"
   if [[ -n "$OPENCODE_SERVER_PASSWORD" ]]; then
-    curl -sf -u "opencode:$OPENCODE_SERVER_PASSWORD" "$url"
+    curl -sf --max-time 3 -u "opencode:$OPENCODE_SERVER_PASSWORD" "$health_url"
     return
   fi
 
-  curl -sf "$url"
+  curl -sf --max-time 3 "$health_url"
 }
 
 mkdir -p "$dir" "$state"
