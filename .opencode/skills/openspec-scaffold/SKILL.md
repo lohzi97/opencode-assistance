@@ -51,13 +51,12 @@ bun .opencode/skills/openspec-scaffold/scripts/opsx-scaffold.ts <project-or-prd-
 
 ## Scaffold Script Flow
 
-The script does exactly 5 things:
+The script does exactly 4 things:
 
 1. **Ensure OpenSpec is initialized** — checks if `openspec/` exists. If not, runs `openspec init --tools opencode`, then removes the auto-generated `opsx-*`/`openspec-*` commands and skills (these are replaced by openext-managed versions). Pre-existing entries are preserved.
 2. **Copy template files** — copies `template/opencode.json` to the project root (always a copy because OpenCode writes back to it) and `template/openext.json` to `.opencode/openext.json`. Both are skipped if they already exist (use `--force` to overwrite).
-3. **Run `openext init`** — creates all extension symlinks from the manifest. This is idempotent: re-running creates only missing symlinks and removes stale ones.
-4. **Create `.opencode/.gitignore`** — copies `template/opencode-gitignore` to `.opencode/.gitignore`. This ignores openext-linked artifacts (agents/, skills/, commands/, etc.) while keeping `openext.json` and `.gitignore` itself tracked. This enables the clone-and-`openext init .` workflow across machines.
-5. **Initialize git** — runs `git init` when `.git` is absent.
+3. **Run `openext init`** — creates all extension symlinks from the manifest. This is idempotent: re-running creates only missing symlinks and removes stale ones. `openext` also owns `.opencode/.gitignore` reconciliation from the manifest.
+4. **Initialize git** — runs `git init` when `.git` is absent.
 
 All extension management (agents, skills, plugins, scripts, config) is handled by `openext`. To add or remove individual extensions after scaffolding, use the openext CLI directly:
 
