@@ -91,7 +91,7 @@
       "type": "local",
       "command": [
         "node",
-        "/home/linux-mint/imap-mcp-server/dist/index.js"
+        "../imap-mcp-server/dist/index.js"
       ]
     },
     "vision-mcp": {
@@ -99,7 +99,7 @@
       "type": "local",
       "command": [
         "node",
-        "/home/linux-mint/vision-mcp/build/main.js"
+        "../vision-mcp/build/main.js"
       ],
       "timeout": 300000
     }
