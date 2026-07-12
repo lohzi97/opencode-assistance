@@ -22,22 +22,23 @@ Supported platforms: Linux Mint / Ubuntu (apt-based), WSL2 Ubuntu, and macOS (Ho
 ./config.sh
 ```
 
-### Get Google Drive MCP OAuth Credentials
+### Get Google Workspace MCP OAuth Credentials
 
-Before running `./config.sh`, create and download a Google OAuth desktop client JSON for the Google Drive MCP.
+Before running `./config.sh`, create and download a Google OAuth desktop client JSON for the Google Workspace MCP (`taylorwilsdon/google_workspace_mcp`).
 
 1. Create a Google Cloud project in <https://console.cloud.google.com>.
-2. Enable `Google Drive API`, `Google Docs API`, `Google Sheets API`, `Google Slides API`, and `Google Calendar API`.
-3. Configure the OAuth consent screen. Use `External` unless this is a Google Workspace-only deployment, add your own Google account as a test user, and grant these recommended scopes:
+2. Enable the Google APIs that match the services configured in `opencode.json` (currently `--tools drive calendar`):
+   - `Google Drive API` (required)
+   - `Google Calendar API` (required)
+   - Optionally enable `Gmail API`, `Google Docs API`, `Google Sheets API`, `Google Slides API`, `Google Tasks API`, `Google Forms API`, `People API` (Contacts), or `Google Chat API` if you plan to expand the `--tools` list later. Enabling an API costs nothing.
+3. Configure the OAuth consent screen. Use `External` unless this is a Google Workspace-only deployment, add your own Google account as a test user. The MCP requests scopes dynamically at OAuth time based on the `--tools` flag, so you do not need to pre-grant specific scopes on the consent screen, but adding them avoids warnings during the flow. Recommended scopes for the current `drive calendar` configuration:
 
 ```text
-https://www.googleapis.com/auth/drive.file
-https://www.googleapis.com/auth/documents
-https://www.googleapis.com/auth/spreadsheets
-https://www.googleapis.com/auth/presentations
 https://www.googleapis.com/auth/drive
 https://www.googleapis.com/auth/drive.readonly
+https://www.googleapis.com/auth/drive.file
 https://www.googleapis.com/auth/calendar
+https://www.googleapis.com/auth/calendar.readonly
 https://www.googleapis.com/auth/calendar.events
 ```
 
@@ -46,11 +47,11 @@ https://www.googleapis.com/auth/calendar.events
 6. Download the JSON file and rename it to `gcp-oauth.keys.json`.
 7. Run `./config.sh` and provide the path to that file when prompted. The script copies it into `.opencode/gcp-oauth.keys.json`, so `opencode.json` never needs a manual path edit.
 
-On first Google Drive MCP use, the browser-based Google consent flow should open automatically and store tokens at `~/.config/google-drive-mcp/tokens.json`.
+On first Google Workspace MCP use, the browser-based Google consent flow opens automatically on this machine and stores tokens at `~/.google_workspace_mcp/credentials/`.
 
 Re-run `./config.sh` any time you need to update:
 - Brave Search API key
-- Google Drive OAuth credentials file
+- Google Workspace OAuth credentials file
 - OpenCode web UI password
 - Telegram Ping bot token or chat ID
 - OpenCode provider login
