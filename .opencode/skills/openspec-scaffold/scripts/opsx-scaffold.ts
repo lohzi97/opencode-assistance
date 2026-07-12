@@ -290,7 +290,30 @@ function runOpenextInit(projectRoot: string, options: Options, actions: Action[]
   runCommand("openext", args, projectRoot, options, actions);
 }
 
-// ─── Step 4: Initialize git ────────────────────────────────────────
+// ─── Step 4a: Ensure .opencode/.gitignore exists ───────────────────
+
+function ensureOpenextGitignore(projectRoot: string, options: Options, actions: Action[]) {
+  const gitignorePath = path.join(projectRoot, ".opencode", ".gitignore");
+  const templatePath = path.join(defaultTemplateDir, "opencode-gitignore");
+
+  if (!existsSync(templatePath)) throw new Error(`Missing template asset: ${templatePath}`);
+
+  if (existsSync(gitignorePath) && !options.force) {
+    actions.push({ kind: "skipped", path: gitignorePath, detail: "exists" });
+    return;
+  }
+
+  if (options.dryRun) {
+    actions.push({ kind: "would", path: gitignorePath, detail: `${existsSync(gitignorePath) ? "overwrite" : "copy"} from ${templatePath}` });
+    return;
+  }
+
+  mkdirSync(path.dirname(gitignorePath), { recursive: true });
+  copyFileSync(templatePath, gitignorePath);
+  actions.push({ kind: "copied", path: gitignorePath, detail: `from ${templatePath}` });
+}
+
+// ─── Step 4b: Initialize git ───────────────────────────────────────
 
 function ensureGit(projectRoot: string, options: Options, actions: Action[]) {
   if (options.skipGit) {
@@ -340,11 +363,11 @@ function main() {
   // Step 3: Run openext init to create all extension symlinks
   runOpenextInit(projectRoot, options, actions);
 
-  // Step 4: Initialize git when .git is absent
-  ensureGit(projectRoot, options, actions);
+  // Step 4a: Ensure .opencode/.gitignore exists (ignores openext-linked artifacts, commits openext.json)
+  ensureOpenextGitignore(projectRoot, options, actions);
 
-  // Ensure .opencode/ is in .gitignore
-  ensureGitignoreEntry(projectRoot, ".opencode/", "OpenCode config (managed by openext — recreate with opsx-scaffold)", options, actions);
+  // Step 4b: Initialize git when .git is absent
+  ensureGit(projectRoot, options, actions);
 
   console.log(`\nOPSX scaffold target: ${projectRoot}`);
   if (prdPath) console.log(`PRD input: ${prdPath}`);
