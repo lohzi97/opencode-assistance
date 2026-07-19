@@ -114,14 +114,22 @@ If the change is non-code work, such as prose, story chapters, planning document
 
     Prefer a stable section such as `## Code Review Issues` or `## Code Quality Issues` when adding findings. Keep repeated review rounds in the same section so later `openspec-code-review` runs can detect duplicates and later `openspec-fix` can address the accumulated set in one pass.
 
-    Each new issue must include:
-    - Stable title.
-    - Severity: `critical`, `high`, `medium`, or `low`.
-    - Category: maintainability, correctness risk, safety, security, performance, test quality, architecture, configuration, or other clear category.
-    - Affected files or symbols.
-    - Why it matters.
-    - Recommended fix direction for `openspec-fix`.
-    - Evidence from code, command output, or project conventions.
+    Each new issue MUST be recorded as an unchecked checkbox line using the `ISSUE-<n>` id scheme:
+
+    ```markdown
+    - [ ] ISSUE-<n>: <stable title>
+      - Severity: <critical|high|medium|low>
+      - Category: <maintainability|correctness risk|safety|security|performance|test quality|architecture|configuration|other>
+      - Affected: <files or symbols>
+      - Why it matters: <explanation>
+      - Recommended fix: <direction for openspec-fix>
+      - Evidence: <code excerpts, command output, or convention references>
+    ```
+
+    Rules:
+    - Use the next free `ISSUE-<n>` id (if `ISSUE-1` and `ISSUE-2` exist, the new one is `ISSUE-3`).
+    - Keep the stable title on the checkbox line; put the severity, category, evidence, and fix direction in indented lines beneath it.
+    - If a previously-fixed issue (its box is `- [x]`) is in fact NOT fixed, uncheck its box (`- [x]` -> `- [ ]`) and add the new evidence to its existing entry. Do not file a duplicate.
 
     New code review issues should be clearly unresolved unless the review is only adding evidence to an already-resolved item. Do not mark issues resolved from this skill; resolution belongs to `openspec-fix` or a later explicit verification step.
 

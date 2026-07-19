@@ -1,717 +1,326 @@
 ---
 name: openspec-orchestrate
-description: Orchestrate an OpenSpec proposal workflow through agent-collab. Use when the user wants you to coordinate propose, review, apply, resume, test, fix, optional code review, align, archive, and commit checkpoints using focused worker sessions.
+description: Drive an OpenSpec proposal through its 8-phase workflow using the deterministic opsx-workflow driver, and supervise it as the planner. Use when the user wants to run an OpenSpec proposal end-to-end (review-proposal, apply, apply-resume, test, code-review, test-regression, align, archive). Covers how to start/pause/continue/resume the driver, how to inspect and troubleshoot it (zombie implementers, stalls, caps), how to intervene via agent-collab when implementers go off-track or file out-of-scope issues, and how to handle room-idle nudges.
 license: MIT
-compatibility: Requires agent-collab service, OpenCode session spawning, openspec CLI, and the OpenSpec skills used by the workflow.
+compatibility: Requires the opsx-workflow script (.opencode/scripts/opsx-workflow.ts), the agent-collab room service, OpenCode session spawning, the openspec CLI, and the OpenSpec phase skills used by the workflow.
 metadata:
   author: openspec
-  version: "1.0"
+  version: "3.0"
   generatedBy: "1.0.0"
 ---
 
 # OpenSpec Orchestrate
 
-Coordinate an OpenSpec-driven development workflow as the long-lived planner while spawning focused worker sessions through the `agent-collab` room service.
-
-This skill is for orchestration only. The planner tracks workflow state, assigns one focused phase to each worker, receives the worker's report, removes the worker from the room, and decides the next phase. The planner must not micro-manage implementation details, inspect worker diffs, stage files, commit, or push unless the user explicitly changes the workflow rules.
+Run an OpenSpec proposal through its fixed 8-phase workflow using the deterministic `opsx-workflow` driver. The driver owns the plumbing; you (the planner) own judgment, intervention, and troubleshooting.
 
 ## Core Principle
 
-One worker session performs one OpenSpec phase.
+**The driver is deterministic; the planner is the judgment layer.**
+
+The driver owns:
+- the phase graph (`review-proposal` -> `apply` -> `apply-resume` -> `test` -> `code-review` -> `test-regression` -> `align` -> `archive`),
+- spawning one fresh implementer session per phase run,
+- deterministic completion checks (git diff for self-heal phases; checkbox counting for apply/test/code-review),
+- commit-after-every-session (a dedicated committer session),
+- per-loop run caps,
+- the final local merge into the base branch.
 
 The planner owns:
+- supervising every implementer report,
+- answering implementer questions about the project,
+- intervening when an implementer goes off-track or files out-of-scope issues,
+- cleaning up zombie implementers left by crashed/killed daemon runs,
+- editing `tasks.md` / `issue.md` content as a deliberate decision,
+- escalating to the Master when blocked or when a decision exceeds planner scope.
 
-- workflow state (persisted to the state file)
-- state file read/write cadence
-- phase transitions
-- worker spawning and removal
-- commit checkpoint decisions
-- reporting to the user
+The planner does NOT spawn workers, route phases, write orchestration state, or track loop counters. The driver does all of that.
 
-The worker owns:
+## The opsx-workflow Script
 
-- loading the assigned `openspec-*` skill
-- executing that skill's workflow
-- reporting the result
+One proposal = one driver run. The driver lives at `.opencode/scripts/opsx-workflow.ts`. It runs as a background daemon, polls the room and the planner session, and emits events to `openspec/.opsx-workflow.log` and state to `openspec/.opsx-workflow-state.json`.
 
-Commit workers are also workers. They own git inspection, staging, commit-message selection, committing, and pushing when authorized by the planner assignment.
+### Commands
 
-## State File Protocol
+```bash
+# Launch (creates branch openspec/<proposal>, validates, forks daemon, returns pid)
+bun .opencode/scripts/opsx-workflow.ts start <room-id> <proposal-name-or-path> \
+  [--project-dir <path>] [--base-branch <name>] \
+  [--cap-selfHeal <n>] [--cap-apply <n>] [--cap-testFix <n>] [--cap-codeReviewFix <n>] \
+  [--foreground]
 
-The planner must persist workflow state to a JSON file in the target project directory at `<project>/openspec/.orchestration-state.json`. This file is the single source of truth for workflow progress and survives context compaction or session interruption.
+# Inspect
+bun .opencode/scripts/opsx-workflow.ts status [--project-dir <path>]  # phase, counters, paused flag, recent events
+bun .opencode/scripts/opsx-workflow.ts log     [--project-dir <path>]  # tail the event log (always-current)
 
-### Schema
+# Control (daemon still running)
+bun .opencode/scripts/opsx-workflow.ts pause    [--project-dir <path>]  # halt at the next phase transition
+bun .opencode/scripts/opsx-workflow.ts continue [--project-dir <path>]  # release a pause
 
-```json
-{
-  "project": "<absolute-path>",
-  "workflowMode": "brownfield | greenfield-prd",
-  "proposalName": "<proposal-name or null>",
-  "currentPhase": "<phase-state>",
-  "previousPhase": "<phase-state or null>",
-  "phaseHistory": [
-    {
-      "phase": "<phase-state>",
-      "outcome": "<outcome>",
-      "timestamp": "<ISO-8601>"
-    }
-  ],
-  "intent": {
-    "problem": "<what problem the master is trying to solve>",
-    "motivation": "<why this matters, the original trigger>",
-    "scope": "<what is in scope and explicitly out of scope>",
-    "constraints": ["<non-obvious constraints or tradeoffs>"],
-    "preferences": ["<master preferences that should guide decisions>"]
-  },
-  "config": {
-    "codeReview": "disabled | enabled | auto-skip-non-code",
-    "commitMode": "disabled | ask_each_checkpoint | auto_at_checkpoints",
-    "pushMode": "disabled | ask_each_checkpoint | auto_with_commit",
-    "loopMode": "auto_continue_until_blocked | ask_after_each_phase",
-    "modelOverrides": {}
-  },
-  "roomId": "<room-name or null>",
-  "proposalQueue": [],
-  "currentQueueIndex": 0,
-  "decisionLog": [
-    {
-      "timestamp": "<ISO-8601>",
-      "phase": "<phase>",
-      "workerAlias": "<alias>",
-      "trigger": "<worker question or issue, summarized>",
-      "assumptions": ["<assumption 1>", "<assumption 2>"],
-      "decision": "<what the planner decided>",
-      "rationale": "<why, tied to intent/scope/proposal>",
-      "disposition": "decided | deferred_to_worker | escalated",
-      "escalated": false
-    }
-  ],
-  "gateLoopState": {
-    "<proposal-name>": {
-      "<gate-phase>": {
-        "criticalLoops": 0,
-        "smallLoops": 0
-      }
-    }
-  },
-  "phaseLoopState": {
-    "<proposal-name>": {
-      "testingFixing": { "count": 0, "limit": 10 },
-      "codeReviewFix": { "count": 0, "limit": 5 },
-      "blockedWorker": { "count": 0, "limit": 2 },
-      "unclearReport": { "count": 0, "limit": 5 }
-    }
-  },
-  "lastUpdated": "<ISO-8601>"
-}
+# Recovery (daemon has EXITED — error/crash/kill)
+bun .opencode/scripts/opsx-workflow.ts resume   [--project-dir <path>]  # re-launch daemon from saved phase index
 ```
 
-### Read/Write Cadence
+`--project-dir` is required when the proposal lives in a different repo than your planner cwd (e.g. you live in `opencode-assistant` but orchestrate `cammillion-bot-fleet`).
 
-- **Read** the state file at the start of every planner turn to recover context, especially after compaction or session resumption.
-- **Write** the state file immediately after:
-  - Intent capture completes and the workflow configuration is established.
-  - Each phase transition decision (update `currentPhase`, `previousPhase`, and append to `phaseHistory`).
-  - Capturing the proposal name from a `proposal_needed` worker report.
-  - Capturing the proposal queue from PRD decomposition.
-  - Advancing `currentQueueIndex` to the next proposal.
-  - Room creation or closeout.
-  - Recording an autonomous decision in the decision log, before answering the worker (see Autonomous Decision Protocol).
-- **Never** update the state file while a worker is still in progress. Write only after receiving and processing the worker's report.
-- The state file supplements but does not replace the planner's own reasoning. It is a persistence layer, not a decision maker.
+### What the Driver Does Per Phase
 
-### State File Recovery
+For each phase, the driver:
+1. Spawns a fresh implementer session into the room with the phase's skill prompt.
+2. Polls the room (`--since <spawn-time>` filter) for the implementer's `completion` message.
+3. After detecting completion, waits for the room service to deliver the report to your session (as it does for every room message — the driver does NOT do a separate injection), then waits for you to be stably idle, not paused, and not asking the Master a question (`waitForPlannerProceed`).
+4. Removes the implementer from the room.
+5. Runs a deterministic clean check (see table below).
+6. Spawns a committer session to checkpoint the phase's changes (retries if the first commit leaves untracked files).
+7. Advances (clean) or loops (not clean), subject to the run cap.
 
-If the state file is missing or corrupted, reconstruct from the latest planner report, room status, worker reports, and proposal files. If the intent cannot be reconstructed from these sources, ask the master to re-confirm the original intent before continuing. Write the reconstructed state immediately so the next turn has a clean reference.
+The driver does NOT push to a remote and does NOT delete the feature branch. The merge into the local base branch is its only git write outside the feature branch. Push and branch cleanup are manual planner/Master steps after review.
 
-## Skill Assignment Rule
+### Prerequisites
 
-Messages sent through `agent-collab` cannot trigger OpenCode slash commands or user command wrappers. Assign workers to load and use the relevant `openspec-*` skill directly.
+Before launching, verify:
+- The `agent-collab` skill is available (it provides the room service and CLI you will use to create the room and communicate with implementers).
+- The proposal exists at `openspec/changes/<name>/` with `proposal.md` AND `tasks.md` containing at least one checkbox.
+- The target project is on its base branch (`main`/`master`/`dev`) with a clean worktree outside this proposal.
+- No stale workflow state or `openspec/<proposal>` branch exists from a prior incomplete run.
 
-If a required skill is not available, stop and report the missing `openspec-*` skill before spawning a worker for that phase.
+### Launch Sequence
 
-Newly created project skills may require restarting OpenCode before they appear in the available skills list for the planner or spawned workers. If a required skill exists on disk but is unavailable at runtime, stop and ask the user to restart OpenCode rather than improvising a replacement workflow.
+**1. Intake.** Understand what the Master wants and why (problem, motivation, scope, constraints). The proposal must already exist under `openspec/changes/<name>/`. Capture the intent mentally; you will use it to answer implementer questions and judge reports.
 
-## Worker Model Routing
+**2. Create the collaboration room.** Use the `agent-collab` skill to create a room for the target project and join as the planner. The room is the communication channel between you, the implementers the driver spawns, and the notifier bot:
 
-Spawn each worker with the model assigned to its phase unless the user explicitly overrides it for the current run.
+```bash
+bun .opencode/scripts/agent-collab.ts room create \
+  --name "opsx-<proposal-name>-<YYYYMMDDHHmmss>" \
+  --session "$OPENCODE_SESSION_ID" \
+  --from planner \
+  --project-dir <target-project-dir> \
+  --json
+```
 
-All workers must be spawned with `--agent levi`. Do not omit the agent flag or let it fall back to the planner default. If a future run requires a different agent, the user must explicitly override this for that run.
+Record the `room_id` from the response. You are now the room's founder and planner (role=planner, state=active). The driver will validate this membership on `start`.
 
-| Worker phase | Skill | Provider | Model | Variant |
-| --- | --- | --- | --- | --- |
-| Proposal creation | `openspec-propose` | `deepseek` | `deepseek-v4-pro` | `max` |
-| Proposal review | `openspec-review-proposal` | `deepseek` | `deepseek-v4-pro` | `max` |
-| PRD decomposition | `openspec-decompose-prd` | `deepseek` | `deepseek-v4-pro` | `max` |
-| PRD decomposition review | `openspec-review-prd-decomposition` | `deepseek` | `deepseek-v4-pro` | `max` |
-| Implementation | `openspec-apply-change` | `deepseek` | `deepseek-v4-pro` | `max` |
-| Implementation review/resume | `openspec-apply-resume` | `deepseek` | `deepseek-v4-pro` | `max` |
-| Testing | `openspec-test` | `deepseek` | `deepseek-v4-pro` | `max` |
-| Fixing | `openspec-fix` | `deepseek` | `deepseek-v4-pro` | `max` |
-| Code review | `openspec-code-review` | `openai` | `gpt-5.5` | `medium` |
-| Design discussion | `openspec-discuss` | `openai` | `gpt-5.5` | `medium` |
-| Alignment | `openspec-align` | `deepseek` | `deepseek-v4-flash` | `max` |
-| Archive | `openspec-archive-change` | `deepseek` | `deepseek-v4-pro` | `max` |
-| Commit checkpoint | commit worker | `deepseek` | `deepseek-v4-flash` | `max` |
+**3. Start the driver:**
 
-When spawning through `agent-collab`, pass both `--provider <provider>`, `--model <model>` and `--variant <variant>` from this table. Do not omit model routing and rely on planner defaults. If a configured provider/model pair is unavailable at spawn time, stop and ask the user for a model override instead of silently falling back to the planner default.
+```bash
+bun .opencode/scripts/opsx-workflow.ts start <room-id> <proposal-name-or-path> \
+  [--project-dir <path>] [--base-branch <name>] \
+  [--cap-selfHeal <n>] [--cap-apply <n>] [--cap-testFix <n>] [--cap-codeReviewFix <n>]
+```
 
-## Intake
+The driver validates the room/planner/project, creates branch `openspec/<proposal>`, initialises state, forks the daemon, and returns immediately with the driver pid. From here, implementer reports reach you as ordinary room-message deliveries (the room service injects them into your session as user messages, exactly as if you were orchestrating manually).
 
-Before creating or using a room, the planner must first understand what the master wants to build and why. Do not begin orchestration until the intent is clear.
+### Pause vs Resume
 
-### Intent Capture
+- **`pause` + `continue`**: the daemon is still alive. Use for planner interventions (scope creep, course corrections, asking the Master a question). The daemon halts at the next `waitForPlannerProceed` boundary and resumes when you clear the flag.
+- **`resume`**: the daemon has EXITED (error, crash, kill, or cap-pause after which you killed it). Re-launches the daemon from the saved phase index. Always investigate `log`/`status` and resolve the root cause before resuming.
 
-Have a short clarifying discussion with the master to form a mental model of the requirement. The goal is not to write a PRD — it is to understand the problem well enough to make sound autonomous decisions throughout the workflow.
+## The 8 Phases and Their Completion Checks
 
-Ask about:
+| Phase | Skill | Clean = |
+| --- | --- | --- |
+| review-proposal | `openspec-review-proposal` | session changed zero proposal artifacts (git diff empty) |
+| apply | `openspec-apply-change` | all `tasks.md` boxes checked |
+| apply-resume | `openspec-apply-resume` | session edited zero files (git diff empty) |
+| test | `openspec-test` | `issue.md` has zero unchecked boxes |
+| code-review | `openspec-code-review` | `issue.md` has zero unchecked boxes |
+| test-regression | `openspec-test` | `issue.md` has zero unchecked boxes (regression pass after code-review fixes) |
+| align | `openspec-align` | session changed zero proposal artifacts (git diff empty) |
+| archive | `openspec-archive-change` | change moved under `openspec/changes/archive/` |
 
-- **The problem**: What is the master trying to solve? What is the current pain point or gap?
-- **The motivation**: Why now? What triggered this request? What happens if this is not built?
-- **The scope**: What is explicitly in scope? What is explicitly out of scope or deferred?
-- **Constraints**: Are there technical, time, or resource constraints? Non-negotiable requirements?
-- **Preferences**: Does the master have a preferred approach, stack, or pattern? Any anti-patterns to avoid?
+Loop mechanics:
+- **Self-healing phases** (review-proposal, apply-resume, align) edit files directly when they find issues; on dirty they re-run with a fresh session until a run changes nothing.
+- **apply** re-runs itself until all `tasks.md` boxes are checked.
+- **Finding phases** (test, code-review, test-regression) write issues to `issue.md`; on dirty they spawn fresh `openspec-fix` sessions until every issue is checked, then re-run the finding phase. The phase advances only when a finding run ends with zero unchecked boxes.
 
-Do not ask all questions mechanically. Use judgment — if the master's initial request already answers some of these, acknowledge what is clear and ask only about what is ambiguous or missing.
+### Checkbox-Only Enforcement
 
-After the discussion, summarize your understanding back to the master for confirmation. Once confirmed, persist it as the `intent` object in the state file. This intent is the planner's reference for all subsequent autonomous decisions.
+Implementers may only toggle `- [ ]` <-> `- [x]` on the locked file for their phase:
+- `apply` and `apply-resume` -> `tasks.md` toggles only.
+- `fix` -> `issue.md` toggles only.
 
-If the master provides a PRD instead of a feature request, read the PRD first and use the same questions to fill any gaps the PRD does not cover. A PRD that is thorough on requirements but silent on motivation or constraints still needs clarification.
+Any non-checkbox content change to the locked file is **reverted by the driver** and the run is retried (no commit). This prevents the "marked DEFERRED/SKIPPED to fake convergence" cheat.
 
-### Orchestration Configuration
+Content ownership: review-proposal and align may edit proposal artifacts; finder phases (test, code-review) own `issue.md` content (add, uncheck, refine); apply/apply-resume only toggle `tasks.md`; fix only toggles `issue.md`. The planner may edit task/issue content as a decision action (see below).
 
-After intent is captured, collect the orchestration inputs. Ask only for missing details that cannot be safely inferred.
+## Planner Role: Supervision Doctrine
 
-Required inputs:
+The driver proceeds automatically only after the room service has delivered the completion report to your session (normal room-message delivery — the driver does not do a separate injection) AND you are stably idle, not paused, and not asking the Master a question. Your job is to review each report and act when something is off.
 
-- Target project directory.
-- Workflow mode: `brownfield` or `greenfield-prd`.
-- Proposal name, feature request, or bug report for brownfield work; PRD path for greenfield decomposition.
-- Starting phase, unless the user clearly wants to start from the beginning.
-- Code review mode: `disabled`, `enabled`, or `auto-skip-non-code`.
-- Commit mode: `disabled`, `ask_each_checkpoint`, or `auto_at_checkpoints`.
-- Push mode: `disabled`, `ask_each_checkpoint`, or `auto_with_commit`.
-- Loop mode: `auto_continue_until_blocked` or `ask_after_each_phase`.
-- Optional model overrides, if the user wants to diverge from the Worker Model Routing table for this run.
+### Read Every Report
 
-Infer the target project directory from the current workspace when safe. Ask only when the user names a different project or the workspace is ambiguous.
+For each implementer completion message, ask:
+- Did it actually do the work, or did it skip steps (e.g. claimed testing done but skipped end-to-end)?
+- Did it silently substitute approach X for the specified Y claiming infeasibility? Is that claim technically real, or laziness?
+- Does the report match the deterministic signal (e.g. it claims "all tasks done" but `tasks.md` still has unchecked boxes)?
 
-Default to:
+### Scope-Creep Handling (Critical)
 
-- Code review mode: `auto-skip-non-code`.
-- Commit mode: `ask_each_checkpoint`.
-- Push mode: `ask_each_checkpoint`.
-- Loop mode: `auto_continue_until_blocked`.
+The test and code-review phases file issues in `issue.md`. Not every finding is in scope. **The planner is the scope authority — not the fixer.** When a finder files an issue that is out of scope, too broad, or should be deferred to a separate proposal:
 
-Do not assume commit or push authorization from the existence of checkpoint guidance. Commit and push only according to the selected modes.
-
-For brownfield work, a proposal name is required only when starting from an existing proposal. If the user gives a new feature request or bug report instead, start at `proposal_needed` with `openspec-propose` and capture the proposal name from the worker's report before continuing to proposal review.
-
-For greenfield PRD work, capture the proposal queue from `prd-implementation-sequence.md` after PRD decomposition and decomposition review are complete. Process one proposal at a time through the brownfield state machine.
-
-After intake is complete, write the initial state file to `<project>/openspec/.orchestration-state.json` with the captured intent, resolved configuration, workflow mode, and starting phase. The state file must exist before any worker is spawned.
-
-## Resume Existing Orchestration
-
-When resuming an interrupted workflow, read the state file at `<project>/openspec/.orchestration-state.json` first. It is the primary source of truth for current phase, proposal name, configuration, and phase history.
-
-If the state file is missing or corrupted, fall back to reconstructing from the latest planner report, room status, worker reports, and proposal files. If the intent cannot be recovered, ask the master to re-confirm before proceeding. Write the reconstructed state immediately.
-
-Do not rerun completed phases unless the previous result is missing, blocked, invalid, or explicitly superseded by the user.
-
-If the prior state is unclear even after state file recovery and artifact inspection, ask the user for the intended current phase or spawn a narrow review worker for the specific ambiguity. Do not infer implementation quality by inspecting diffs as the planner.
-
-## Planner Setup
-
-1. Load the `agent-collab` skill before creating or managing rooms.
-2. Get the current session id using the local session info script if needed:
-
+1. **Pause the workflow immediately** (before you go idle, while the finder is still in the room):
    ```bash
-   bun .opencode/scripts/session-info.ts
+   bun .opencode/scripts/opsx-workflow.ts pause --project-dir <path>
+   ```
+2. **Message the finder via agent-collab** telling it to remove or reword the out-of-scope issue. The finder owns `issue.md` content, so it is the one that must edit it:
+   ```bash
+   bun .opencode/scripts/agent-collab.ts send \
+     --room <room-id> --session "$OPENCODE_SESSION_ID" --from planner \
+     --kind note \
+     --body "ISSUE-<n> is out of scope for this proposal because <reason>. Remove it from issue.md (delete the checkbox line and its evidence), then confirm."
+   ```
+3. **Wait for the finder to confirm** the removal. It receives your message as a room delivery, edits `issue.md`, and sends a note back.
+4. **Verify** `issue.md` no longer contains the out-of-scope issue.
+5. **Resume the workflow**:
+   ```bash
+   bun .opencode/scripts/opsx-workflow.ts continue --project-dir <path>
    ```
 
-3. Create an `agent-collab` room as planner for the target project directory.
-4. Preserve the full room name returned by `room create`.
-5. Keep the room password private.
-6. Do not set a room public message. Workers in a sequential orchestration flow receive their full assignment from the spawn prompt. The public message feature is designed for collaborative discussion rooms, not sequential worker dispatch. Setting one wastes context window on every delivery and adds noise the worker does not need.
-7. Update the state file `roomId` field with the created room name.
+The key timing insight: the finder is removed from the room only AFTER `waitForPlannerProceed` returns (i.e. after you go idle). If you pause during your reaction to the finder's report, the finder stays alive and reachable. You do not need to re-spawn it.
 
-## Worker Assignment Pattern
+If you already went idle and the finder was removed before you noticed the scope problem, re-spawn a follow-up session with the same alias and a corrective prompt (rare case — attentive planners catch scope creep during the first reaction).
 
-Spawn a worker with a narrow alias and role for the current phase. Use the same project directory as the target project.
+**Why this matters:** without planner scope control, the fix phase is forced to either fix out-of-scope issues (scope creep baked into the merge) or hit the cap (wasted sessions). Neither is correct. The planner is the judgment layer; the fixer is pure execution.
 
-Always select the worker's provider and model from the Worker Model Routing table and pass them to the `agent-collab spawn` command, along with `--agent levi`. For example, an `openspec-code-review` worker must be spawned with `--agent levi --provider openai --model gpt-5.5`, while an `openspec-align` worker must be spawned with `--agent levi --provider deepseek --model deepseek-v4-flash`.
+### Always Pause Before Asking the Master
 
-Worker assignment prompts must name the `openspec-*` skill to load and use. Do not phrase assignments as slash commands, shell commands, or user command wrappers.
+The driver treats "planner idle" as "proceed" (with a belt-and-suspenders guard that also probes the question-request API). To ask the Master a question:
 
-Example assignment prompts:
+1. `bun .opencode/scripts/opsx-workflow.ts pause [--project-dir <path>]`
+2. Ask the Master via the `question` tool.
+3. After the Master answers and you've processed the answer, `bun .opencode/scripts/opsx-workflow.ts continue [--project-dir <path>]`.
 
-```text
-Load the `openspec-decompose-prd` skill and follow its instructions to decompose a PRD into independently implementable and verifiable OpenSpec changes.
+### Edit Content Only as a Decision
 
-`<prd-path>`
+If a task or issue is genuinely technically infeasible and the loop is stuck, you may edit `tasks.md` / `issue.md` content (e.g. mark a task deferred, rewrite an issue's acceptance) to unblock convergence. Make content edits only while the driver is paused between runs (normally at a cap), before the next fresh implementer starts; mid-run edits are indistinguishable from implementer violations and will be reverted. Do this only after investigating, and prefer escalating to the Master for consequential scope changes.
+
+### When the Driver Hits a Cap
+
+When a loop exceeds its run cap, the driver pauses itself and a notifier @mentions you in the room with the phase and cap. Investigate (`status`, inspect `tasks.md`/`issue.md` and the recent commits), then either:
+- edit task/issue content to resolve the genuine blocker and `continue`, or
+- escalate to the Master.
+
+## Communicating With Implementers via agent-collab
+
+All planner-to-implementer communication goes through the room. You are already a member (as `planner`).
+
+### Send a message (normal delivery)
+```bash
+bun .opencode/scripts/agent-collab.ts send \
+  --room <room-id> --session "$OPENCODE_SESSION_ID" --from planner \
+  --kind note \
+  --body "<message>"
 ```
 
-```text
-Load the `openspec-review-prd-decomposition` skill and follow its instructions to audit and patch generated OpenSpec proposals against the original PRD.
-
-'<prd-path>'. Update proposal artifacts if needed.
+### Hard-interrupt an off-track implementer (mid-run)
+If an implementer is actively working but going the wrong direction, add `--hard` to force an interrupt:
+```bash
+bun .opencode/scripts/agent-collab.ts send \
+  --room <room-id> --session "$OPENCODE_SESSION_ID" --from planner \
+  --kind note --hard \
+  --body "<corrective instruction>"
 ```
 
-```text
-Load the `openspec-propose` skill and follow its instructions to propose a new OpenSpec change and generate all artifacts.
-
-<feature-or-bug-request>
+### Remove a zombie member
+When you discover an orphaned implementer/committer (see Troubleshooting), remove it:
+```bash
+bun .opencode/scripts/agent-collab.ts member remove \
+  --room <room-id> --session "$OPENCODE_SESSION_ID" --from planner \
+  --target "<member-name>"
 ```
 
-```text
-Load the `openspec-review-proposal` skill and follow its instructions to review a change proposal against the codebase.
-
-<proposal-name>. Update proposal artifacts if needed.
+### Inspect the room
+```bash
+bun .opencode/scripts/agent-collab.ts room status --room <room-id> --json   # members, state, activity
+bun .opencode/scripts/agent-collab.ts messages    --room <room-id> --json   # message history
 ```
 
-```text
-Load the `openspec-apply-change` skill and follow its instructions to implement tasks from an OpenSpec change.
+## Room-Idle Nudges
 
-<proposal-name>
+When no message has been sent to the room for 15 minutes, agent-collab sends an idle notification to the planner. This usually means an implementer is either working on a long task (fine) or has silently stalled (not fine).
+
+When you receive an idle nudge:
+1. Check `status` — is the driver still in `waitForImplementerCompletion` for the current phase?
+2. Send a status-check message to the current implementer via agent-collab:
+   ```bash
+   bun .opencode/scripts/agent-collab.ts send \
+     --room <room-id> --session "$OPENCODE_SESSION_ID" --from planner \
+     --kind note \
+     --body "@<implementer-alias> Status check: report current progress and whether you are close to completion."
+   ```
+3. If the implementer responds with a meaningful progress update, the idle was benign — wait for its completion.
+4. If the implementer does not respond within a few minutes, or responds with confusion/no-progress, it may be stuck. Pause the workflow, sort it out the with implementer. Then only continue the workflow. 
+
+Do NOT ignore idle nudges. They are the early-warning system for stalled sessions.
+
+## Troubleshooting
+
+### Zombie Implementer
+
+A zombie is an implementer/committer session left in the room after the daemon was killed or crashed mid-wait. It keeps receiving room deliveries and generating responses, burning LLM budget. **The planner owns zombie cleanup — the daemon's shutdown path does not attempt it.**
+
+Detection:
+- `agent-collab room status` shows members whose aliases do not match the current expected phase (e.g. `committer-test-run1-...` lingering during the `align` phase).
+- An implementer you do not recognize sends unsolicited notes ("Acknowledged", "Observing") in response to other members' activity.
+
+Resolution:
+1. Verify the member is truly orphaned (the daemon that spawned it is dead — check `status` for the current daemon pid, and confirm the orphan's alias does not match any alias the current daemon would spawn).
+2. Remove it:
+   ```bash
+   bun .opencode/scripts/agent-collab.ts member remove \
+     --room <room-id> --session "$OPENCODE_SESSION_ID" --from planner \
+     --target "<zombie-alias>"
+   ```
+
+### Workflow Stuck (No Progress)
+
+If `status` shows the same phase for a long time and no events are being appended to the log:
+1. Check if the daemon is alive: `ps -p <pid>`.
+2. Tail the log: `bun .opencode/scripts/opsx-workflow.ts log --project-dir <path>`.
+3. Check if the driver is blocked in `waitForPlannerProceed` (waiting for you to go idle). If you have been continuously busy, the driver cannot advance — finish your current response and let it proceed.
+4. Check if the driver is blocked waiting for the room service to deliver the report to your session (the report was sent but delivery is pending because you were continuously busy — the room service only injects buffered messages when the target session is idle). Same fix: go idle so the delivery can land.
+5. If the daemon is dead (crashed/killed), use `resume` after investigating the root cause.
+
+### Driver Error / Crash
+
+If the driver errors, it pauses itself, logs a `driver_error` event, and **exits the daemon process**. `continue` alone cannot recover (no running process reads the flag). Investigate `log` and `status`, resolve the cause, then:
+```bash
+bun .opencode/scripts/opsx-workflow.ts resume --project-dir <path>
 ```
+`resume` re-launches the daemon and picks up from the saved phase index. Before resuming, check the room for zombie members from the crashed run and clean them up.
 
-```text
-Load the `openspec-fix` skill and follow its instructions to fix issues with an in-progress OpenSpec change implementation.
+Caps, stalls, and merge conflicts do NOT exit the daemon — the driver stays alive and waits inside `waitForPlannerProceed`. For those, `continue` is the correct recovery command after you resolve the cause.
 
-<proposal-name>. `openspec/changes/<proposal-name>/issue.md`
-```
+### Merge Conflict
 
-```text
-Load the `openspec-test` skill and follow its instructions to perform end-to-end testing for a completed OpenSpec change.
+If the `--no-ff` merge at the end fails, the driver aborts the merge, returns to the feature branch, pauses, and notifies you. Resolve the conflict manually in the target project, then `continue` — the driver retries the merge.
 
-<proposal-name>
-```
+### agent-collab Service Down
 
-```text
-Load the `openspec-code-review` skill and follow its instructions to review code quality for a completed OpenSpec implementation.
+If the agent-collab service is down, the driver cannot spawn implementers. Report the control failure to the Master. Do not attempt to drive the workflow manually through the phases.
 
-<proposal-name>
-```
+## Escalation to the Master
 
-```text
-We have completed checkpoint '<checkpoint-name>' for OpenSpec proposal '<proposal-name>'. Inspect git status, git diff, and git log --oneline -10. Stage only files relevant to this checkpoint. Commit with a concise message. Push only if explicitly authorized by the planner assignment. Report commit hash, pushed branch if pushed, files included, and any files intentionally excluded.
-```
+Escalate when:
+- a task/issue is genuinely infeasible and editing content would materially change scope,
+- a decision changes external state (credentials, accounts, infrastructure) beyond the proposal's code,
+- the driver reports an unrecoverable error you cannot resolve,
+- you are blocked beyond your ability to resolve.
 
-Do not include the complete workflow history unless the assigned skill needs it. The worker should focus only on the assigned phase.
-
-## Worker Lifecycle
-
-For each phase:
-
-1. Spawn exactly one worker session for the phase.
-2. Wait for the worker's ordinary collab response. Do not poll while waiting for delivery.
-3. Read and synthesize the worker's report.
-4. Decide the next phase from the report outcome.
-5. Update the state file with the new `currentPhase`, `previousPhase`, and appended `phaseHistory` entry.
-6. Remove the worker from the room before starting the next worker.
-
-Removing a worker from the room removes it from collaboration context; it is not a guarantee that the spawned OpenCode session process is terminated. Do not rely on removed workers for future context.
-
-If the worker asks a tracked question, reports `blocked`, or flags an issue, do not reflexively escalate to the user. Route the question through the **Autonomous Decision Protocol** below. The protocol decides whether the planner resolves it, defers to the worker, or escalates. Deliver any autonomous answer to the worker through `agent-collab answer --parent <message_id>`. The blocked-worker re-dispatch cycle has a hard limit of 2 rounds (see Phase Loop Protocol).
-
-Use hard interrupts only when a worker is clearly stuck or running the wrong task.
-
-## Planner Guardrails
-
-- Stay purely orchestrational.
-- Do not inspect implementation diffs after worker changes files.
-- Do not independently review changed files unless explicitly asked by the user.
-- Do not inspect git status or git diff as the planner for commit preparation; delegate that to the commit worker.
-- You may inspect high-level workflow artifacts only when needed for state routing, but must not inspect implementation diffs or stage files.
-- Do not personally stage, commit, or push. Use a commit worker whenever checkpoint commits are enabled.
-- Act on worker reports, not planner-side implementation analysis.
-- Do not let a worker choose the next phase; workers may recommend, but the planner decides.
-- If a worker report is unclear, spawn a fresh reviewer or ask a clarification instead of guessing. The unclear-report clarification cycle has a hard limit of 5 rounds (see Phase Loop Protocol).
-- Keep one active worker per phase unless the user explicitly requests parallel review.
-- Remove completed workers from the room before spawning the next phase worker.
-- Do not set room public messages. Workers get their full assignment from the spawn prompt.
-- Keep the state file in sync. Every phase transition must produce a state file write before the next worker is spawned. If the planner suspects the state file is stale, read it and verify before proceeding.
-
-## Autonomous Decision Protocol
-
-When a worker raises a blocking question, reports `blocked`, or flags an issue, the planner triages it instead of defaulting to escalation. The goal is to keep the workflow moving autonomously on the decisions the planner is competent to make, while protecting the decisions that actually cost the user something.
-
-### Decision Boundary
-
-The planner reasons from: the captured `intent` (problem, motivation, scope, constraints, preferences), the PRD, the proposal, and the worker's framing of the question. It does not inspect implementation diffs or code to reach a decision. If a question cannot be resolved without judging implementation correctness, defer or escalate rather than reading diffs.
-
-The `intent` object is the planner's primary anchor for autonomous decisions. When a question touches on scope, tradeoffs, or preferences, consult the intent first. If the intent is silent on the matter and the decision is low-risk, defer to the worker's recommendation. If the decision would redefine the goal or change scope, escalate.
-
-### Triage
-
-Apply this order to every raised question or issue:
-
-1. **Decide autonomously** when all of the following hold:
-   - The question is resolvable from the captured intent, PRD, proposal, or high-level design.
-   - The decision is reversible or low-risk.
-   - The decision does not change external state: commit, push, credentials, accounts, infrastructure.
-   - The decision does not redefine the goal or materially change scope.
-2. **Defer to the worker's recommendation** when the worker already proposed a sound path that aligns with the captured intent but flagged it for confirmation. Treat the worker's recommendation as the decision, record the assumption that the worker's judgement is trusted on this point, and proceed.
-3. **Escalate to the user** only when:
-   - The decision would redefine the goal or materially change scope.
-   - The decision is irreversible or high-risk.
-   - The decision changes external state (commit, push, credentials, accounts, infrastructure).
-   - The question cannot be resolved from the captured intent, PRD, or proposal even after the planner reviews the high-level artifacts.
-
-When in genuine doubt between autonomous and escalate, escalate. The bias is toward autonomy, not toward guessing on stakes.
-
-### Recording Requirement
-
-For every `decided` or `deferred_to_worker` disposition, append an entry to `decisionLog` in the state file **before** answering the worker. An entry that is not persisted does not count as a decision. Each entry must capture:
-
-- the phase and worker alias that raised it,
-- the trigger (the worker's question or issue, summarized),
-- the assumptions the planner made,
-- the decision,
-   - the rationale (tied to the captured intent, scope, or the proposal),
-- the disposition.
-
-Escalations do not require a log entry unless the user later resolves the question, in which case record the user's resolution as a `decided` entry with rationale "per user direction" so the closeout summary reflects it.
-
-After recording and answering, continue the workflow immediately. Do not pause for confirmation unless the triage escalated.
-
-## Review Gate Protocol
-
-Four phases act as review gates. A gate worker must report a **clean pass** before the planner may advance to the next phase. A clean pass means the worker found zero issues in that specific run and made zero changes.
-
-A run where the worker found issues and fixed them is a **dirty pass**, even if the worker then concludes everything is now fine. The fixes themselves must survive a fresh gate run. The planner must re-run the same gate phase after any dirty pass. How the re-run is dispatched (fix critical vs refine small, with loop limits) is governed by the **Gate Loop Protocol** below.
-
-### Gate Definitions
-
-| Gate phase | Skill | Clean-pass criteria |
-| --- | --- | --- |
-| PRD decomposition review | `openspec-review-prd-decomposition` | Zero coverage gaps found, zero proposal artifacts modified in this run. |
-| Proposal review | `openspec-review-proposal` | Zero gaps found, zero proposal artifacts modified in this run. |
-| Implementation review | `openspec-apply-resume` | Zero files edited because the implementation already matches the proposal. |
-| Code review | `openspec-code-review` | All issues found are already listed in `issue.md`, zero new issues added in this run. |
-
-### Planner Behavior at Gates
-
-- After a gate worker finishes, read the worker's full report.
-- If the report describes any issues found, files edited, gaps addressed, or artifacts updated during this run, the gate is a dirty pass. Re-run the same gate phase with a fresh worker.
-- If the report explicitly states no issues were found and no changes were made, the gate is a clean pass. Proceed to the next phase.
-- The gate worker's orchestration signal must include `Gate verdict: clean_pass | dirty_pass` for gate phases.
-- Do not advance past a gate on a generic `ready` outcome alone. The explicit clean-pass verdict is required.
-
-## Gate Loop Protocol
-
-When a review gate reports a dirty pass, the planner must classify the findings before dispatching the fix. Two issue classes drive independent loops with separate limits.
-
-### Issue Classification
-
-Apply the Autonomous Decision Protocol triage to classify gate findings.
-
-**Critical issues** block implementation. They indicate the proposal cannot be implemented as written:
-
-- Wrong scope, missing requirements, or contradictory design decisions
-- Feasibility problems or missing dependencies that change the approach
-- Spec requirements that conflict with the codebase in a way that needs re-design
-
-**Small issues** are refinements that do not block implementation:
-
-- Wording ambiguity, missing clarifications, or documentation gaps
-- Minor inconsistencies between proposal artifacts (e.g., design says one thing, spec says another, but the intent is clear)
-- Suggestions for completeness (additional test cases, naming improvements, doc additions)
-
-When findings contain both classes, handle critical issues first. If critical issues remain after their loop limit, escalate regardless of small-issue state.
-
-### Loop Limits
-
-Each gate phase for each proposal tracks two independent counters:
-
-| Counter | Max rounds | Behavior at limit |
-| --- | --- | --- |
-| `criticalLoops` | 3 | Escalate to user with summary of unresolved critical issues |
-| `smallLoops` | 3 | Continue to next step; the proposal is "good enough" |
-
-The counters are independent. The planner may run 2 critical loops and 3 small loops on the same gate. Counters reset when the proposal moves to a new gate phase.
-
-### State File Tracking
-
-Track gate loop state in the orchestration state file under `gateLoopState`:
-
-```json
-{
-  "gateLoopState": {
-    "<proposal-name>": {
-      "<gate-phase>": {
-        "criticalLoops": 0,
-        "smallLoops": 0
-      }
-    }
-  }
-}
-```
-
-Initialize counters to 0 when a proposal enters a gate phase for the first time. Increment the relevant counter after each re-run of the gate.
-
-### Planner Dispatch Behavior
-
-After classifying gate findings:
-
-1. **Critical issues found:**
-   - Check `criticalLoops < 3`. If at limit, escalate to user with a summary of the unresolved critical issues, the attempts made, and the planner's assessment. Do not proceed to implementation.
-   - If under limit, increment `criticalLoops`, record a decision log entry, and dispatch the worker (same or fresh) to fix the critical issues.
-   - After fixes, re-run the gate with a fresh worker.
-
-2. **Small issues found (no critical):**
-   - Check `smallLoops < 3`. If at limit, log the decision and proceed to the next step. Note in the planner report that the proposal has remaining small issues that were not resolved after 3 refinement rounds.
-   - If under limit, increment `smallLoops`, record a decision log entry, and dispatch the worker to refine the proposal artifacts.
-   - After refinement, re-run the gate with a fresh worker.
-
-3. **Both critical and small issues found:**
-   - Handle critical first (step 1). If critical issues are resolved, handle small issues (step 2) on the next gate run.
-   - If critical loop hits its limit, escalate regardless of small-issue state.
-
-4. **Clean pass (no issues):**
-   - Advance to the next phase. Reset the gate loop state for this proposal.
-
-### Fresh Worker Requirement
-
-After any dirty pass where the worker made fixes to proposal artifacts, the planner must spawn a fresh worker for the verification gate run. The fixing worker and the verifying worker must not be the same session. This ensures the fixes survive independent review.
-
-## Phase Loop Protocol
-
-Several phase transitions form loops that can cycle indefinitely without explicit limits. Each loop has a hard cap. When a loop reaches its limit, the planner must escalate to the user with a summary of the cycle history, the number of rounds attempted, and the planner's assessment.
-
-### Loop Limits
-
-| Loop | Phases | Max rounds | Behavior at limit |
-| --- | --- | --- | --- |
-| Testing <-> Fixing | `testing` <-> `fixing` | 10 | Escalate to user with summary of unresolved test failures |
-| Code Review <-> Quality Fix | `optional_code_review` <-> `quality_fix` | 5 | Escalate to user with summary of unresolved code quality issues |
-| Blocked Worker Re-dispatch | worker reports `blocked` | 2 | Escalate to user; the worker cannot self-resolve |
-| Unclear Report -> Clarification | unclear worker report | 5 | Stop and escalate; the worker is not producing actionable output |
-
-The final-test failure path (`final_test` -> `fixing` -> `testing` -> code-review decision) is naturally bounded by the testing-fixing loop (10) and the code-review loop (5) independently, giving a combined maximum of 15 rounds before both escalate.
-
-### State File Tracking
-
-Track phase loop state in the orchestration state file under `phaseLoopState`:
-
-```json
-{
-  "phaseLoopState": {
-    "<proposal-name>": {
-      "testingFixing": { "count": 0, "limit": 10 },
-      "codeReviewFix": { "count": 0, "limit": 5 },
-      "blockedWorker": { "count": 0, "limit": 2 },
-      "unclearReport": { "count": 0, "limit": 5 }
-    }
-  }
-}
-```
-
-Initialize counters to 0 when a proposal enters the workflow. Increment the relevant counter each time the loop cycles. Reset counters when the proposal advances past the loop's exit phase (e.g., `testingFixing` resets when testing passes and moves to code review or alignment).
-
-### Planner Dispatch Behavior
-
-**Testing <-> Fixing:**
-- Each time testing fails and the planner dispatches `openspec-fix`, increment `testingFixing`.
-- If `testingFixing >= 10`, escalate to the user. Do not send another fix worker.
-- Reset `testingFixing` when testing passes and the proposal exits the testing-fixing cycle.
-
-**Code Review <-> Quality Fix:**
-- Each time code review reports a dirty pass and the planner dispatches `openspec-fix` for quality issues, increment `codeReviewFix`.
-- If `codeReviewFix >= 5`, escalate to the user. Do not send another quality-fix worker.
-- Reset `codeReviewFix` when code review reports a clean pass.
-
-**Blocked Worker Re-dispatch:**
-- Each time a worker reports `blocked` and the planner unblocks it (via autonomous decision or deferred recommendation), increment `blockedWorker`.
-- If `blockedWorker >= 2`, escalate to the user. The worker is stuck beyond the planner's ability to resolve.
-- Reset `blockedWorker` when the worker completes its phase without re-blocking.
-
-**Unclear Report -> Clarification:**
-- Each time a worker produces an unclear report and the planner sends a clarification request or spawns a fresh reviewer, increment `unclearReport`.
-- If `unclearReport >= 5`, escalate to the user. The worker is not producing actionable output.
-- Reset `unclearReport` when the worker produces a clear, actionable report.
-
-## Phase State Machine
-
-The planner tracks the workflow as explicit states with allowed transitions. All state transitions must be persisted to the state file immediately after the decision is made.
-
-### Brownfield Workflow
-
-```text
-proposal_needed
-  -> proposal_review
-  -> proposal_ready
-  -> implementation
-  -> implementation_review
-  -> implementation_ready
-  -> testing
-  -> fixing
-  -> testing
-  -> optional_code_review
-  -> quality_fix
-  -> final_test
-  -> alignment
-  -> archive
-  -> completed
-```
-
-Recommended transitions:
-
-- `proposal_needed` uses `openspec-propose`.
-- `proposal_review` uses `openspec-review-proposal` as a review gate. Do not advance until the worker reports a clean pass (zero gaps found, zero proposal artifacts modified).
-- If `openspec-propose` creates or renames the change, capture the canonical proposal name from the worker report and use that name for all later phases.
-- After proposal review reports ready, trigger the proposal-ready commit checkpoint according to commit and push modes.
-- `implementation` uses `openspec-apply-change`.
-- `implementation_review` uses `openspec-apply-resume` as a review gate. Do not advance until the worker reports a clean pass (zero files edited).
-- After implementation review reports ready, trigger the initial-implementation commit checkpoint according to commit and push modes.
-- `testing` uses `openspec-test`.
-- If testing fails or updates `issue.md`, go to `fixing` with `openspec-fix`, then return to `testing`. The testing-fixing cycle has a hard limit of 10 rounds (see Phase Loop Protocol).
-- If testing passes and code review is disabled, trigger the tested-implementation commit checkpoint according to commit and push modes, then proceed to `alignment`.
-- If testing passes and code review is enabled, go to `optional_code_review`.
-- If code review is not applicable, proceed to `alignment`.
-- If code review finds issues, run `quality_fix` with `openspec-fix`, then run `final_test` with `openspec-test`.
-- If final test fails or updates `issue.md`, go to `fixing` with `openspec-fix`, then return to `testing` and re-enter the code-review decision from a passing test. This path is bounded by the testing-fixing loop (10 rounds) and the code-review loop (5 rounds) independently (see Phase Loop Protocol).
-- If final test passes after quality fix, trigger the post-quality-fix tested commit checkpoint according to commit and push modes, then proceed to `alignment`.
-- If the quality fix was substantial, optionally run one more `optional_code_review`; if that review finds issues, return to `quality_fix`. The code-review-to-quality-fix cycle has a hard limit of 5 rounds (see Phase Loop Protocol).
-- If code review finds no issues (clean pass), proceed to `alignment` without a quality-fix pass.
-- After `alignment` reports complete, trigger the aligned-proposal commit checkpoint according to commit and push modes.
-- After alignment, run `archive` with `openspec-archive-change`.
-- After archive reports complete, trigger the archive-complete commit checkpoint according to commit and push modes.
-- If commit mode is `ask_each_checkpoint`, ask the user before spawning a commit worker at each checkpoint.
-- If commit mode is `auto_at_checkpoints`, spawn a commit worker at checkpoints without asking.
-- If commit mode is `disabled`, push mode is ignored and no commit worker is spawned.
-- If push mode is `disabled`, instruct commit workers not to push.
-- If push mode is `ask_each_checkpoint`, ask the user before allowing the commit worker to push.
-- If push mode is `auto_with_commit`, allow the commit worker to push after committing.
-
-### Greenfield PRD Workflow
-
-For a PRD-driven project, prepend:
-
-```text
-prd_decomposition
-  -> prd_decomposition_review
-  -> proposal_queue
-```
-
-Then process one proposal at a time through the brownfield workflow.
-
-Do not parallelize proposals unless the user explicitly requests it and dependency ordering in `prd-implementation-sequence.md` allows it.
-
-Run PRD decomposition review as a review gate. Do not advance until the worker reports a clean pass (zero coverage gaps found, zero proposal artifacts modified).
-
-## Optional Code Review Loop
-
-Code review is optional and applies only to projects with implementation code or technical artifacts.
-
-When enabled, use this loop after `openspec-test` passes:
-
-```text
-openspec-test PASS
-  -> openspec-code-review (review gate: must report clean pass)
-  -> if clean pass or NOT_APPLICABLE, openspec-align
-  -> if dirty pass (issues found or added to issue.md), openspec-fix for accumulated code quality issues
-  -> openspec-test final verification
-  -> if final test fails, openspec-fix and return to normal testing loop
-  -> openspec-code-review again (review gate: must report clean pass)
-  -> if still dirty, return to openspec-fix (max 5 rounds, see Phase Loop Protocol)
-  -> if clean pass, openspec-align
-```
-
-If the change is non-code work or `openspec-code-review` reports `NOT_APPLICABLE`, skip code review remediation and proceed from passing test to alignment.
-
-Do not run code review before functional testing passes. The review is a post-functional-quality gate, not a substitute for implementation validation.
-
-## Commit Checkpoints
-
-Use a separate focused commit worker, not the planner, for commit and push checkpoints.
-
-The commit worker is responsible for git hygiene: status, diff, staging only relevant files, commit message, commit, and push.
-
-The planner decides when to invoke the commit worker. Recommended checkpoints:
-
-- After PRD decomposition review or proposal review completes and proposals are ready.
-- After `openspec-apply-resume` completes and initial implementation is done.
-- After `openspec-test` passes when code review is disabled.
-- After the code review loop, quality fix, and final `openspec-test` pass when code review is enabled.
-- After `openspec-align` completes.
-- After `openspec-archive-change` completes.
-
-Commit worker assignment example:
-
-```text
-We have completed checkpoint '<checkpoint-name>' for OpenSpec proposal '<proposal-name>'. Inspect git status, git diff, and git log --oneline -10. Stage only files relevant to this checkpoint. Commit with a concise message. Push only if explicitly authorized by the planner assignment. Report commit hash, pushed branch if pushed, files included, and any files intentionally excluded.
-```
-
-The planner should not inspect the diff itself unless the user explicitly requests planner-side review.
-
-## Worker Report Signal
-
-Do not override the detailed report format of each `openspec-*` skill. Ask every worker to include this footer after the assigned skill's normal report:
-
-```text
-Orchestration signal:
-Outcome: ready | repeat | issues_found | fixed | passed | failed | blocked | not_applicable
-Changed files: yes | no | unknown
-Issue file updated: yes | no | not_applicable
-Gate verdict: clean_pass | dirty_pass | not_applicable
-Recommended next phase: <phase>
-Blocking question: <question or none>
-```
-
-For gate phases (PRD decomposition review, proposal review, implementation review, code review), `Gate verdict` is required and must be `clean_pass` or `dirty_pass`. For non-gate phases, use `not_applicable`.
-
-The signal is for planner routing only. The full skill report remains authoritative for phase details.
-
-After processing the signal and deciding the next phase, update the state file before proceeding. The state file's `currentPhase` must always reflect the planner's latest decision.
-
-Normalize skill-specific result names into the orchestration signal when routing. For example, `PASS` maps to `passed`, `ISSUES_FOUND` maps to `issues_found`, `BLOCKED` maps to `blocked`, and `NOT_APPLICABLE` maps to `not_applicable`.
-
-## Planner Report To User
-
-After each phase or checkpoint, report concisely:
-
-```markdown
-## OpenSpec Orchestration: <proposal-name>
-
-### Completed Phase
-<phase>
-
-### Outcome
-<ready/repeat/issues/fixed/passed/blocked/not applicable>
-
-### Decision
-<next phase and why>
-
-### Commit Checkpoint
-yes/no; if yes, commit worker result
-
-### Decisions This Phase
-<list each autonomous decision and deferred-to-worker decision recorded this phase: trigger, decision, disposition; or "none">
-
-### Notes
-<brief operational notes only>
-```
-
-Do not include implementation-level details unless they are present in the worker report and relevant to the user's decision.
-
-## Failure Handling
-
-- If a worker reports `blocked`, route through the Autonomous Decision Protocol first. Only escalate to the user or spawn a discussion worker with `openspec-discuss` if the triage outcome is escalate.
-- If a worker runs the wrong skill or changes unrelated files, stop the workflow and report the incident.
-- If a required skill is unavailable, stop and report which `openspec-*` skill is missing.
-- If the collab service is unavailable, report the control failure and pause.
-- If commit/push fails, keep the workflow state unchanged and ask the commit worker or user to resolve the git issue before proceeding.
+Always `pause` before escalating (you will be idle while waiting for the Master's answer).
 
 ## Closeout
 
-When the workflow is complete:
+When the driver completes all phases, it:
+1. Verifies the worktree is clean.
+2. Checks out the base branch and runs `git merge --no-ff openspec/<proposal>` locally.
+3. Does NOT push (the merge is local only).
+4. Does NOT delete the feature branch (it preserves the per-phase commit history for inspection).
+5. Closes the collaboration room.
+6. A notifier @mentions you with the completion summary.
 
-1. Ensure the final archive phase has reported success.
-2. Run the final commit checkpoint if requested by the workflow.
-3. Remove any remaining workers.
-4. Close the collaboration room.
-5. Update the state file with `currentPhase: "completed"` and final `phaseHistory`.
-6. If `decisionLog` is non-empty, render a "Decisions Made During Orchestration" section in the completion report. For each entry, surface the trigger, assumptions, decision, rationale, and disposition. Do not summarize away the assumptions or rationale; the user needs enough detail to audit each autonomous call.
-7. Report completion to the user with the final proposal/archive status, commit information, and the decisions summary (if any).
+After completion, report to the Master with the proposal name, the local merge, and any decisions you made during the run (interventions, content edits, escalations). The Master decides whether to push and delete the branch.
+
+## Multiple Proposals
+
+The driver handles one proposal at a time. For multiple proposals, run them sequentially: complete and merge one, then `start` the next. Do not parallelise proposals unless the Master explicitly requests it and dependency ordering allows it.

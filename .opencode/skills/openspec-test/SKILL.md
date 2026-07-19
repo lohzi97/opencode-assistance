@@ -179,19 +179,31 @@ This skill replaces the human manual testing phase in the OpenSpec workflow. It 
 
 11. **Persist findings to the change issue file**
 
-   Write actionable findings to `openspec/changes/<name>/issue.md` before the final report.
+    Write actionable findings to `openspec/changes/<name>/issue.md` before the final report.
 
-   Include every confirmed failure, bug, proposal/spec mismatch, unresolved blocker, and noteworthy non-blocking issue found during E2E testing. For each issue include:
-   - Title and severity
-   - What happened vs. what was expected
-   - Exact reproduction steps, including commands, UI actions, API requests, payloads, fixtures, or test data
-   - Concrete evidence such as response bodies, logs, screenshots, DB rows, stack traces, file paths, or event payloads
-   - Affected requirement, scenario, proposal/design section, or task when identifiable
-   - Recommended follow-up such as openspec-fix or openspec-align
+    **Issue format.** Each issue MUST be recorded as an unchecked checkbox line using the `ISSUE-<n>` id scheme :
 
-   If `openspec/changes/<name>/issue.md` already exists, read it first and merge the new findings into the existing document. Do not overwrite the whole file. Preserve existing issues, update matching issues with new evidence or reproduction details, and append only genuinely new issues.
+    ```markdown
+    - [ ] ISSUE-<n>: <one-line description>
+      - Severity: <critical|high|medium|low>
+      - <evidence, reproduction steps, affected files, response bodies, logs, etc.>
+    ```
 
-   If no issues or blockers were found, either leave an existing `issue.md` unchanged or create/update it with a concise note such as `No issues found during E2E testing on <date>.` Do not create noisy duplicate no-issue entries.
+    Rules:
+    - Use the next free `ISSUE-<n>` id (if `ISSUE-1` and `ISSUE-2` exist, the new one is `ISSUE-3`).
+    - Keep the one-line description on the checkbox line; put detailed evidence in indented lines beneath it.
+    - If a previously-fixed issue (its box is `- [x]`) is in fact NOT fixed, uncheck its box (`- [x]` -> `- [ ]`) and add the new evidence to its existing entry. Do not file a duplicate.
+
+    Include every confirmed failure, bug, proposal/spec mismatch, unresolved blocker, and noteworthy non-blocking issue found during E2E testing. For each issue include:
+    - Title and severity
+    - What happened vs. what was expected
+    - Exact reproduction steps, including commands, UI actions, API requests, payloads, fixtures, or test data
+    - Concrete evidence such as response bodies, logs, screenshots, DB rows, stack traces, file paths, or event payloads
+    - Affected requirement, scenario, proposal/design section, or task when identifiable
+
+    If `openspec/changes/<name>/issue.md` already exists, read it first and merge the new findings into the existing document. Do not overwrite the whole file. Preserve existing issues, update matching issues with new evidence or reproduction details, and append only genuinely new issues.
+
+    If no issues or blockers were found, leave an existing `issue.md` unchanged. Do not create noisy duplicate no-issue entries.
 
 12. **Clean up test artifacts**
 

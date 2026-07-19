@@ -12,3 +12,10 @@ input/**
 .chrome/
 .antigravitycli/*
 temp.md
+
+# opsx-workflow daemon state/log/control (do not commit)
+openspec/.opsx-workflow-state.json
+openspec/.opsx-workflow-state.json.*.tmp
+openspec/.opsx-workflow.log
+openspec/.opsx-workflow-paused
+openspec/.opsx-workflow.pid
