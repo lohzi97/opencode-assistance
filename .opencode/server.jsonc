@@ -485,6 +485,170 @@
           "silence_ok": true,
           "ttl_ms": 86400000
         }
+      },
+
+      // Monthly bank/card statement reconciliation reminders.
+      // 1 statement = 1 nudge. Each fires on the 7th and only reminds the
+      // Master to run /master-finance-align <account> once the statement is
+      // ready. The Master performs the reconciliation manually.
+      {
+        "id": "monthly-statement-pbe-plus-savings",
+        "name": "Monthly Statement Reminder: PBe PlusSavings",
+        "enabled": true,
+        "purpose": "Remind the Master to reconcile the Public Bank PlusSavings account against last month's statement.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "0 8 7 * *" // 7th of each month at 8:00 AM MYT
+        },
+        "mode": "isolated-session",
+        "instructions": "Send the Master a brief monthly reminder (one or two sentences, formal but light) that it is time to reconcile the Public Bank PlusSavings account (Assets:Bank:PublicBank:PlusSavings). Tell the Master: when this month's statement is ready, run `/master-finance-align Public Bank PlusSavings` and attach the statement export (CSV/PDF/screenshot) along with the current balance. This is only a reminder — do not perform any reconciliation or ledger edits yourself. The Master knows the drill.",
+        "agent": "sebastian",
+        "priority": 3,
+        "policy": {
+          "no_overlap": true,
+          "silence_ok": false,
+          "ttl_ms": 86400000
+        }
+      },
+
+      {
+        "id": "monthly-statement-pbe-shariah",
+        "name": "Monthly Statement Reminder: PBe Shariah Savings",
+        "enabled": true,
+        "purpose": "Remind the Master to reconcile the Public Bank ShariahSavings account against last month's statement.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "30 8 7 * *" // 7th of each month at 8:30 AM MYT
+        },
+        "mode": "isolated-session",
+        "instructions": "Send the Master a brief monthly reminder (one or two sentences, formal but light) that it is time to reconcile the Public Bank ShariahSavings account (Assets:Bank:PublicBank:ShariahSavings). Tell the Master: when this month's statement is ready, run `/master-finance-align Public Bank ShariahSavings` and attach the statement export (CSV/PDF/screenshot) along with the current balance. This is only a reminder — do not perform any reconciliation or ledger edits yourself. The Master knows the drill.",
+        "agent": "sebastian",
+        "priority": 3,
+        "policy": {
+          "no_overlap": true,
+          "silence_ok": false,
+          "ttl_ms": 86400000
+        }
+      },
+
+      {
+        "id": "monthly-statement-maybank",
+        "name": "Monthly Statement Reminder: Maybank",
+        "enabled": true,
+        "purpose": "Remind the Master to reconcile the Maybank (freelance) account against last month's statement.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "0 9 7 * *" // 7th of each month at 9:00 AM MYT
+        },
+        "mode": "isolated-session",
+        "instructions": "Send the Master a brief monthly reminder (one or two sentences, formal but light) that it is time to reconcile the Maybank account (Assets:Bank:Maybank, freelance income collection). Tell the Master: when this month's statement is ready, run `/master-finance-align Maybank` and attach the statement export (CSV/PDF/screenshot) along with the current balance. This is only a reminder — do not perform any reconciliation or ledger edits yourself. The Master knows the drill.",
+        "agent": "sebastian",
+        "priority": 3,
+        "policy": {
+          "no_overlap": true,
+          "silence_ok": false,
+          "ttl_ms": 86400000
+        }
+      },
+
+      {
+        "id": "monthly-statement-tng-ewallet",
+        "name": "Monthly Statement Reminder: TNG eWallet",
+        "enabled": true,
+        "purpose": "Remind the Master to reconcile the Touch 'n Go eWallet against last month's transaction history.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "30 9 7 * *" // 7th of each month at 9:30 AM MYT
+        },
+        "mode": "isolated-session",
+        "instructions": "Send the Master a brief monthly reminder (one or two sentences, formal but light) that it is time to reconcile the Touch 'n Go eWallet (Assets:TouchNGo). Tell the Master: when this month's transaction history is ready, run `/master-finance-align TouchNGo e-wallet` and attach the export (CSV/PDF/screenshot) along with the current balance. This is only a reminder — do not perform any reconciliation or ledger edits yourself. The Master knows the drill.",
+        "agent": "sebastian",
+        "priority": 3,
+        "policy": {
+          "no_overlap": true,
+          "silence_ok": false,
+          "ttl_ms": 86400000
+        }
+      },
+
+      {
+        "id": "monthly-statement-pbe-visa",
+        "name": "Monthly Statement Reminder: PBe Quantum Visa",
+        "enabled": true,
+        "purpose": "Remind the Master to reconcile the Public Bank Quantum Visa card against last month's statement.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "0 10 7 * *" // 7th of each month at 10:00 AM MYT
+        },
+        "mode": "isolated-session",
+        "instructions": "Send the Master a brief monthly reminder (one or two sentences, formal but light) that it is time to reconcile the Public Bank Quantum Visa card (Liabilities:CreditCard:PBQuantumVisa, ending 7107). Tell the Master: when this month's statement is ready, run `/master-finance-align Public Bank Quantum Visa` and attach the statement export (CSV/PDF/screenshot) along with the current balance. This is only a reminder — do not perform any reconciliation or ledger edits yourself. The Master knows the drill.",
+        "agent": "sebastian",
+        "priority": 3,
+        "policy": {
+          "no_overlap": true,
+          "silence_ok": false,
+          "ttl_ms": 86400000
+        }
+      },
+
+      {
+        "id": "monthly-statement-pbe-mastercard",
+        "name": "Monthly Statement Reminder: PBe Quantum Mastercard",
+        "enabled": true,
+        "purpose": "Remind the Master to reconcile the Public Bank Quantum Mastercard against last month's statement.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "30 10 7 * *" // 7th of each month at 10:30 AM MYT
+        },
+        "mode": "isolated-session",
+        "instructions": "Send the Master a brief monthly reminder (one or two sentences, formal but light) that it is time to reconcile the Public Bank Quantum Mastercard (Liabilities:CreditCard:PBQuantumMastercard, ending 2119). Tell the Master: when this month's statement is ready, run `/master-finance-align Public Bank Quantum Mastercard` and attach the statement export (CSV/PDF/screenshot) along with the current balance. This is only a reminder — do not perform any reconciliation or ledger edits yourself. The Master knows the drill.",
+        "agent": "sebastian",
+        "priority": 3,
+        "policy": {
+          "no_overlap": true,
+          "silence_ok": false,
+          "ttl_ms": 86400000
+        }
+      },
+
+      {
+        "id": "monthly-statement-rhb-visa",
+        "name": "Monthly Statement Reminder: RHB Visa Signature",
+        "enabled": true,
+        "purpose": "Remind the Master to reconcile the RHB Visa Signature card against last month's statement.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "0 11 7 * *" // 7th of each month at 11:00 AM MYT
+        },
+        "mode": "isolated-session",
+        "instructions": "Send the Master a brief monthly reminder (one or two sentences, formal but light) that it is time to reconcile the RHB Visa Signature card (Liabilities:CreditCard:RHBVisaSignature, ending 1844). Tell the Master: when this month's statement is ready, run `/master-finance-align RHB Visa Signature` and attach the statement export (CSV/PDF/screenshot) along with the current balance. This is only a reminder — do not perform any reconciliation or ledger edits yourself. The Master knows the drill.",
+        "agent": "sebastian",
+        "priority": 3,
+        "policy": {
+          "no_overlap": true,
+          "silence_ok": false,
+          "ttl_ms": 86400000
+        }
+      },
+
+      {
+        "id": "monthly-statement-rhb-mastercard",
+        "name": "Monthly Statement Reminder: RHB World Mastercard",
+        "enabled": true,
+        "purpose": "Remind the Master to reconcile the RHB World Mastercard against last month's statement.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "30 11 7 * *" // 7th of each month at 11:30 AM MYT
+        },
+        "mode": "isolated-session",
+        "instructions": "Send the Master a brief monthly reminder (one or two sentences, formal but light) that it is time to reconcile the RHB World Mastercard (Liabilities:CreditCard:RHBWorldMastercard, ending 1561). Tell the Master: when this month's statement is ready, run `/master-finance-align RHB World Mastercard` and attach the statement export (CSV/PDF/screenshot) along with the current balance. This is only a reminder — do not perform any reconciliation or ledger edits yourself. The Master knows the drill.",
+        "agent": "sebastian",
+        "priority": 3,
+        "policy": {
+          "no_overlap": true,
+          "silence_ok": false,
+          "ttl_ms": 86400000
+        }
       }
 
     ]

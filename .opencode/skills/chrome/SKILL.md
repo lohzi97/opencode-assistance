@@ -24,13 +24,15 @@ Use `pty_spawn` to start Chrome so it persists independently of any terminal:
 
 ```
 command: "google-chrome-stable"
-args: ["--remote-debugging-port=9222", "--user-data-dir=.chrome/"]
+args: ["--remote-debugging-port=9222", "--user-data-dir=.chrome/", "--password-store=basic", "--no-first-run", "--no-default-browser-check"]
 title: "Chrome Debug"
 description: "Chrome remote debugging instance on port 9222"
 ```
 
 - Port: `9222` (fixed, matches chrome-devtools MCP default)
 - User data directory: `.chrome/` (project-local, gitignored). Create it if not exist. Add it into gitignore if it haven't do so.
+- `--password-store=basic`: prevents Chrome from blocking on the gnome-keyring password prompt, which deadlocks all network requests
+- `--no-first-run` / `--no-default-browser-check`: suppress first-run dialogs
 - PTY-backed so Chrome survives terminal closures
 
 ### Startup Procedure

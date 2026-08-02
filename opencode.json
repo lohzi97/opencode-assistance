@@ -42,7 +42,7 @@
   },
   "mcp": {
     "chrome-devtools": {
-      "enabled": false,
+      "enabled": true,
       "type": "local",
       "command": [
         "npx",
