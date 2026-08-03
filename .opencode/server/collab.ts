@@ -1499,7 +1499,7 @@ export class CollabStorage {
       const targets = this.activePlannerMembersForDelivery(room.id);
       if (targets.length === 0) return;
       const messageId = this.insertSystemMessage(room.id, body, "inactivity_notice", now);
-      this.insertDeliveries(messageId, targets, "immediate", now);
+      this.insertDeliveries(messageId, targets, "buffered", now);
       this.db.run("UPDATE rooms SET last_inactivity_nudge_at = ? WHERE id = ?", [now, room.id]);
     });
     transaction();

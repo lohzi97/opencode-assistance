@@ -177,7 +177,7 @@ The delivery engine SHALL evaluate open rooms for inactivity during the existing
 
 #### Scenario: Open inactive room creates notice
 - **WHEN** an open room has no meaningful activity for longer than the configured threshold and has an active planner
-- **THEN** the delivery tick creates one `inactivity_notice` message and pending immediate deliveries for active planners
+- **THEN** the delivery tick creates one `inactivity_notice` message and pending buffered deliveries for active planners
 
 #### Scenario: Recent meaningful activity suppresses notice
 - **WHEN** an open room has meaningful member or system activity newer than the inactivity threshold
@@ -192,11 +192,11 @@ The delivery engine SHALL evaluate open rooms for inactivity during the existing
 - **THEN** the delivery tick does not create any new inactivity notice or delivery
 
 ### Requirement: Inactivity notices target active planners only
-Inactivity notice deliveries SHALL target active room members whose role is `planner` and SHALL NOT target non-planner members by default. The delivery mode SHALL be immediate soft and SHALL use the target planner member's stored agent/model/variant options when calling `promptAsync`.
+Inactivity notice deliveries SHALL target active room members whose role is `planner` and SHALL NOT target non-planner members by default. The delivery mode SHALL be buffered so that multiple notices accumulated during a blocker drain as a single merged prompt rather than one prompt per notice. Deliveries SHALL use the target planner member's stored agent/model/variant options when calling `promptAsync`.
 
 #### Scenario: Multiple planners receive notice
 - **WHEN** an inactive room has two active planners and one implementer
-- **THEN** pending immediate deliveries are created for both planners and no delivery is created for the implementer
+- **THEN** pending buffered deliveries are created for both planners and no delivery is created for the implementer
 
 #### Scenario: Removed planner is not targeted
 - **WHEN** an inactive room has a removed planner and an active planner
@@ -206,12 +206,12 @@ Inactivity notice deliveries SHALL target active room members whose role is `pla
 - **WHEN** an inactivity notice is injected to a planner with stored agent/model/variant fields
 - **THEN** the `promptAsync` call includes those stored routing options
 
-### Requirement: Inactivity notice injection follows immediate soft blockers
-Inactivity notice deliveries SHALL follow existing immediate soft delivery blockers: delivery is allowed while the target session is `busy`, blocked during pending user question, and blocked during `retry`. Once blockers clear, the notice SHALL drain through the normal pending delivery path.
+### Requirement: Inactivity notice injection follows buffered soft blockers
+Inactivity notice deliveries SHALL follow existing buffered soft delivery blockers: delivery is blocked while the target session is `busy`, during pending user question, during `retry`, and while an unresolved collab question exists for an open room. Once blockers clear, accumulated notice deliveries SHALL drain through the normal buffered batching path, merging all pending notices into a single chronological prompt rather than one prompt per notice.
 
-#### Scenario: Busy planner receives inactivity notice
-- **WHEN** a planner target is `busy` with no pending user question and has a pending inactivity notice delivery
-- **THEN** the engine injects the inactivity notice prompt
+#### Scenario: Busy planner blocks inactivity notice
+- **WHEN** a planner target is `busy` and has a pending inactivity notice delivery
+- **THEN** the inactivity notice delivery remains pending until the target becomes idle
 
 #### Scenario: Retry planner blocks inactivity notice
 - **WHEN** a planner target is in `retry` and has a pending inactivity notice delivery
@@ -220,6 +220,10 @@ Inactivity notice deliveries SHALL follow existing immediate soft delivery block
 #### Scenario: Pending user question blocks inactivity notice
 - **WHEN** a planner target has a pending user question and has a pending inactivity notice delivery
 - **THEN** the inactivity notice delivery remains pending
+
+#### Scenario: Idle planner drains accumulated notices as one merged prompt
+- **WHEN** a planner target is `idle` with no blockers and has multiple pending inactivity notice deliveries accumulated during a prior blocker
+- **THEN** the engine injects all pending notices in a single chronological batch as one prompt
 
 ### Requirement: Inactivity notice prompt is self-contained
 An injected inactivity notice SHALL render as a self-contained collaboration prompt containing room identity, current room public message when present, the inactivity notice message body, and the resolved reply instruction for the target planner. The prompt SHALL make clear that the planner may send a reminder, ask for status, close the room, or take no action if silence is intentional.

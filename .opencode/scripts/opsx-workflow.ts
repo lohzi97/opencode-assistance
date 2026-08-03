@@ -37,7 +37,7 @@ const DEFAULT_CAPS: Caps = {
   selfHeal: 3, // review-proposal / apply-resume / align self-loops
   apply: 5, // apply self-loop
   testFix: 10, // test <-> fix loops (functional + regression)
-  codeReviewFix: 5, // code-review <-> fix loop
+  codeReviewFix: 7, // code-review <-> fix loop
 };
 type CapKey = keyof Caps;
 
@@ -95,6 +95,7 @@ type State = {
   paused: boolean;
   caps: Caps;
   loopCounters: Record<string, number>; // per phase-id
+  aliasSeq: number; // monotonic global counter appended to implementer/fixer aliases so they stay room-wide unique across phase re-entries and daemon restarts (agent-collab reserves aliases permanently; runIdx-based aliases alone collide on resume/re-run)
   currentPhaseIdx: number; // index into PHASES; enables resume after daemon exit
   workflowStatus?: "running" | "paused" | "error" | "completed";
   startedAt: string;
@@ -167,7 +168,10 @@ function nowIso(): string {
 
 async function loadState(file: string): Promise<State> {
   const raw = await readFile(file, "utf8");
-  return JSON.parse(raw) as State;
+  const state = JSON.parse(raw) as State;
+  // Migrate older state files that predate aliasSeq.
+  if (typeof state.aliasSeq !== "number") state.aliasSeq = 0;
+  return state;
 }
 
 async function saveState(state: State, opts?: { forcePaused?: boolean }): Promise<void> {
@@ -659,26 +663,20 @@ type RoomMessage = {
 };
 
 function acRoomMessages(state: State, sinceMs?: number): RoomMessage[] {
-  // The room service's message listing uses ascending cursor pagination with a
-  // default page size of 50 (DEFAULT_PAGE_SIZE in collab.ts). Without an
-  // explicit filter, only the OLDEST 50 messages are returned -- recent
-  // completions land on "page 2" and become invisible, causing stalls.
+  // The room service's message listing is oldest-first with a default page size
+  // of 50 (DEFAULT_PAGE_SIZE in collab.ts). Without a large limit only the
+  // OLDEST 50 messages are returned, so recent completions land on "page 2" and
+  // become invisible, causing stalls. Fetch a generous recent window instead.
   //
-  // The driver only ever cares about messages after a specific implementer was
-  // spawned, so filter by --since <spawnedAtMs> at the API level. This both
-  // avoids the pagination blind-spot at any scale and keeps the response small.
-  // Callers that need the full history (e.g. reportDeliveredToPlanner) omit
-  // sinceMs and fall back to a large limit instead.
-  const args = ["messages", "--room", state.roomId];
-  if (sinceMs !== undefined) {
-    args.push("--since", String(sinceMs));
-  } else {
-    args.push("--limit", "1000");
-  }
-  const res = agentCollab(args);
-  if (Array.isArray(res)) return res as RoomMessage[];
-  if (res && Array.isArray((res as { messages?: RoomMessage[] }).messages)) return (res as { messages: RoomMessage[] }).messages;
-  return [];
+  // IMPORTANT: the server's `since` query parameter is a MESSAGE-ID cursor, not
+  // a timestamp -- resolveCursor() looks the id up and rejects anything else
+  // with "since must reference a message in this room". The driver only needs
+  // messages after a given spawn time, so filter by created_at client-side.
+  const res = agentCollab(["messages", "--room", state.roomId, "--limit", "1000"]);
+  let msgs: RoomMessage[] = [];
+  if (Array.isArray(res)) msgs = res as RoomMessage[];
+  else if (res && Array.isArray((res as { messages?: RoomMessage[] }).messages)) msgs = (res as { messages: RoomMessage[] }).messages;
+  return sinceMs !== undefined ? msgs.filter((m) => (m.created_at ?? 0) >= sinceMs) : msgs;
 }
 
 type RoomStatus = {
@@ -1060,6 +1058,14 @@ function enforceLock(state: State, phaseId: string, before?: FileSnapshot): bool
 // Driver: phase graph traversal
 // ---------------------------------------------------------------------------
 
+// Bump the persistent monotonic alias sequence and persist it BEFORE the spawn
+// so a crash between bump and spawn cannot reuse the same alias on resume.
+async function mintAliasSeq(state: State): Promise<number> {
+  state.aliasSeq = (state.aliasSeq ?? 0) + 1;
+  await saveState(state);
+  return state.aliasSeq;
+}
+
 async function spawnAndWaitImplementer(state: State, phase: PhaseDef, alias: string, runIdx: number): Promise<void> {
   logEvent(state, "spawn", `${phase.id} ${alias} run ${runIdx}`);
   const spawnedAt = Date.now();
@@ -1072,7 +1078,12 @@ async function spawnAndWaitImplementer(state: State, phase: PhaseDef, alias: str
 async function spawnAndWaitFix(state: State, findingPhase: PhaseDef, runIdx: number): Promise<void> {
   // Alias is phase-scoped so test's fixer-1 and code-review's fixer-1 don't
   // collide in the room transcript (and survive any member-removal timing).
-  const alias = `fixer-${findingPhase.id}-${runIdx}`;
+  // The -s<seq> suffix guarantees room-wide uniqueness across finder re-runs
+  // and daemon restarts (loopCounters[counterKey] resets when a fix loop
+  // converges, which would otherwise reuse fixer-<phase>-1 on the next finder
+  // run and hit agent-collab's permanent alias reservation).
+  const seq = await mintAliasSeq(state);
+  const alias = `fixer-${findingPhase.id}-${runIdx}-s${seq}`;
   logEvent(state, "spawn", `fix for ${findingPhase.id} ${alias} run ${runIdx}`);
   const spawnedAt = Date.now();
   const spawned = acSpawnFix(state, findingPhase, alias, runIdx);
@@ -1186,7 +1197,8 @@ async function runPhaseLoop(state: State, phase: PhaseDef): Promise<void> {
     await resolveCap(state, phase, phase.id, `phase ${phase.id}`);
 
     // 1. spawn implementer for this phase
-    const alias = `${phase.aliasBase}-${runIdx}`;
+    const seq = await mintAliasSeq(state);
+    const alias = `${phase.aliasBase}-${runIdx}-s${seq}`;
     const beforeLock = snapshotLockedFile(state, phase.id);
     await spawnAndWaitImplementer(state, phase, alias, runIdx);
 
@@ -1527,6 +1539,7 @@ async function cmdStart(argv: string[]): Promise<number> {
     paused: false,
     caps: opts.caps,
     loopCounters: {},
+    aliasSeq: 0,
     currentPhaseIdx: 0,
     workflowStatus: "running",
     startedAt: nowIso(),

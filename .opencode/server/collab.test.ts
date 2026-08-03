@@ -2899,7 +2899,7 @@ describe("collab service", () => {
   });
 
   test("inactivity tick creates a persisted planner-only notice with status metadata and public prompt context", async () => {
-    const client = mockClient({ statuses: { ses_planner: { type: "busy" }, ses_worker: { type: "busy" }, ses_reviewer: { type: "busy" } } });
+    const client = mockClient({ statuses: { ses_planner: { type: "idle" }, ses_worker: { type: "busy" }, ses_reviewer: { type: "busy" } } });
     const service = await startedService(client, {
       inactivity_nudge: { enabled: true, threshold_ms: 1_000, repeat_ms: 60_000 },
     });
@@ -2930,7 +2930,7 @@ describe("collab service", () => {
         expect.objectContaining({
           sender_type: "system",
           sender_name: "system",
-          deliveries: [expect.objectContaining({ target_name: "planner", mode: "immediate", state: "injected" })],
+          deliveries: [expect.objectContaining({ target_name: "planner", mode: "buffered", state: "injected" })],
         }),
       );
       expect(notice.deliveries.map((delivery: { target_name: string }) => delivery.target_name)).toEqual(["planner"]);
@@ -3077,7 +3077,7 @@ describe("collab service", () => {
     }
   });
 
-  test("inactivity notices use immediate soft blockers", async () => {
+  test("inactivity notices use buffered soft blockers", async () => {
     const client = mockClient({ statuses: { ses_planner: { type: "retry", attempt: 1, message: "retry", next: 1 } } });
     const service = await startedService(client, {
       inactivity_nudge: { enabled: true, threshold_ms: 1_000, repeat_ms: 60_000 },
@@ -3096,7 +3096,11 @@ describe("collab service", () => {
         flushed: false,
         reason: "pending_user_question",
       });
-      await expect(service.attemptFlush("ses_planner", { type: "busy" }, [])).resolves.toEqual({ flushed: true, count: 1 });
+      await expect(service.attemptFlush("ses_planner", { type: "busy" }, [])).resolves.toEqual({
+        flushed: false,
+        reason: "busy",
+      });
+      await expect(service.attemptFlush("ses_planner", { type: "idle" }, [])).resolves.toEqual({ flushed: true, count: 1 });
     } finally {
       await service.shutdown();
     }
