@@ -662,6 +662,16 @@ function lastAssistant(messages: MessageWithParts[]): MessageWithParts | undefin
   return [...messages].reverse().find((message) => message.info.role === "assistant");
 }
 
+function hasCompletedAssistant(messages: MessageWithParts[]): boolean {
+  const last = lastAssistant(messages);
+  if (!last || last.info.role !== "assistant") return false;
+  // OpenCode emits an assistant message with `finish: "tool-calls"` after
+  // every tool step, while the agent may continue working in a later step.
+  // The session-status endpoint can briefly report that session as idle
+  // between those steps, so an assistant message alone is not completion.
+  return last.info.time.completed !== undefined && last.info.finish !== "tool-calls";
+}
+
 async function getSessionReport(sessionId: string, projectDir: string): Promise<SessionReport> {
   const messages = await client.sessionMessages(sessionId, { directory: projectDir });
   const last = lastAssistant(messages);
@@ -821,7 +831,6 @@ async function clearQuestionPause(state: FlowState): Promise<void> {
 }
 
 async function waitForSessionCompletion(state: FlowState, phaseId: string, session: SessionRecord): Promise<SessionReport> {
-  let sawBusy = false;
   let idleSince = 0;
   let unknownSince = 0;
   for (;;) {
@@ -856,7 +865,6 @@ async function waitForSessionCompletion(state: FlowState, phaseId: string, sessi
 
     const status = await sessionStatus(session.sessionId);
     if (status === "busy" || status === "retry") {
-      sawBusy = true;
       idleSince = 0;
       continue;
     }
@@ -877,7 +885,7 @@ async function waitForSessionCompletion(state: FlowState, phaseId: string, sessi
       // keep polling instead of treating that race as completion.
       report = undefined;
     }
-    if (status === "idle" && (sawBusy || Boolean(report?.messages.some((message) => message.info.role === "assistant")))) {
+    if (status === "idle" && Boolean(report && hasCompletedAssistant(report.messages))) {
       const result = report ?? { sessionId: session.sessionId, text: "", messages: [] };
       session.status = "completed";
       session.completedAt = nowIso();
@@ -1853,6 +1861,7 @@ export const __test__ = {
   enforceLock,
   isPhaseClean,
   archivedProposalExists,
+  hasCompletedAssistant,
   changedFiles,
   statePath,
   pauseMarkerPath,

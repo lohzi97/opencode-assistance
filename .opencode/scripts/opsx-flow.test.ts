@@ -110,6 +110,24 @@ describe("opsx-flow deterministic checks", () => {
     expect(__test__.displayedPhase(PHASES.length, "completed")).toBe("completed");
   });
 
+  it("does not treat an intermediate tool-call assistant message as completion", () => {
+    const base = {
+      id: "assistant",
+      sessionID: "session",
+      role: "assistant" as const,
+      time: { created: 1, completed: 2 },
+      parentID: "user",
+      modelID: "model",
+      providerID: "provider",
+      agent: "levi",
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    expect(__test__.hasCompletedAssistant([{ info: { ...base, finish: "tool-calls" }, parts: [] }])).toBe(false);
+    expect(__test__.hasCompletedAssistant([{ info: { ...base, finish: "stop" }, parts: [] }])).toBe(true);
+    expect(__test__.hasCompletedAssistant([{ info: { ...base, time: { created: 1 } }, parts: [] }])).toBe(false);
+  });
+
   it("creates the conventional branch only when starting from a clean base branch", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-git-"));
     try {
