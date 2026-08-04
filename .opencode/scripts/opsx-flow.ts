@@ -681,7 +681,12 @@ export function enforceLock(state: FlowState, phaseId: string, before?: FileSnap
 
 function proposalArtifactFiles(state: FlowState): string[] {
   const prefix = `openspec/changes/${state.proposalName}/`;
-  return changedFiles(state.projectDir).filter((file) => file.startsWith(prefix));
+  // A rename out of the proposal directory is still a proposal-artifact
+  // change, even though porcelainPath() intentionally reports only the
+  // destination. Include both sides of renames for the self-heal clean check.
+  return workingTreePorcelain(state.projectDir)
+    .flatMap((line) => porcelainPaths(line))
+    .filter((file) => file.startsWith(prefix));
 }
 
 export function archivedProposalExists(state: FlowState): boolean {
@@ -909,7 +914,7 @@ async function clearQuestionPause(state: FlowState): Promise<void> {
   await saveState(state);
 }
 
-async function waitForSessionCompletion(state: FlowState, phaseId: string, session: SessionRecord): Promise<SessionReport> {
+async function waitForSessionCompletionLoop(state: FlowState, phaseId: string, session: SessionRecord): Promise<SessionReport> {
   let idleSince = 0;
   let unknownSince = 0;
   for (;;) {
@@ -995,6 +1000,24 @@ async function waitForSessionCompletion(state: FlowState, phaseId: string, sessi
     if (Date.now() - idleSince > IMPLEMENTER_IDLE_STALL_MS) {
       throw new Error(`session ${session.sessionId} is idle without a final report`);
     }
+  }
+}
+
+async function markSessionError(state: FlowState, session: SessionRecord, error: unknown): Promise<void> {
+  if (session.status !== "running") return;
+  session.status = "error";
+  session.completedAt = nowIso();
+  const detail = error instanceof Error ? error.message : String(error);
+  logEvent(state, "session_error", `${session.sessionId} (${session.phaseId}): ${detail}`);
+  await saveState(state);
+}
+
+async function waitForSessionCompletion(state: FlowState, phaseId: string, session: SessionRecord): Promise<SessionReport> {
+  try {
+    return await waitForSessionCompletionLoop(state, phaseId, session);
+  } catch (error) {
+    await markSessionError(state, session, error).catch(() => undefined);
+    throw error;
   }
 }
 

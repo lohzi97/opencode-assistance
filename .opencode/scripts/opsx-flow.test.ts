@@ -259,6 +259,41 @@ describe("opsx-flow deterministic checks", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("does not treat a proposal artifact rename out of the change as clean", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-checks-"));
+    try {
+      const project = path.join(root, "project");
+      const proposal = path.join(project, "openspec", "changes", "demo");
+      await mkdir(proposal, { recursive: true });
+      runGit(project, ["init", "-b", "main"]);
+      runGit(project, ["config", "user.email", "opsx-flow-test@example.invalid"]);
+      runGit(project, ["config", "user.name", "opsx-flow test"]);
+      await writeFile(path.join(proposal, "proposal.md"), "# Demo\n");
+      await writeFile(path.join(proposal, "tasks.md"), "- [ ] one\n");
+      runGit(project, ["add", "."]);
+      runGit(project, ["commit", "-m", "initial"]);
+      runGit(project, ["mv", path.join(proposal, "proposal.md"), path.join(project, "proposal-moved.md")]);
+
+      const state = {
+        projectDir: project,
+        proposalName: "demo",
+        proposalDir: proposal,
+        baselineUntracked: [],
+      } as never;
+      const phase = PHASES.find((candidate) => candidate.id === "review-proposal")!;
+      expect(__test__.isPhaseClean(state, {
+        ...phase,
+        agent: "levi",
+        provider: "openai",
+        model: "gpt-5.6-luna",
+        variant: "max",
+        cap: DEFAULT_CAPS.selfHeal,
+      })).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("opsx-flow web UI", () => {
