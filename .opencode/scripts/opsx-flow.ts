@@ -268,7 +268,7 @@ export async function loadState(file: string): Promise<FlowState> {
   state.pendingQuestion ??= null;
   state.implementerSessions ??= [];
   state.baselineUntracked ??= [];
-  state.caps ??= { ...DEFAULT_CAPS };
+  state.caps = { ...DEFAULT_CAPS, ...(state.caps ?? {}) };
   state.log ??= [];
   state.loopCounters ??= {};
   state.currentPhaseIdx ??= 0;
@@ -752,7 +752,7 @@ async function spawnSession(
       agent: settings.agent,
       model: modelRef(settings.provider, settings.model),
       variant: settings.variant,
-      directory: session.directory ?? state.projectDir,
+      directory: state.projectDir,
       parts: [{ type: "text", text: prompt }],
     });
   } catch (error) {
@@ -928,6 +928,7 @@ async function waitForExternalContinue(state: FlowState): Promise<void> {
 async function enforceCap(state: FlowState, phase: PhaseDef, counterKey: string, detail: string): Promise<void> {
   const count = state.loopCounters[counterKey] ?? 0;
   if (count < phase.cap) return;
+  logEvent(state, "cap_reached", `${detail} reached ${count}/${phase.cap}`);
   await pauseAndStop(state, "cap-hit", `${detail} reached ${count}/${phase.cap}; edit config or intervene, then resume`);
 }
 

@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { __test__, DEFAULT_CAPS, PHASES } from "./opsx-flow.ts";
+import { __test__, DEFAULT_CAPS, loadState, PHASES } from "./opsx-flow.ts";
 
 function runGit(directory: string, args: string[]): string {
   const result = spawnSync("git", args, { cwd: directory, encoding: "utf8" });
@@ -57,6 +57,27 @@ describe("opsx-flow config", () => {
       const file = path.join(root, "flow.jsonc");
       await writeFile(file, JSON.stringify({ projectDir: root, proposal: "demo" }));
       await expect(__test__.loadFlowConfig(file)).rejects.toThrow("baseBranch");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fills missing state cap families when loading an older state file", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-state-"));
+    try {
+      const project = path.join(root, "project");
+      const stateFile = path.join(root, "state.json");
+      await writeFile(
+        stateFile,
+        JSON.stringify({
+          projectDir: project,
+          paused: false,
+          caps: { apply: 8 },
+        }),
+      );
+      const state = await loadState(stateFile);
+      expect(state.caps).toEqual({ ...DEFAULT_CAPS, apply: 8 });
+      expect(state.loopCounters).toEqual({});
     } finally {
       await rm(root, { recursive: true, force: true });
     }
