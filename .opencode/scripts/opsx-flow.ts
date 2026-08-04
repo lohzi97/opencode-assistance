@@ -199,6 +199,20 @@ function positiveInt(value: unknown, field: string): number {
   return parsed;
 }
 
+function positiveConfigInt(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${field} must be a positive integer JSON number`);
+  }
+  return value;
+}
+
+function rejectObjectKeys(value: Record<string, unknown>, allowed: readonly string[], field: string): void {
+  const allowedKeys = new Set(allowed);
+  for (const key of Object.keys(value)) {
+    if (!allowedKeys.has(key)) throw new Error(`unknown ${field} property: ${key}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Paths, state, markers, and logging
 // ---------------------------------------------------------------------------
@@ -276,6 +290,31 @@ export async function loadState(file: string): Promise<FlowState> {
   return state;
 }
 
+function validateStateForExecution(state: FlowState): void {
+  if (!state || typeof state !== "object") throw new Error("workflow state must be an object");
+  for (const field of ["proposalName", "proposalDir", "projectDir", "configPath", "branch", "baseBranch"] as const) {
+    if (typeof state[field] !== "string" || !state[field].trim()) throw new Error(`workflow state field ${field} is invalid`);
+  }
+  const expectedProposalDir = path.join(state.projectDir, "openspec", "changes", state.proposalName);
+  if (path.resolve(state.proposalDir) !== path.resolve(expectedProposalDir)) {
+    throw new Error("workflow state proposalDir does not match projectDir and proposalName");
+  }
+  if (!Number.isInteger(state.currentPhaseIdx) || state.currentPhaseIdx < 0 || state.currentPhaseIdx > PHASES.length) {
+    throw new Error(`workflow state currentPhaseIdx must be between 0 and ${PHASES.length}`);
+  }
+  if (!Array.isArray(state.baselineUntracked) || state.baselineUntracked.some((file) => typeof file !== "string")) {
+    throw new Error("workflow state baselineUntracked is invalid");
+  }
+  const statuses: WorkflowStatus[] = ["running", "paused", "awaiting-question", "error", "completed"];
+  if (!statuses.includes(state.workflowStatus)) throw new Error(`workflow state workflowStatus is invalid: ${state.workflowStatus}`);
+  for (const key of Object.keys(DEFAULT_CAPS) as CapKey[]) {
+    if (!Number.isSafeInteger(state.caps[key]) || state.caps[key] <= 0) throw new Error(`workflow state cap ${key} is invalid`);
+  }
+  for (const [key, value] of Object.entries(state.loopCounters)) {
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`workflow state loop counter ${key} is invalid`);
+  }
+}
+
 export async function saveState(state: FlowState, options: { forcePaused?: boolean } = {}): Promise<void> {
   if (options.forcePaused !== undefined) writePauseMarker(state.projectDir, options.forcePaused);
   state.paused = pauseMarkerExists(state.projectDir);
@@ -311,26 +350,28 @@ export function logEvent(state: FlowState, event: string, detail?: string): void
 // JSONC config
 // ---------------------------------------------------------------------------
 
-function normalizeModelConfig(value: unknown, field: string): RawModelConfig {
+function normalizeModelConfig(value: unknown, field: string, allowCap = true): RawModelConfig {
   if (value === undefined) return {};
   if (!record(value)) throw new Error(`${field} must be an object`);
   const model = value as RawModelConfig;
+  rejectObjectKeys(model as Record<string, unknown>, allowCap ? ["agent", "provider", "model", "variant", "cap"] : ["agent", "provider", "model", "variant"], field);
   const normalized: RawModelConfig = {};
   for (const key of ["agent", "provider", "model", "variant"] as const) {
     if (model[key] !== undefined) normalized[key] = stringValue(model[key], `${field}.${key}`);
   }
-  if (model.cap !== undefined) normalized.cap = positiveInt(model.cap, `${field}.cap`);
+  if (allowCap && model.cap !== undefined) normalized.cap = positiveConfigInt(model.cap, `${field}.cap`);
   return normalized;
 }
 
 function parseCaps(value: unknown): Caps {
   if (value === undefined) return { ...DEFAULT_CAPS };
   if (!record(value)) throw new Error("caps must be an object");
+  rejectObjectKeys(value, ["selfHeal", "apply", "testFix", "codeReviewFix"], "caps");
   return {
-    selfHeal: value.selfHeal === undefined ? DEFAULT_CAPS.selfHeal : positiveInt(value.selfHeal, "caps.selfHeal"),
-    apply: value.apply === undefined ? DEFAULT_CAPS.apply : positiveInt(value.apply, "caps.apply"),
-    testFix: value.testFix === undefined ? DEFAULT_CAPS.testFix : positiveInt(value.testFix, "caps.testFix"),
-    codeReviewFix: value.codeReviewFix === undefined ? DEFAULT_CAPS.codeReviewFix : positiveInt(value.codeReviewFix, "caps.codeReviewFix"),
+    selfHeal: value.selfHeal === undefined ? DEFAULT_CAPS.selfHeal : positiveConfigInt(value.selfHeal, "caps.selfHeal"),
+    apply: value.apply === undefined ? DEFAULT_CAPS.apply : positiveConfigInt(value.apply, "caps.apply"),
+    testFix: value.testFix === undefined ? DEFAULT_CAPS.testFix : positiveConfigInt(value.testFix, "caps.testFix"),
+    codeReviewFix: value.codeReviewFix === undefined ? DEFAULT_CAPS.codeReviewFix : positiveConfigInt(value.codeReviewFix, "caps.codeReviewFix"),
   };
 }
 
@@ -343,6 +384,7 @@ export async function loadFlowConfig(configFile: string): Promise<FlowConfig> {
     throw new Error(`could not parse config ${configPath}: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (!record(parsed)) throw new Error(`config ${configPath} must contain a JSON object`);
+  rejectObjectKeys(parsed, ["projectDir", "proposal", "baseBranch", "branch", "fromStage", "caps", "phases", "mergeCommitter"], "config");
 
   const projectDir = path.resolve(path.dirname(configPath), stringValue(parsed.projectDir, "projectDir"));
   const proposalName = stringValue(parsed.proposal, "proposal");
@@ -363,7 +405,7 @@ export async function loadFlowConfig(configFile: string): Promise<FlowConfig> {
     phases[phaseId] = normalizeModelConfig(value, `phases.${phaseId}`);
   }
 
-  const rawMerge = normalizeModelConfig(parsed.mergeCommitter, "mergeCommitter");
+  const rawMerge = normalizeModelConfig(parsed.mergeCommitter, "mergeCommitter", false);
   const mergeCommitter = {
     agent: typeof rawMerge.agent === "string" ? rawMerge.agent : DEFAULT_MERGE_COMMITTER.agent,
     provider: typeof rawMerge.provider === "string" ? rawMerge.provider : DEFAULT_MERGE_COMMITTER.provider,
@@ -449,6 +491,11 @@ export function porcelainPath(line: string): string {
   return raw.includes(renameMarker) ? raw.slice(raw.lastIndexOf(renameMarker) + renameMarker.length) : raw;
 }
 
+function porcelainPaths(line: string): string[] {
+  const raw = line.replace(/^.{3}/, "").trim();
+  return raw.includes(" -> ") ? raw.split(" -> ").map((part) => part.trim()) : [raw];
+}
+
 export function changedFiles(projectDir: string): string[] {
   return workingTreePorcelain(projectDir).map(porcelainPath);
 }
@@ -513,6 +560,13 @@ function commitWorkingTree(projectDir: string, message: string): boolean {
   return true;
 }
 
+function assertSessionPreservedBranch(state: FlowState, beforeHead: string, context: string): void {
+  const branch = currentBranch(state.projectDir);
+  if (branch !== state.branch) throw new Error(`${context} changed branch from ${state.branch} to ${branch}`);
+  const afterHead = requireGit(state.projectDir, ["rev-parse", "HEAD"]).trim();
+  if (afterHead !== beforeHead) throw new Error(`${context} committed or rewrote branch history; expected HEAD ${beforeHead}, found ${afterHead}`);
+}
+
 // ---------------------------------------------------------------------------
 // Checkbox and deterministic completion checks
 // ---------------------------------------------------------------------------
@@ -556,10 +610,28 @@ function snapshotLockedFile(state: FlowState, phaseId: string): FileSnapshot {
   return existsSync(file) ? { existed: true, content: readFileSync(file, "utf8") } : { existed: false, content: "" };
 }
 
-export function enforceLock(state: FlowState, phaseId: string, before?: FileSnapshot): boolean {
+export function enforceLock(state: FlowState, phaseId: string, before?: FileSnapshot, beforeChanges: string[] = []): boolean {
   const rule = LOCKED_FILE_RULES[phaseId];
   if (!rule) return false;
   const file = path.join(state.proposalDir, rule.file);
+  const expected = `openspec/changes/${state.proposalName}/${rule.file}`;
+  const previousEntries = new Set(beforeChanges);
+  const relatedRenames = workingTreePorcelain(state.projectDir)
+    .filter((line) => !previousEntries.has(line))
+    .map((line) => ({ line, paths: porcelainPaths(line) }))
+    .filter(({ paths }) => paths.length > 1 && paths.includes(expected));
+  for (const { paths } of relatedRenames) {
+    const destination = paths[paths.length - 1]!;
+    if (destination === expected) continue;
+    try {
+      requireGit(state.projectDir, ["reset", "--", destination]);
+    } catch {
+      // An untracked rename destination has no index entry; remove it below.
+    }
+    if (!git(state.projectDir, ["cat-file", "-e", `HEAD:${destination}`]).ok && existsSync(path.join(state.projectDir, destination))) {
+      unlinkSync(path.join(state.projectDir, destination));
+    }
+  }
   if (before !== undefined && before !== null) {
     const current = existsSync(file) ? readFileSync(file, "utf8") : undefined;
     // A locked file that did not exist at session start may not be created by
@@ -589,7 +661,6 @@ export function enforceLock(state: FlowState, phaseId: string, before?: FileSnap
     return true;
   }
   if (!existsSync(file)) return false;
-  const expected = `openspec/changes/${state.proposalName}/${rule.file}`;
   if (!workingTreePorcelain(state.projectDir).some((line) => porcelainPath(line) === expected)) return false;
   if (onlyCheckboxToggles(state.projectDir, file)) return false;
   const relative = path.relative(state.projectDir, file);
@@ -669,7 +740,15 @@ function hasCompletedAssistant(messages: MessageWithParts[]): boolean {
   // every tool step, while the agent may continue working in a later step.
   // The session-status endpoint can briefly report that session as idle
   // between those steps, so an assistant message alone is not completion.
-  return last.info.time.completed !== undefined && last.info.finish !== "tool-calls";
+  return last.info.time.completed !== undefined && last.info.finish !== "tool-calls" && last.info.finish !== "error" && !last.info.error;
+}
+
+function assistantFailed(messages: MessageWithParts[]): string | undefined {
+  const last = lastAssistant(messages);
+  if (!last || last.info.role !== "assistant") return undefined;
+  if (last.info.finish !== "error" && !last.info.error) return undefined;
+  const detail = last.info.error?.data?.message;
+  return detail ? ` (${detail})` : "";
 }
 
 async function getSessionReport(sessionId: string, projectDir: string): Promise<SessionReport> {
@@ -682,9 +761,9 @@ async function getSessionReport(sessionId: string, projectDir: string): Promise<
   };
 }
 
-async function sessionStatus(sessionId: string): Promise<"idle" | "busy" | "retry" | "unknown"> {
+async function sessionStatus(sessionId: string, projectDir: string): Promise<"idle" | "busy" | "retry" | "unknown"> {
   try {
-    const statuses = await client.sessionStatus();
+    const statuses = await client.sessionStatus({ directory: projectDir });
     const status: SessionStatusInfo | undefined = statuses[sessionId];
     if (!status) return "idle";
     if (status.type === "busy" || status.type === "retry" || status.type === "idle") return status.type;
@@ -694,8 +773,8 @@ async function sessionStatus(sessionId: string): Promise<"idle" | "busy" | "retr
   }
 }
 
-async function pendingQuestion(sessionId: string): Promise<QuestionRequest | undefined> {
-  const requests = await client.pendingQuestions();
+async function pendingQuestion(sessionId: string, projectDir: string): Promise<QuestionRequest | undefined> {
+  const requests = await client.pendingQuestions({ directory: projectDir });
   return requests.find((request) => request.sessionID === sessionId);
 }
 
@@ -838,7 +917,7 @@ async function waitForSessionCompletion(state: FlowState, phaseId: string, sessi
 
     let request: QuestionRequest | undefined;
     try {
-      request = await pendingQuestion(session.sessionId);
+      request = await pendingQuestion(session.sessionId, state.projectDir);
       unknownSince = 0;
     } catch (error) {
       if (!unknownSince) unknownSince = Date.now();
@@ -863,7 +942,7 @@ async function waitForSessionCompletion(state: FlowState, phaseId: string, sessi
       continue;
     }
 
-    const status = await sessionStatus(session.sessionId);
+    const status = await sessionStatus(session.sessionId, state.projectDir);
     if (status === "busy" || status === "retry") {
       idleSince = 0;
       continue;
@@ -884,6 +963,12 @@ async function waitForSessionCompletion(state: FlowState, phaseId: string, sessi
       // A just-finished session can briefly expose status before its messages;
       // keep polling instead of treating that race as completion.
       report = undefined;
+    }
+    if (status === "idle" && report) {
+      const failure = assistantFailed(report.messages);
+      if (failure !== undefined) {
+        throw new Error(`session ${session.sessionId} finished with an assistant error${failure}`);
+      }
     }
     if (status === "idle" && Boolean(report && hasCompletedAssistant(report.messages))) {
       const result = report ?? { sessionId: session.sessionId, text: "", messages: [] };
@@ -945,6 +1030,41 @@ async function pauseAndStop(state: FlowState, reason: Exclude<PauseReason, null>
   throw new FlowPaused(reason, detail);
 }
 
+async function reconcileRunningSessions(state: FlowState): Promise<string[]> {
+  const running = state.implementerSessions.filter((session) => session.status === "running");
+  if (running.length === 0) return [];
+
+  const [statuses, questions] = await Promise.all([
+    client.sessionStatus({ directory: state.projectDir }),
+    client.pendingQuestions({ directory: state.projectDir }),
+  ]);
+  const questionSessions = new Set(questions.map((request) => request.sessionID));
+  const active: string[] = [];
+  for (const session of running) {
+    const status = statuses[session.sessionId]?.type;
+    if (questionSessions.has(session.sessionId) || status === "busy" || status === "retry") {
+      active.push(session.sessionId);
+      continue;
+    }
+    try {
+      const report = await getSessionReport(session.sessionId, state.projectDir);
+      if (hasCompletedAssistant(report.messages)) {
+        session.status = "completed";
+        session.completedAt = nowIso();
+        session.report = report.text.slice(0, MAX_REPORT_LENGTH);
+        logEvent(state, "session_reconciled", `${session.sessionId} (${session.phaseId})`);
+        continue;
+      }
+    } catch {
+      // A session that cannot be inspected is treated as active.  Resuming by
+      // spawning another session would be unsafe until the Master inspects it.
+    }
+    active.push(session.sessionId);
+  }
+  await saveState(state);
+  return active;
+}
+
 // ---------------------------------------------------------------------------
 // Phase graph and direct git checkpoints
 // ---------------------------------------------------------------------------
@@ -987,11 +1107,14 @@ async function runFixLoop(state: FlowState, phase: PhaseDef): Promise<void> {
     const beforeUnchecked = uncheckedCount(issueFile);
     const runIdx = (state.loopCounters[counterKey] ?? 0) + 1;
     const beforeLock = snapshotLockedFile(state, "fix");
+    const beforeChanges = workingTreePorcelain(state.projectDir);
+    const beforeHead = requireGit(state.projectDir, ["rev-parse", "HEAD"]).trim();
     await spawnAndWaitFix(state, phase, runIdx);
     state.loopCounters[counterKey] = runIdx;
     await waitForExternalContinue(state);
+    assertSessionPreservedBranch(state, beforeHead, `fix session for ${phase.id}`);
 
-    if (enforceLock(state, "fix", beforeLock)) {
+    if (enforceLock(state, "fix", beforeLock, beforeChanges)) {
       logEvent(state, "enforcement_revert", `fix for ${phase.id} changed issue.md content; retrying without commit`);
       await saveState(state);
       continue;
@@ -1015,12 +1138,15 @@ async function runPhaseLoop(state: FlowState, phase: PhaseDef): Promise<void> {
     await enforceCap(state, phase, phase.id, `phase ${phase.id}`);
     const runIdx = (state.loopCounters[phase.id] ?? 0) + 1;
     const beforeLock = snapshotLockedFile(state, phase.id);
+    const beforeChanges = workingTreePorcelain(state.projectDir);
+    const beforeHead = requireGit(state.projectDir, ["rev-parse", "HEAD"]).trim();
     logEvent(state, "phase_run", `${phase.id} run ${runIdx}`);
     await saveState(state);
     await spawnAndWaitImplementer(state, phase, runIdx);
     await waitForExternalContinue(state);
+    assertSessionPreservedBranch(state, beforeHead, `implementer session for ${phase.id}`);
 
-    if (enforceLock(state, phase.id, beforeLock)) {
+    if (enforceLock(state, phase.id, beforeLock, beforeChanges)) {
       state.loopCounters[phase.id] = runIdx;
       logEvent(state, "enforcement_revert", `${phase.id} modified locked-file content; retrying without commit`);
       await saveState(state);
@@ -1076,11 +1202,10 @@ async function mergeAndFinish(state: FlowState, config: FlowConfig): Promise<voi
   const proposalFile = archivedProposalFile(state);
   const proposal = proposalFile ? readFileSync(proposalFile, "utf8") : "";
   const prompt = mergeCommitterPrompt(state, diff, proposal);
+  const beforeHead = requireGit(state.projectDir, ["rev-parse", "HEAD"]).trim();
   const session = await spawnSession(state, "merge", "merge-committer", 1, config.mergeCommitter, prompt);
   const report = await waitForSessionCompletion(state, "merge", session);
-  if (currentBranch(state.projectDir) !== state.branch) {
-    throw new Error(`merge committer left repository on ${currentBranch(state.projectDir)}; expected ${state.branch}`);
-  }
+  assertSessionPreservedBranch(state, beforeHead, "merge committer session");
   const committerChanges = workingTreePorcelain(state.projectDir);
   if (committerChanges.length > 0) {
     throw new Error(`merge committer modified the worktree: ${committerChanges.join(" | ")}`);
@@ -1197,8 +1322,10 @@ function prepareGit(config: FlowConfig): string {
 }
 
 function configMatchesState(config: FlowConfig, state: FlowState): void {
+  validateStateForExecution(state);
   if (path.resolve(config.projectDir) !== path.resolve(state.projectDir)) throw new Error("config projectDir differs from workflow state");
   if (config.proposalName !== state.proposalName) throw new Error("config proposal differs from workflow state");
+  if (path.resolve(config.proposalDir) !== path.resolve(state.proposalDir)) throw new Error("config proposalDir differs from workflow state");
   if (config.baseBranch !== state.baseBranch) throw new Error("config baseBranch differs from workflow state");
   if (config.branch !== state.branch) throw new Error("config branch differs from workflow state");
 }
@@ -1228,6 +1355,10 @@ function createInitialState(config: FlowConfig): FlowState {
 }
 
 function launchDaemon(projectDir: string, stateFile: string): number {
+  const existingPid = readDaemonPid(projectDir);
+  if (existingPid && isProcessAlive(existingPid)) {
+    throw new Error(`workflow daemon is already running (pid ${existingPid})`);
+  }
   const child = Bun.spawn(["bun", import.meta.path, "--daemon", stateFile], {
     detached: true,
     stdio: ["ignore", "ignore", "ignore"],
@@ -1247,6 +1378,10 @@ function launchUi(projectDir: string, port: number): number {
 }
 
 async function runDriverProcess(state: FlowState): Promise<WorkflowStatus> {
+  const existingPid = readDaemonPid(state.projectDir);
+  if (existingPid && existingPid !== process.pid && isProcessAlive(existingPid)) {
+    throw new Error(`workflow daemon is already running (pid ${existingPid})`);
+  }
   state.daemonPid = process.pid;
   writeDaemonPid(state.projectDir, process.pid);
   try {
@@ -1356,13 +1491,18 @@ async function cmdStart(args: string[]): Promise<number> {
   validateProposal(config);
   const configuredProjectDir = gitTopLevel(config.projectDir);
   const stateFile = statePath(configuredProjectDir);
+  let previousCompletedState: FlowState | undefined;
   if (existsSync(stateFile)) {
     const existing = await loadState(stateFile);
     const running = isProcessAlive(readDaemonPid(configuredProjectDir) ?? existing.daemonPid);
-    throw new Error(
-      `existing opsx-flow state for ${existing.proposalName} is ${existing.workflowStatus}; ` +
-      `${running ? "the daemon is still running" : "resume it or remove the stale state deliberately"}`,
-    );
+    if (running) throw new Error(`existing opsx-flow daemon is still running (pid ${readDaemonPid(configuredProjectDir) ?? existing.daemonPid})`);
+    if (existing.workflowStatus !== "completed") {
+      throw new Error(
+        `existing opsx-flow state for ${existing.proposalName} is ${existing.workflowStatus}; ` +
+        "resume it or remove the stale state deliberately",
+      );
+    }
+    previousCompletedState = existing;
   }
   const projectDir = prepareGit(config);
 
@@ -1376,7 +1516,10 @@ async function cmdStart(args: string[]): Promise<number> {
   await saveState(state);
 
   if (!options.noUi) {
-    state.uiPid = launchUi(projectDir, options.uiPort);
+    const reusableUi = previousCompletedState
+      && previousCompletedState.uiPort === options.uiPort
+      && isProcessAlive(previousCompletedState.uiPid);
+    state.uiPid = reusableUi ? previousCompletedState.uiPid : launchUi(projectDir, options.uiPort);
     await saveState(state);
   }
   if (options.foreground) {
@@ -1393,6 +1536,7 @@ async function cmdStart(args: string[]): Promise<number> {
 
 async function cmdDaemon(stateFile: string): Promise<number> {
   const state = await loadState(path.resolve(stateFile));
+  validateStateForExecution(state);
   await runDriverProcess(state);
   return 0;
 }
@@ -1428,12 +1572,17 @@ async function resumeFlow(projectDir: string, nextPhaseId?: string): Promise<{ s
   const stateFile = statePath(projectDir);
   if (!existsSync(stateFile)) throw new Error("no existing opsx-flow state; use start for a new workflow");
   const state = await loadState(stateFile);
+  validateStateForExecution(state);
   if (state.workflowStatus === "completed") throw new Error(`workflow is already completed: ${state.proposalName}`);
   const runningPid = readDaemonPid(projectDir) ?? state.daemonPid;
   if (isProcessAlive(runningPid)) throw new Error(`workflow daemon is already running (pid ${runningPid}); use continue instead`);
 
   const config = await loadFlowConfig(state.configPath);
   configMatchesState(config, state);
+  const activeSessions = await reconcileRunningSessions(state);
+  if (activeSessions.length > 0) {
+    throw new Error(`cannot resume while implementer sessions are still active: ${activeSessions.join(", ")}`);
+  }
   const requestedPhaseIdx = nextPhaseId === undefined ? undefined : phaseIndex(nextPhaseId);
   if (requestedPhaseIdx !== undefined && requestedPhaseIdx < state.currentPhaseIdx) {
     throw new Error(
@@ -1565,6 +1714,12 @@ function shellArg(value: string): string {
     : `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+function opencodeServerUrl(): string {
+  const configured = process.env.OPENCODE_SERVER_URL?.trim().replace(/\/+$/, "");
+  if (configured) return configured;
+  return `http://${process.env.OPENCODE_ASSISTANT_HOST ?? "127.0.0.1"}:${process.env.OPENCODE_ASSISTANT_PORT ?? "4096"}`;
+}
+
 async function apiState(projectDir: string): Promise<Record<string, unknown>> {
   const file = statePath(projectDir);
   if (!existsSync(file)) throw new Error(`no opsx-flow state for ${projectDir}`);
@@ -1592,6 +1747,7 @@ async function apiState(projectDir: string): Promise<Record<string, unknown>> {
     workflowStatus: paused && state.workflowStatus !== "completed" && state.workflowStatus !== "error"
       ? (state.workflowStatus === "awaiting-question" ? "awaiting-question" : "paused")
       : state.workflowStatus,
+    implementerSessions: state.implementerSessions.map(({ report: _report, ...session }) => session),
     daemonAlive: isProcessAlive(readDaemonPid(projectDir) ?? state.daemonPid),
     uiAlive: isProcessAlive(state.uiPid),
   };
@@ -1601,7 +1757,7 @@ async function apiLog(projectDir: string, since?: string): Promise<{ entries: Lo
   const file = path.join(projectDir, "openspec", ".opsx-flow.log");
   let lines: string[] = [];
   if (existsSync(file)) lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
-  if (since) lines = lines.filter((line) => line.slice(0, 24) > since);
+  if (since) lines = lines.filter((line) => line.slice(0, 24) >= since);
   lines = lines.slice(-500);
   const entries: LogEntry[] = lines.map((line) => {
     const match = line.match(/^(\S+)\s{2}(\S+)(?::\s(.*))?$/);
@@ -1615,13 +1771,13 @@ async function apiQuestions(projectDir: string): Promise<unknown[]> {
   if (!existsSync(stateFile)) return [];
   const state = await loadState(stateFile);
   const sessionIds = new Set(state.implementerSessions.map((session) => session.sessionId));
-  const requests = await client.pendingQuestions();
+  const requests = await client.pendingQuestions({ directory: projectDir });
   return requests
     .filter((request) => sessionIds.has(request.sessionID))
     .map((request) => ({
       ...request,
       phaseId: state.implementerSessions.find((session) => session.sessionId === request.sessionID)?.phaseId,
-      openCommand: `opencode --directory ${shellArg(projectDir)} --resume ${shellArg(request.sessionID)}`,
+      openCommand: `opencode attach ${shellArg(opencodeServerUrl())} --dir ${shellArg(projectDir)} --session ${shellArg(request.sessionID)}`,
     }));
 }
 
@@ -1716,6 +1872,7 @@ const selectedProject = queryProject || attachedProject;
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const $ = (id) => document.getElementById(id);
 let seenQuestions = new Set();
+let seenLogEntries = new Set();
 let lastLog = '';
 function apiUrl(url) { const target = new URL(url, window.location.href); if (!target.searchParams.has('projectDir')) target.searchParams.set('projectDir', selectedProject); return target.pathname + target.search; }
 async function getJson(url, options) { const response = await fetch(apiUrl(url), options); const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText); return data; }
@@ -1744,8 +1901,15 @@ async function refreshLog() {
   try {
     const data = await getJson('/api/log' + (lastLog ? '?since=' + encodeURIComponent(lastLog) : ''));
     if (data.entries.length) {
-      $('events').innerHTML += data.entries.map((entry) => '<div class="event">' + esc(entry.ts + '  ' + entry.event + (entry.detail ? ': ' + entry.detail : '')) + '</div>').join('');
+      const fresh = data.entries.filter((entry) => {
+        const key = entry.ts + '\\u0000' + entry.event + '\\u0000' + (entry.detail || '');
+        if (seenLogEntries.has(key)) return false;
+        seenLogEntries.add(key);
+        return true;
+      });
+      $('events').innerHTML += fresh.map((entry) => '<div class="event">' + esc(entry.ts + '  ' + entry.event + (entry.detail ? ': ' + entry.detail : '')) + '</div>').join('');
       lastLog = data.entries[data.entries.length - 1].ts;
+      if (seenLogEntries.size > 1000) seenLogEntries = new Set([...seenLogEntries].slice(-500));
     }
     while ($('events').children.length > 500) $('events').firstElementChild.remove();
   } catch (error) { showMessage(error.message, true); }
@@ -1866,6 +2030,7 @@ export const __test__ = {
   statePath,
   pauseMarkerPath,
   shellArg,
+  opencodeServerUrl,
   uiHtml,
   createUiServer,
 };

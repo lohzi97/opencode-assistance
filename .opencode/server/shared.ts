@@ -282,9 +282,10 @@ export const stateDir = path.join(serverDir, "state");
 
 loadConfigEnv();
 
+const configuredServerUrl = process.env.OPENCODE_SERVER_URL?.trim().replace(/\/+$/, "");
 const host = process.env.OPENCODE_ASSISTANT_HOST ?? "127.0.0.1";
 const port = process.env.OPENCODE_ASSISTANT_PORT ?? "4096";
-const base = `http://${host}:${port}`;
+const base = configuredServerUrl || `http://${host}:${port}`;
 const auth = process.env.OPENCODE_SERVER_PASSWORD
   ? `Basic ${Buffer.from(`${process.env.OPENCODE_SERVER_USERNAME ?? "opencode"}:${process.env.OPENCODE_SERVER_PASSWORD}`).toString("base64")}`
   : undefined;
@@ -373,12 +374,16 @@ export class OpenCodeClient {
     });
   }
 
-  async sessionStatus() {
-    return await this.req<Record<string, SessionStatusInfo>>("/session/status");
+  async sessionStatus(route: WorkspaceRouteInput = {}) {
+    return await this.req<Record<string, SessionStatusInfo>>("/session/status", {
+      ...(route.directory ? { urlSearchParams: { directory: route.directory } } : {}),
+    });
   }
 
-  async pendingQuestions() {
-    return await this.req<QuestionRequest[]>("/question");
+  async pendingQuestions(route: WorkspaceRouteInput = {}) {
+    return await this.req<QuestionRequest[]>("/question", {
+      ...(route.directory ? { urlSearchParams: { directory: route.directory } } : {}),
+    });
   }
 
   async sessionMessages(sessionID: string, route: WorkspaceRouteInput = {}) {

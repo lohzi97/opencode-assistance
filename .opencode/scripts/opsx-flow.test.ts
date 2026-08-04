@@ -36,7 +36,7 @@ describe("opsx-flow config", () => {
         "proposal": "demo",
         "baseBranch": "main",
         "caps": { "apply": 8 },
-        "phases": { "code-review": { "provider": "openai", "model": "gpt-test", "variant": "medium", "cap": "4" } }
+        "phases": { "code-review": { "provider": "openai", "model": "gpt-test", "variant": "medium", "cap": 4 } }
       }`);
       const config = await __test__.loadFlowConfig(configFile);
       expect(config.branch).toBe("openspec/demo");
@@ -57,6 +57,19 @@ describe("opsx-flow config", () => {
       const file = path.join(root, "flow.jsonc");
       await writeFile(file, JSON.stringify({ projectDir: root, proposal: "demo" }));
       await expect(__test__.loadFlowConfig(file)).rejects.toThrow("baseBranch");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects unknown config properties and string caps", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-config-"));
+    try {
+      const file = path.join(root, "flow.jsonc");
+      await writeFile(file, JSON.stringify({ projectDir: root, proposal: "demo", baseBranch: "main", extra: true }));
+      await expect(__test__.loadFlowConfig(file)).rejects.toThrow("unknown config property");
+      await writeFile(file, JSON.stringify({ projectDir: root, proposal: "demo", baseBranch: "main", caps: { apply: "2" } }));
+      await expect(__test__.loadFlowConfig(file)).rejects.toThrow("JSON number");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -126,6 +139,7 @@ describe("opsx-flow deterministic checks", () => {
     expect(__test__.hasCompletedAssistant([{ info: { ...base, finish: "tool-calls" }, parts: [] }])).toBe(false);
     expect(__test__.hasCompletedAssistant([{ info: { ...base, finish: "stop" }, parts: [] }])).toBe(true);
     expect(__test__.hasCompletedAssistant([{ info: { ...base, time: { created: 1 } }, parts: [] }])).toBe(false);
+    expect(__test__.hasCompletedAssistant([{ info: { ...base, finish: "error", error: { data: { message: "failed" } } }, parts: [] }])).toBe(false);
   });
 
   it("creates the conventional branch only when starting from a clean base branch", async () => {
@@ -217,6 +231,30 @@ describe("opsx-flow deterministic checks", () => {
       const tasks = path.join(proposal, "tasks.md");
       await writeFile(tasks, "- [ ] new\n");
       expect(__test__.onlyCheckboxToggles(project, tasks)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("removes a locked-file rename destination during enforcement", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-lock-"));
+    try {
+      const project = path.join(root, "project");
+      const proposal = path.join(project, "openspec", "changes", "demo");
+      await mkdir(proposal, { recursive: true });
+      runGit(project, ["init", "-b", "main"]);
+      runGit(project, ["config", "user.email", "opsx-flow-test@example.invalid"]);
+      runGit(project, ["config", "user.name", "opsx-flow test"]);
+      const tasks = path.join(proposal, "tasks.md");
+      await writeFile(path.join(proposal, "proposal.md"), "# Demo\n");
+      await writeFile(tasks, "- [ ] one\n");
+      runGit(project, ["add", "."]);
+      runGit(project, ["commit", "-m", "initial"]);
+      runGit(project, ["mv", tasks, path.join(proposal, "tasks-renamed.md")]);
+      const state = { projectDir: project, proposalName: "demo", proposalDir: proposal } as never;
+      expect(__test__.enforceLock(state, "apply", { existed: true, content: "- [ ] one\n" })).toBe(true);
+      expect(await Bun.file(tasks).text()).toBe("- [ ] one\n");
+      expect(await Bun.file(path.join(proposal, "tasks-renamed.md")).exists()).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
