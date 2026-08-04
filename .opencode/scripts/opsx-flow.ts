@@ -941,6 +941,16 @@ async function waitForSessionCompletion(state: FlowState, phaseId: string, sessi
       await saveState(state);
       continue;
     }
+    // `continue` can clear a manual pause marker while the implementer is
+    // still busy.  Reflect that transition immediately instead of leaving the
+    // persisted status as `paused` until the session eventually completes.
+    if (state.paused || state.workflowStatus === "paused" || state.workflowStatus === "awaiting-question") {
+      state.paused = false;
+      if (state.workflowStatus !== "error" && state.workflowStatus !== "completed") {
+        state.workflowStatus = "running";
+      }
+      await saveState(state);
+    }
 
     const status = await sessionStatus(session.sessionId, state.projectDir);
     if (status === "busy" || status === "retry") {
@@ -1886,6 +1896,7 @@ async function refreshState() {
     $('timeline').innerHTML = (state.phases || []).map((phase) => '<div class="phase ' + (phase.current ? 'current ' : '') + (phase.complete ? 'complete' : '') + '"><div class="phase-name">' + esc(phase.id) + '</div><div class="phase-meta">' + esc(phase.family) + ' · loop ' + phase.loopCounter + '/' + phase.cap + '</div></div>').join('');
     const select = $('next-phase'); const selected = select.value; select.innerHTML = '<option value="">current phase</option>' + (state.phases || []).filter((phase, index) => index >= state.currentPhaseIdx).map((phase) => '<option value="' + esc(phase.id) + '">' + esc(phase.id) + '</option>').join(''); select.value = selected;
     const sessionSelect = $('session-select'); const old = sessionSelect.value; sessionSelect.innerHTML = '<option value="">Select a session</option>' + (state.implementerSessions || []).slice().reverse().map((session) => '<option value="' + esc(session.sessionId) + '">' + esc(session.phaseId + ' · ' + session.kind + ' · ' + session.status) + '</option>').join(''); sessionSelect.value = old;
+    if ($('message').className === 'error') showMessage('');
   } catch (error) { showMessage(error.message, true); }
 }
 async function refreshQuestions() {
