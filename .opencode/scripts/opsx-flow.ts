@@ -1589,7 +1589,7 @@ async function cmdContinue(args: string[]): Promise<number> {
   const projectDir = resolveProjectDir(args);
   const state = await loadState(statePath(projectDir));
   if (state.workflowStatus === "completed") throw new Error(`workflow is already completed: ${state.proposalName}`);
-  writePauseMarker(projectDir, false);
+  await clearManualPause(projectDir, state);
   console.log(`continue: ${state.proposalName}`);
   return 0;
 }
@@ -1599,6 +1599,22 @@ async function flushResumeWorktree(projectDir: string): Promise<void> {
   if (dirty.length === 0) return;
   commitWorkingTree(projectDir, "opsx-flow(resume): flush manual changes");
   console.log(`flushed ${dirty.length} manual change(s) before resume`);
+}
+
+async function clearManualPause(projectDir: string, state: FlowState): Promise<void> {
+  writePauseMarker(projectDir, false);
+  // A running daemon will reconcile this on its next poll, but persist the
+  // transition now so status and the UI do not report a stale paused state.
+  // Do not turn a stopped cap-hit/error workflow into running: those require
+  // the explicit resume command.
+  const daemonPid = readDaemonPid(projectDir) ?? state.daemonPid;
+  const canReconcile = state.workflowStatus === "paused"
+    || (state.workflowStatus === "awaiting-question" && state.pendingQuestion === null);
+  if (canReconcile && isProcessAlive(daemonPid)) {
+    state.paused = false;
+    state.workflowStatus = "running";
+    await saveState(state);
+  }
 }
 
 async function resumeFlow(projectDir: string, nextPhaseId?: string): Promise<{ state: FlowState; pid: number }> {
@@ -1989,7 +2005,7 @@ function createUiServer(projectDir: string, port: number): ReturnType<typeof Bun
         if (request.method === "POST" && url.pathname === "/api/continue") {
           const state = await loadState(statePath(attachedProjectDir));
           if (state.workflowStatus === "completed") return jsonResponse({ error: "workflow is already completed" }, 409);
-          writePauseMarker(attachedProjectDir, false);
+          await clearManualPause(attachedProjectDir, state);
           return jsonResponse(await apiState(attachedProjectDir));
         }
         if (request.method === "POST" && url.pathname === "/api/resume") {
@@ -2064,6 +2080,7 @@ export const __test__ = {
   statePath,
   pauseMarkerPath,
   shellArg,
+  clearManualPause,
   opencodeServerUrl,
   uiHtml,
   createUiServer,

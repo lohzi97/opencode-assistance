@@ -123,6 +123,37 @@ describe("opsx-flow deterministic checks", () => {
     expect(__test__.displayedPhase(PHASES.length, "completed")).toBe("completed");
   });
 
+  it("persists an immediate running status when continuing an active daemon", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-continue-"));
+    try {
+      const project = path.join(root, "project");
+      await mkdir(path.join(project, "openspec"), { recursive: true });
+      const state = {
+        projectDir: project,
+        workflowStatus: "paused",
+        paused: true,
+        daemonPid: process.pid,
+        log: [],
+      } as never;
+      await writeFile(path.join(project, "openspec", ".opsx-flow-paused"), "paused\n");
+      await __test__.clearManualPause(project, state);
+      expect(state.workflowStatus).toBe("running");
+      expect(state.paused).toBe(false);
+      expect(await Bun.file(path.join(project, "openspec", ".opsx-flow-paused")).exists()).toBe(false);
+      expect(JSON.parse(await Bun.file(path.join(project, "openspec", ".opsx-flow-state.json")).text()).workflowStatus).toBe("running");
+
+      state.workflowStatus = "awaiting-question";
+      state.pendingQuestion = null;
+      state.paused = true;
+      await writeFile(path.join(project, "openspec", ".opsx-flow-paused"), "question answered\n");
+      await __test__.clearManualPause(project, state);
+      expect(state.workflowStatus).toBe("running");
+      expect(state.paused).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not treat an intermediate tool-call assistant message as completion", () => {
     const base = {
       id: "assistant",
