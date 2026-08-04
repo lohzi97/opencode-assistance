@@ -543,7 +543,9 @@ export function onlyCheckboxTogglesBetween(before: string, after: string): boole
 export function onlyCheckboxToggles(projectDir: string, file: string): boolean {
   if (!existsSync(file)) return false;
   const relative = path.relative(projectDir, file);
-  const before = requireGit(projectDir, ["show", `HEAD:${relative}`]);
+  const result = git(projectDir, ["show", `HEAD:${relative}`]);
+  if (!result.ok) return false;
+  const before = result.stdout;
   return onlyCheckboxTogglesBetween(before, readFileSync(file, "utf8"));
 }
 
@@ -560,8 +562,22 @@ export function enforceLock(state: FlowState, phaseId: string, before?: FileSnap
   const file = path.join(state.proposalDir, rule.file);
   if (before !== undefined && before !== null) {
     const current = existsSync(file) ? readFileSync(file, "utf8") : undefined;
+    // A locked file that did not exist at session start may not be created by
+    // the implementer, even when the new file happens to be empty (an empty
+    // string is otherwise indistinguishable from an unchanged snapshot to the
+    // checkbox-only comparison below).
+    if (!before.existed) {
+      if (current === undefined) return false;
+      try {
+        requireGit(state.projectDir, ["reset", "--", path.relative(state.projectDir, file)]);
+      } catch {
+        // Untracked files have no index entry to reset; unlinking below is the
+        // complete rollback for that case.
+      }
+      if (existsSync(file)) unlinkSync(file);
+      return true;
+    }
     if (current !== undefined && onlyCheckboxTogglesBetween(before.content, current)) return false;
-    if (current === undefined && !before.existed) return false;
     try {
       requireGit(state.projectDir, ["reset", "--", path.relative(state.projectDir, file)]);
     } catch {
@@ -576,7 +592,19 @@ export function enforceLock(state: FlowState, phaseId: string, before?: FileSnap
   const expected = `openspec/changes/${state.proposalName}/${rule.file}`;
   if (!workingTreePorcelain(state.projectDir).some((line) => porcelainPath(line) === expected)) return false;
   if (onlyCheckboxToggles(state.projectDir, file)) return false;
-  requireGit(state.projectDir, ["checkout", "HEAD", "--", path.relative(state.projectDir, file)]);
+  const relative = path.relative(state.projectDir, file);
+  if (git(state.projectDir, ["cat-file", "-e", `HEAD:${relative}`]).ok) {
+    requireGit(state.projectDir, ["checkout", "HEAD", "--", relative]);
+  } else {
+    // A newly added locked file has no HEAD version to check out. Remove the
+    // index entry first when it was staged, then remove the worktree file.
+    try {
+      requireGit(state.projectDir, ["reset", "--", relative]);
+    } catch {
+      // An entirely untracked file has no index entry; unlinking is sufficient.
+    }
+    if (existsSync(file)) unlinkSync(file);
+  }
   return true;
 }
 
@@ -1216,6 +1244,10 @@ async function runDriverProcess(state: FlowState): Promise<WorkflowStatus> {
   try {
     const config = await loadFlowConfig(state.configPath);
     configMatchesState(config, state);
+    const branch = currentBranch(state.projectDir);
+    if (branch !== state.branch) {
+      throw new Error(`workflow daemon must run on branch ${state.branch}; found ${branch}`);
+    }
     state.workflowStatus = "running";
     await saveState(state);
     await driverLoop(state, config);

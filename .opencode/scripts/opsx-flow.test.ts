@@ -159,6 +159,50 @@ describe("opsx-flow deterministic checks", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("rejects creation of an empty locked file during a run", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-lock-"));
+    try {
+      const project = path.join(root, "project");
+      const proposal = path.join(project, "openspec", "changes", "demo");
+      await mkdir(proposal, { recursive: true });
+      runGit(project, ["init", "-b", "main"]);
+      runGit(project, ["config", "user.email", "opsx-flow-test@example.invalid"]);
+      runGit(project, ["config", "user.name", "opsx-flow test"]);
+      await writeFile(path.join(proposal, "proposal.md"), "# Demo\n");
+      runGit(project, ["add", "."]);
+      runGit(project, ["commit", "-m", "initial"]);
+
+      const tasks = path.join(proposal, "tasks.md");
+      await writeFile(tasks, "");
+      const state = { projectDir: project, proposalName: "demo", proposalDir: proposal } as never;
+      expect(__test__.enforceLock(state, "apply", { existed: false, content: "" })).toBe(true);
+      expect(await Bun.file(tasks).exists()).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns false instead of throwing for an untracked locked file comparison", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-lock-"));
+    try {
+      const project = path.join(root, "project");
+      const proposal = path.join(project, "openspec", "changes", "demo");
+      await mkdir(proposal, { recursive: true });
+      runGit(project, ["init", "-b", "main"]);
+      runGit(project, ["config", "user.email", "opsx-flow-test@example.invalid"]);
+      runGit(project, ["config", "user.name", "opsx-flow test"]);
+      await writeFile(path.join(proposal, "proposal.md"), "# Demo\n");
+      runGit(project, ["add", "."]);
+      runGit(project, ["commit", "-m", "initial"]);
+
+      const tasks = path.join(proposal, "tasks.md");
+      await writeFile(tasks, "- [ ] new\n");
+      expect(__test__.onlyCheckboxToggles(project, tasks)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("opsx-flow web UI", () => {
