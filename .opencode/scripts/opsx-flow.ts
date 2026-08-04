@@ -268,6 +268,7 @@ export async function loadState(file: string): Promise<FlowState> {
   state.pendingQuestion ??= null;
   state.implementerSessions ??= [];
   state.baselineUntracked ??= [];
+  state.caps ??= { ...DEFAULT_CAPS };
   state.log ??= [];
   state.loopCounters ??= {};
   state.currentPhaseIdx ??= 0;
@@ -314,11 +315,12 @@ function normalizeModelConfig(value: unknown, field: string): RawModelConfig {
   if (value === undefined) return {};
   if (!record(value)) throw new Error(`${field} must be an object`);
   const model = value as RawModelConfig;
+  const normalized: RawModelConfig = {};
   for (const key of ["agent", "provider", "model", "variant"] as const) {
-    if (model[key] !== undefined) stringValue(model[key], `${field}.${key}`);
+    if (model[key] !== undefined) normalized[key] = stringValue(model[key], `${field}.${key}`);
   }
-  if (model.cap !== undefined) positiveInt(model.cap, `${field}.cap`);
-  return model;
+  if (model.cap !== undefined) normalized.cap = positiveInt(model.cap, `${field}.cap`);
+  return normalized;
 }
 
 function parseCaps(value: unknown): Caps {
@@ -400,6 +402,12 @@ export function phaseIndex(phaseId: string): number {
   const index = PHASES.findIndex((phase) => phase.id === phaseId);
   if (index < 0) throw new Error(`unknown phase: ${phaseId}`);
   return index;
+}
+
+function displayedPhase(currentPhaseIdx: number, workflowStatus: WorkflowStatus): string {
+  if (workflowStatus === "completed") return "completed";
+  if (currentPhaseIdx >= PHASES.length) return "merge";
+  return PHASES[currentPhaseIdx]?.id ?? "?";
 }
 
 // ---------------------------------------------------------------------------
@@ -1033,6 +1041,9 @@ async function mergeAndFinish(state: FlowState, config: FlowConfig): Promise<voi
   const prompt = mergeCommitterPrompt(state, diff, proposal);
   const session = await spawnSession(state, "merge", "merge-committer", 1, config.mergeCommitter, prompt);
   const report = await waitForSessionCompletion(state, "merge", session);
+  if (currentBranch(state.projectDir) !== state.branch) {
+    throw new Error(`merge committer left repository on ${currentBranch(state.projectDir)}; expected ${state.branch}`);
+  }
   const committerChanges = workingTreePorcelain(state.projectDir);
   if (committerChanges.length > 0) {
     throw new Error(`merge committer modified the worktree: ${committerChanges.join(" | ")}`);
@@ -1116,18 +1127,28 @@ function prepareGit(config: FlowConfig): string {
   if (config.baseBranch === config.branch) throw new Error("branch and baseBranch must be different");
 
   const current = currentBranch(projectDir);
-  if (current === config.baseBranch) {
+  if (!config.branchProvided) {
+    // An omitted branch is a request to create the conventional branch from
+    // baseBranch.  Checkout is safe only after the current worktree is clean;
+    // otherwise the caller could lose manual changes while changing branches.
+    if (current !== config.baseBranch) {
+      const currentDirty = workingTreePorcelain(projectDir);
+      if (currentDirty.length > 0) {
+        throw new Error(`cannot checkout baseBranch ${config.baseBranch} with dirty worktree: ${currentDirty.join(" | ")}`);
+      }
+      requireGit(projectDir, ["checkout", config.baseBranch]);
+    }
     const dirty = workingTreePorcelain(projectDir);
     if (dirty.length > 0) throw new Error(`baseBranch must be clean before starting: ${dirty.join(" | ")}`);
-    if (config.branchProvided) {
-      if (!localBranchExists(projectDir, config.branch)) throw new Error(`configured branch does not exist: ${config.branch}`);
-      requireGit(projectDir, ["checkout", config.branch]);
-    } else {
-      if (localBranchExists(projectDir, config.branch)) {
-        throw new Error(`default workflow branch already exists: ${config.branch}; resume the prior workflow or remove it deliberately`);
-      }
-      requireGit(projectDir, ["checkout", "-b", config.branch]);
+    if (localBranchExists(projectDir, config.branch)) {
+      throw new Error(`default workflow branch already exists: ${config.branch}; resume the prior workflow or remove it deliberately`);
     }
+    requireGit(projectDir, ["checkout", "-b", config.branch]);
+  } else if (current === config.baseBranch) {
+    const dirty = workingTreePorcelain(projectDir);
+    if (dirty.length > 0) throw new Error(`baseBranch must be clean before starting: ${dirty.join(" | ")}`);
+    if (!localBranchExists(projectDir, config.branch)) throw new Error(`configured branch does not exist: ${config.branch}`);
+    requireGit(projectDir, ["checkout", config.branch]);
   } else if (current !== config.branch) {
     const expectation = config.branchProvided
       ? `baseBranch ${config.baseBranch} or branch ${config.branch}`
@@ -1188,7 +1209,7 @@ function launchUi(projectDir: string, port: number): number {
   return child.pid;
 }
 
-async function runDriverProcess(state: FlowState): Promise<void> {
+async function runDriverProcess(state: FlowState): Promise<WorkflowStatus> {
   state.daemonPid = process.pid;
   writeDaemonPid(state.projectDir, process.pid);
   try {
@@ -1217,6 +1238,7 @@ async function runDriverProcess(state: FlowState): Promise<void> {
     state.daemonPid = undefined;
     await saveState(state).catch(() => undefined);
   }
+  return state.workflowStatus;
 }
 
 function parseBooleanFlag(args: string[], flag: string): boolean {
@@ -1229,6 +1251,10 @@ function valueFlag(args: string[], flag: string): string | undefined {
   if (inline) return inline.slice(prefix.length);
   const index = args.indexOf(flag);
   return index >= 0 ? args[index + 1] : undefined;
+}
+
+function hasFlag(args: string[], flag: string): boolean {
+  return args.includes(flag) || args.some((arg) => arg.startsWith(`${flag}=`));
 }
 
 function rejectUnknownFlags(args: string[], allowed: Set<string>): void {
@@ -1267,13 +1293,18 @@ function parseStartArgs(args: string[]): StartOptions {
 }
 
 function resolveProjectDir(args: string[]): string {
-  const value = valueFlag(args, "--project-dir");
-  return value ? path.resolve(value) : gitTopLevel(process.cwd());
+  if (hasFlag(args, "--project-dir")) {
+    const value = valueFlag(args, "--project-dir");
+    if (!value || value.startsWith("--")) throw new Error("--project-dir requires a value");
+    return path.resolve(value);
+  }
+  return gitTopLevel(process.cwd());
 }
 
 function parseNextPhase(args: string[]): string | undefined {
+  if (!hasFlag(args, "--next-phase")) return undefined;
   const value = valueFlag(args, "--next-phase");
-  if (value === undefined) return undefined;
+  if (!value || value.startsWith("--")) throw new Error("--next-phase requires a value");
   phaseIndex(value);
   return value;
 }
@@ -1308,8 +1339,8 @@ async function cmdStart(args: string[]): Promise<number> {
     await saveState(state);
   }
   if (options.foreground) {
-    await runDriverProcess(state);
-    return 0;
+    const status = await runDriverProcess(state);
+    return status === "error" ? 1 : 0;
   }
   const daemonPid = launchDaemon(projectDir, stateFile);
   console.log(`opsx-flow started: proposal=${state.proposalName} branch=${state.branch} pid=${daemonPid}`);
@@ -1362,6 +1393,12 @@ async function resumeFlow(projectDir: string, nextPhaseId?: string): Promise<{ s
 
   const config = await loadFlowConfig(state.configPath);
   configMatchesState(config, state);
+  const requestedPhaseIdx = nextPhaseId === undefined ? undefined : phaseIndex(nextPhaseId);
+  if (requestedPhaseIdx !== undefined && requestedPhaseIdx < state.currentPhaseIdx) {
+    throw new Error(
+      `resume --next-phase cannot move backward from ${displayedPhase(state.currentPhaseIdx, state.workflowStatus)} to ${nextPhaseId}`,
+    );
+  }
   state.caps = { ...config.caps };
   if (currentBranch(projectDir) !== state.branch) {
     if (workingTreePorcelain(projectDir).length > 0) {
@@ -1371,8 +1408,8 @@ async function resumeFlow(projectDir: string, nextPhaseId?: string): Promise<{ s
   }
   await flushResumeWorktree(projectDir);
 
-  if (nextPhaseId !== undefined) {
-    state.currentPhaseIdx = phaseIndex(nextPhaseId);
+  if (nextPhaseId !== undefined && requestedPhaseIdx !== undefined) {
+    state.currentPhaseIdx = requestedPhaseIdx;
     state.loopCounters = {};
     logEvent(state, "force_advance", `resume --next-phase ${nextPhaseId}`);
   }
@@ -1394,7 +1431,7 @@ async function cmdResume(args: string[]): Promise<number> {
   const projectDir = resolveProjectDir(args);
   const nextPhase = parseNextPhase(args);
   const result = await resumeFlow(projectDir, nextPhase);
-  const phase = result.state.currentPhaseIdx < PHASES.length ? PHASES[result.state.currentPhaseIdx]!.id : "completed";
+  const phase = displayedPhase(result.state.currentPhaseIdx, result.state.workflowStatus);
   console.log(`opsx-flow resumed: proposal=${result.state.proposalName} phase=${phase} pid=${result.pid}`);
   return 0;
 }
@@ -1409,7 +1446,7 @@ async function cmdStatus(args: string[]): Promise<number> {
   }
   const state = await loadState(file);
   const paused = pauseMarkerExists(projectDir);
-  const phase = state.workflowStatus === "completed" ? "completed" : PHASES[Math.min(state.currentPhaseIdx, PHASES.length - 1)]?.id ?? "?";
+  const phase = displayedPhase(state.currentPhaseIdx, state.workflowStatus);
   console.log(JSON.stringify({
     ...state,
     phase,
@@ -1461,6 +1498,32 @@ async function requestJson(request: Request): Promise<Record<string, unknown>> {
   return parsed;
 }
 
+function htmlEscape(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[character]!);
+}
+
+function resolveUiProject(defaultProjectDir: string, url: URL): string {
+  const requested = url.searchParams.get("projectDir");
+  if (!requested) return defaultProjectDir;
+  const projectDir = path.resolve(requested);
+  if (!existsSync(statePath(projectDir))) {
+    throw new Error(`no opsx-flow state for ${projectDir}`);
+  }
+  return projectDir;
+}
+
+function shellArg(value: string): string {
+  return /^[A-Za-z0-9_./:@%+=,-]+$/.test(value)
+    ? value
+    : `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 async function apiState(projectDir: string): Promise<Record<string, unknown>> {
   const file = statePath(projectDir);
   if (!existsSync(file)) throw new Error(`no opsx-flow state for ${projectDir}`);
@@ -1482,7 +1545,7 @@ async function apiState(projectDir: string): Promise<Record<string, unknown>> {
   return {
     ...state,
     proposal: state.proposalName,
-    phase: state.workflowStatus === "completed" ? "completed" : PHASES[Math.min(state.currentPhaseIdx, PHASES.length - 1)]?.id ?? "?",
+    phase: displayedPhase(state.currentPhaseIdx, state.workflowStatus),
     phases,
     paused,
     workflowStatus: paused && state.workflowStatus !== "completed" && state.workflowStatus !== "error"
@@ -1517,7 +1580,7 @@ async function apiQuestions(projectDir: string): Promise<unknown[]> {
     .map((request) => ({
       ...request,
       phaseId: state.implementerSessions.find((session) => session.sessionId === request.sessionID)?.phaseId,
-      openCommand: `opencode --directory ${projectDir} --resume ${request.sessionID}`,
+      openCommand: `opencode --directory ${shellArg(projectDir)} --resume ${shellArg(request.sessionID)}`,
     }));
 }
 
@@ -1547,6 +1610,7 @@ async function apiReport(projectDir: string, sessionId: string): Promise<{ sessi
 
 function uiHtml(projectDir: string, port: number): string {
   const projectJson = JSON.stringify(projectDir).replace(/</g, "\\u003c");
+  const projectValue = htmlEscape(projectDir);
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -1587,7 +1651,7 @@ function uiHtml(projectDir: string, port: number): string {
   <section class="panel">
     <div class="toolbar">
       <label for="project-picker">Project</label>
-      <input id="project-picker" list="known-projects" size="60" value="${projectJson.slice(1, -1).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")}">
+      <input id="project-picker" list="known-projects" size="60" value="${projectValue}">
       <datalist id="known-projects"></datalist>
       <span id="proposal" class="muted"></span>
       <span id="status" class="status">loading</span>
@@ -1606,11 +1670,14 @@ function uiHtml(projectDir: string, port: number): string {
   <section class="panel"><h2>Event stream</h2><div id="events"></div></section>
 <script>
 const attachedProject = ${projectJson};
+const queryProject = new URLSearchParams(window.location.search).get('projectDir');
+const selectedProject = queryProject || attachedProject;
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const $ = (id) => document.getElementById(id);
 let seenQuestions = new Set();
 let lastLog = '';
-async function getJson(url, options) { const response = await fetch(url, options); const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText); return data; }
+function apiUrl(url) { const target = new URL(url, window.location.href); if (!target.searchParams.has('projectDir')) target.searchParams.set('projectDir', selectedProject); return target.pathname + target.search; }
+async function getJson(url, options) { const response = await fetch(apiUrl(url), options); const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText); return data; }
 function showMessage(text, error = false) { $('message').textContent = text; $('message').className = error ? 'error' : 'success'; }
 async function refreshState() {
   try {
@@ -1619,7 +1686,7 @@ async function refreshState() {
     $('status').textContent = state.workflowStatus + (state.pauseReason ? ' · ' + state.pauseReason : '');
     $('status').className = 'status ' + state.workflowStatus;
     $('timeline').innerHTML = (state.phases || []).map((phase) => '<div class="phase ' + (phase.current ? 'current ' : '') + (phase.complete ? 'complete' : '') + '"><div class="phase-name">' + esc(phase.id) + '</div><div class="phase-meta">' + esc(phase.family) + ' · loop ' + phase.loopCounter + '/' + phase.cap + '</div></div>').join('');
-    const select = $('next-phase'); const selected = select.value; select.innerHTML = '<option value="">current phase</option>' + (state.phases || []).map((phase) => '<option value="' + esc(phase.id) + '">' + esc(phase.id) + '</option>').join(''); select.value = selected;
+    const select = $('next-phase'); const selected = select.value; select.innerHTML = '<option value="">current phase</option>' + (state.phases || []).filter((phase, index) => index >= state.currentPhaseIdx).map((phase) => '<option value="' + esc(phase.id) + '">' + esc(phase.id) + '</option>').join(''); select.value = selected;
     const sessionSelect = $('session-select'); const old = sessionSelect.value; sessionSelect.innerHTML = '<option value="">Select a session</option>' + (state.implementerSessions || []).slice().reverse().map((session) => '<option value="' + esc(session.sessionId) + '">' + esc(session.phaseId + ' · ' + session.kind + ' · ' + session.status) + '</option>').join(''); sessionSelect.value = old;
   } catch (error) { showMessage(error.message, true); }
 }
@@ -1644,6 +1711,7 @@ async function refreshLog() {
 }
 async function refreshProjects() { try { const data = await getJson('/api/projects'); $('known-projects').innerHTML = data.projects.map((project) => '<option value="' + esc(project) + '"></option>').join(''); } catch (_) {} }
 async function refresh() { await Promise.all([refreshState(), refreshQuestions(), refreshLog()]); }
+$('project-picker').onchange = () => { const project = $('project-picker').value.trim(); if (project) window.location.href = '/?projectDir=' + encodeURIComponent(project); };
 $('pause').onclick = async () => { try { await getJson('/api/pause', {method:'POST'}); showMessage('Pause requested'); await refresh(); } catch (error) { showMessage(error.message, true); } };
 $('continue').onclick = async () => { try { await getJson('/api/continue', {method:'POST'}); showMessage('Continue requested'); await refresh(); } catch (error) { showMessage(error.message, true); } };
 $('resume').onclick = async () => { try { const nextPhase = $('next-phase').value; await getJson('/api/resume', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(nextPhase ? {nextPhase} : {})}); showMessage('Daemon resumed'); await refresh(); } catch (error) { showMessage(error.message, true); } };
@@ -1662,33 +1730,34 @@ function createUiServer(projectDir: string, port: number): ReturnType<typeof Bun
     fetch: async (request) => {
       const url = new URL(request.url);
       try {
-        if (request.method === "GET" && url.pathname === "/") return new Response(uiHtml(projectDir, port), { headers: { "content-type": "text/html; charset=utf-8" } });
-        if (request.method === "GET" && url.pathname === "/api/state") return jsonResponse(await apiState(projectDir));
-        if (request.method === "GET" && url.pathname === "/api/log") return jsonResponse(await apiLog(projectDir, url.searchParams.get("since") ?? undefined));
-        if (request.method === "GET" && url.pathname === "/api/questions") return jsonResponse(await apiQuestions(projectDir));
-        if (request.method === "GET" && url.pathname === "/api/projects") return jsonResponse({ projects: knownProjectDirs(projectDir) });
+        const attachedProjectDir = resolveUiProject(projectDir, url);
+        if (request.method === "GET" && url.pathname === "/") return new Response(uiHtml(attachedProjectDir, port), { headers: { "content-type": "text/html; charset=utf-8" } });
+        if (request.method === "GET" && url.pathname === "/api/state") return jsonResponse(await apiState(attachedProjectDir));
+        if (request.method === "GET" && url.pathname === "/api/log") return jsonResponse(await apiLog(attachedProjectDir, url.searchParams.get("since") ?? undefined));
+        if (request.method === "GET" && url.pathname === "/api/questions") return jsonResponse(await apiQuestions(attachedProjectDir));
+        if (request.method === "GET" && url.pathname === "/api/projects") return jsonResponse({ projects: knownProjectDirs(attachedProjectDir) });
         if (request.method === "GET" && url.pathname === "/api/report") {
           const sessionId = url.searchParams.get("sessionId");
           if (!sessionId) return jsonResponse({ error: "sessionId is required" }, 400);
-          return jsonResponse(await apiReport(projectDir, sessionId));
+          return jsonResponse(await apiReport(attachedProjectDir, sessionId));
         }
         if (request.method === "POST" && url.pathname === "/api/pause") {
-          const state = await loadState(statePath(projectDir));
+          const state = await loadState(statePath(attachedProjectDir));
           if (state.workflowStatus === "completed") return jsonResponse({ error: "workflow is already completed" }, 409);
-          writePauseMarker(projectDir, true);
-          return jsonResponse(await apiState(projectDir));
+          writePauseMarker(attachedProjectDir, true);
+          return jsonResponse(await apiState(attachedProjectDir));
         }
         if (request.method === "POST" && url.pathname === "/api/continue") {
-          const state = await loadState(statePath(projectDir));
+          const state = await loadState(statePath(attachedProjectDir));
           if (state.workflowStatus === "completed") return jsonResponse({ error: "workflow is already completed" }, 409);
-          writePauseMarker(projectDir, false);
-          return jsonResponse(await apiState(projectDir));
+          writePauseMarker(attachedProjectDir, false);
+          return jsonResponse(await apiState(attachedProjectDir));
         }
         if (request.method === "POST" && url.pathname === "/api/resume") {
           const body = await requestJson(request);
           const nextPhase = body.nextPhase === undefined ? undefined : stringValue(body.nextPhase, "nextPhase");
-          const result = await resumeFlow(projectDir, nextPhase);
-          return jsonResponse({ ...(await apiState(projectDir)), resumedPid: result.pid });
+          const result = await resumeFlow(attachedProjectDir, nextPhase);
+          return jsonResponse({ ...(await apiState(attachedProjectDir)), resumedPid: result.pid });
         }
         return jsonResponse({ error: "not found" }, 404);
       } catch (error) {
@@ -1701,6 +1770,9 @@ function createUiServer(projectDir: string, port: number): ReturnType<typeof Bun
 async function cmdUi(args: string[]): Promise<number> {
   rejectUnknownFlags(args, new Set(["--project-dir", "--port"]));
   const projectDir = resolveProjectDir(args);
+  if (hasFlag(args, "--port") && (!valueFlag(args, "--port") || valueFlag(args, "--port")!.startsWith("--"))) {
+    throw new Error("--port requires a value");
+  }
   const portRaw = valueFlag(args, "--port");
   const port = portRaw === undefined ? 4321 : positiveInt(portRaw, "--port");
   if (port > 65535) throw new Error("--port must be between 1 and 65535");
@@ -1738,6 +1810,8 @@ export const __test__ = {
   loadFlowConfig,
   resolvePhase,
   phaseIndex,
+  displayedPhase,
+  prepareGit,
   uncheckedCount,
   checkboxCount,
   allTasksChecked,
@@ -1749,6 +1823,9 @@ export const __test__ = {
   changedFiles,
   statePath,
   pauseMarkerPath,
+  shellArg,
+  uiHtml,
+  createUiServer,
 };
 
 async function main(): Promise<number> {

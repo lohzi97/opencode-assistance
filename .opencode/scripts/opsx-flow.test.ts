@@ -1,8 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { __test__, DEFAULT_CAPS, PHASES } from "./opsx-flow.ts";
+
+function runGit(directory: string, args: string[]): string {
+  const result = spawnSync("git", args, { cwd: directory, encoding: "utf8" });
+  if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
+  return result.stdout.trim();
+}
 
 describe("opsx-flow config", () => {
   it("parses start flags without treating option values as positionals", () => {
@@ -29,7 +36,7 @@ describe("opsx-flow config", () => {
         "proposal": "demo",
         "baseBranch": "main",
         "caps": { "apply": 8 },
-        "phases": { "code-review": { "provider": "openai", "model": "gpt-test", "variant": "medium", "cap": 4 } }
+        "phases": { "code-review": { "provider": "openai", "model": "gpt-test", "variant": "medium", "cap": "4" } }
       }`);
       const config = await __test__.loadFlowConfig(configFile);
       expect(config.branch).toBe("openspec/demo");
@@ -75,5 +82,122 @@ describe("opsx-flow deterministic checks", () => {
   it("exposes the state and pause marker paths under openspec", () => {
     expect(__test__.statePath("/tmp/demo")).toBe("/tmp/demo/openspec/.opsx-flow-state.json");
     expect(__test__.pauseMarkerPath("/tmp/demo")).toBe("/tmp/demo/openspec/.opsx-flow-paused");
+  });
+
+  it("reports the merge stage instead of incorrectly showing archive after phases finish", () => {
+    expect(__test__.displayedPhase(PHASES.length, "running")).toBe("merge");
+    expect(__test__.displayedPhase(PHASES.length, "completed")).toBe("completed");
+  });
+
+  it("creates the conventional branch only when starting from a clean base branch", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-git-"));
+    try {
+      const project = path.join(root, "project");
+      await mkdir(project, { recursive: true });
+      runGit(project, ["init", "-b", "main"]);
+      runGit(project, ["config", "user.email", "opsx-flow-test@example.invalid"]);
+      runGit(project, ["config", "user.name", "opsx-flow test"]);
+      await mkdir(path.join(project, "openspec", "changes", "demo"), { recursive: true });
+      await writeFile(path.join(project, "openspec", "changes", "demo", "proposal.md"), "# Demo\n");
+      await writeFile(path.join(project, "openspec", "changes", "demo", "tasks.md"), "- [ ] one\n");
+      await writeFile(path.join(project, "README.md"), "demo\n");
+      runGit(project, ["add", "."]);
+      runGit(project, ["commit", "-m", "initial"]);
+      runGit(project, ["checkout", "-b", "other"]);
+
+      const configFile = path.join(root, "flow.jsonc");
+      await writeFile(configFile, JSON.stringify({ projectDir: project, proposal: "demo", baseBranch: "main" }));
+      const config = await __test__.loadFlowConfig(configFile);
+      expect(__test__.prepareGit(config)).toBe(project);
+      expect(runGit(project, ["branch", "--show-current"])).toBe("openspec/demo");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an omitted branch when switching from a dirty worktree", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-git-"));
+    try {
+      const project = path.join(root, "project");
+      await mkdir(project, { recursive: true });
+      runGit(project, ["init", "-b", "main"]);
+      runGit(project, ["config", "user.email", "opsx-flow-test@example.invalid"]);
+      runGit(project, ["config", "user.name", "opsx-flow test"]);
+      await writeFile(path.join(project, "README.md"), "demo\n");
+      runGit(project, ["add", "."]);
+      runGit(project, ["commit", "-m", "initial"]);
+      runGit(project, ["checkout", "-b", "other"]);
+      await writeFile(path.join(project, "README.md"), "manual change\n");
+
+      const configFile = path.join(root, "flow.jsonc");
+      await writeFile(configFile, JSON.stringify({ projectDir: project, proposal: "demo", baseBranch: "main" }));
+      const config = await __test__.loadFlowConfig(configFile);
+      expect(() => __test__.prepareGit(config)).toThrow("dirty worktree");
+      expect(runGit(project, ["branch", "--show-current"])).toBe("other");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("opsx-flow web UI", () => {
+  it("serves state and can attach the standalone UI to another project", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-ui-"));
+    const startedAt = new Date().toISOString();
+    const makeProject = async (name: string) => {
+      const project = path.join(root, name);
+      const openspec = path.join(project, "openspec");
+      await mkdir(openspec, { recursive: true });
+      const configPath = path.join(root, `${name}.jsonc`);
+      await writeFile(configPath, JSON.stringify({ projectDir: project, proposal: name, baseBranch: "main" }));
+      await writeFile(
+        path.join(openspec, ".opsx-flow-state.json"),
+        JSON.stringify({
+          proposalName: name,
+          proposalDir: path.join(openspec, "changes", name),
+          projectDir: project,
+          configPath,
+          branch: `openspec/${name}`,
+          baseBranch: "main",
+          paused: false,
+          pauseReason: null,
+          caps: { ...DEFAULT_CAPS },
+          loopCounters: {},
+          currentPhaseIdx: 0,
+          workflowStatus: "running",
+          startedAt,
+          completedAt: null,
+          lastUpdated: startedAt,
+          pendingQuestion: null,
+          baselineUntracked: [],
+          implementerSessions: [],
+          log: [],
+        }),
+      );
+      return project;
+    };
+
+    try {
+      const first = await makeProject("first");
+      const second = await makeProject("second");
+      const server = __test__.createUiServer(first, 0);
+      try {
+        const firstPage = await fetch(`http://127.0.0.1:${server.port}/`);
+        expect(firstPage.status).toBe(200);
+        expect(await firstPage.text()).toContain(`value="${first}"`);
+
+        const secondPage = await fetch(`http://127.0.0.1:${server.port}/?projectDir=${encodeURIComponent(second)}`);
+        expect(secondPage.status).toBe(200);
+        expect(await secondPage.text()).toContain(`value="${second}"`);
+
+        const secondState = await fetch(`http://127.0.0.1:${server.port}/api/state?projectDir=${encodeURIComponent(second)}`);
+        expect(secondState.status).toBe(200);
+        expect((await secondState.json()).proposal).toBe("second");
+      } finally {
+        server.stop(true);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
