@@ -388,3 +388,247 @@ describe("opsx-flow web UI", () => {
     }
   });
 });
+
+describe("opsx-flow issue-audit config", () => {
+  it("resolves issueAudit from the top-level block with DEFAULT_MODEL fallbacks", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-audit-cfg-"));
+    try {
+      const project = path.join(root, "project");
+      const proposal = path.join(project, "openspec", "changes", "demo");
+      await mkdir(proposal, { recursive: true });
+      await writeFile(path.join(proposal, "proposal.md"), "# Demo\n");
+      await writeFile(path.join(proposal, "tasks.md"), "- [ ] one\n");
+      const configFile = path.join(root, "flow.jsonc");
+      await writeFile(configFile, JSON.stringify({
+        projectDir: project,
+        proposal: "demo",
+        baseBranch: "main",
+        issueAudit: { agent: "levi", provider: "openai", model: "gpt-5.6-sol", variant: "medium" },
+      }));
+      const config = await __test__.loadFlowConfig(configFile);
+      expect(config.issueAudit).toEqual({ agent: "levi", provider: "openai", model: "gpt-5.6-sol", variant: "medium" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to DEFAULT_MODEL when issueAudit is omitted", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-audit-cfg-"));
+    try {
+      const project = path.join(root, "project");
+      const proposal = path.join(project, "openspec", "changes", "demo");
+      await mkdir(proposal, { recursive: true });
+      await writeFile(path.join(proposal, "proposal.md"), "# Demo\n");
+      await writeFile(path.join(proposal, "tasks.md"), "- [ ] one\n");
+      const configFile = path.join(root, "flow.jsonc");
+      await writeFile(configFile, JSON.stringify({ projectDir: project, proposal: "demo", baseBranch: "main" }));
+      const config = await __test__.loadFlowConfig(configFile);
+      expect(config.issueAudit).toEqual(__test__.DEFAULT_MODEL);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts phases[issue-audit] override and lets it win over the top-level block", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-audit-cfg-"));
+    try {
+      const project = path.join(root, "project");
+      const proposal = path.join(project, "openspec", "changes", "demo");
+      await mkdir(proposal, { recursive: true });
+      await writeFile(path.join(proposal, "proposal.md"), "# Demo\n");
+      await writeFile(path.join(proposal, "tasks.md"), "- [ ] one\n");
+      const configFile = path.join(root, "flow.jsonc");
+      await writeFile(configFile, JSON.stringify({
+        projectDir: project,
+        proposal: "demo",
+        baseBranch: "main",
+        issueAudit: { provider: "openai", model: "gpt-5.6-sol" },
+        phases: { "issue-audit": { model: "gpt-5.6-luna", variant: "max" } },
+      }));
+      const config = await __test__.loadFlowConfig(configFile);
+      // Phase-level override takes precedence over the top-level block; fields
+      // not overridden by the phase block fall through to the top-level block.
+      expect(config.issueAudit).toEqual({
+        agent: "levi",
+        provider: "openai",
+        model: "gpt-5.6-luna",
+        variant: "max",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an unknown phase override that is not issue-audit", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-audit-cfg-"));
+    try {
+      const project = path.join(root, "project");
+      const proposal = path.join(project, "openspec", "changes", "demo");
+      await mkdir(proposal, { recursive: true });
+      await writeFile(path.join(proposal, "proposal.md"), "# Demo\n");
+      await writeFile(path.join(proposal, "tasks.md"), "- [ ] one\n");
+      const configFile = path.join(root, "flow.jsonc");
+      await writeFile(configFile, JSON.stringify({
+        projectDir: project,
+        proposal: "demo",
+        baseBranch: "main",
+        phases: { "not-a-real-phase": { model: "x" } },
+      }));
+      await expect(__test__.loadFlowConfig(configFile)).rejects.toThrow("unknown phase override: not-a-real-phase");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("counts re-evaluation and enrichment audit notes in issue.md", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-audit-notes-"));
+    try {
+      const file = path.join(root, "issue.md");
+      await writeFile(file, [
+        "- [ ] ISSUE-1: bad",
+        "  - **Re-evaluation 1:** cleared by filter",
+        "- [ ] ISSUE-2: weird",
+        "  - **Enrichment 1 (audit):** convention drift",
+        "  - **Enrichment 2:** more context",
+        "- [ ] ISSUE-3: kept",
+      ].join("\n") + "\n");
+      expect(__test__.auditNoteCount(file)).toBe(3);
+      expect(__test__.auditNoteCount(path.join(root, "missing.md"))).toBe(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("opsx-flow step recording", () => {
+  function phaseFor(id: string) {
+    const base = PHASES.find((candidate) => candidate.id === id)!;
+    return { ...base, agent: "levi", provider: "openai", model: "gpt-5.6-luna", variant: "max", cap: DEFAULT_CAPS.testFix };
+  }
+
+  it("implementerSummary reports issue counts for finding phases and task state for apply", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-summary-"));
+    try {
+      const project = path.join(root, "project");
+      const proposal = path.join(project, "openspec", "changes", "demo");
+      await mkdir(proposal, { recursive: true });
+      const state = {
+        proposalName: "demo",
+        proposalDir: proposal,
+        projectDir: project,
+      } as never;
+
+      const issue = path.join(proposal, "issue.md");
+      await writeFile(issue, "- [ ] one\n- [ ] two\n- [x] three\n");
+      expect(__test__.implementerSummary(state, phaseFor("test"), false)).toBe("2 issues");
+      expect(__test__.implementerSummary(state, phaseFor("test"), true)).toBe("2 issues");
+
+      const tasks = path.join(proposal, "tasks.md");
+      await writeFile(tasks, "- [ ] one\n- [x] two\n");
+      expect(__test__.implementerSummary(state, phaseFor("apply"), false)).toBe("1 task unchecked");
+      expect(__test__.implementerSummary(state, phaseFor("apply"), true)).toBe("all tasks checked");
+
+      expect(__test__.implementerSummary(state, phaseFor("align"), true)).toBe("clean");
+      expect(__test__.implementerSummary(state, phaseFor("align"), false)).toBe("edits made");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("runIssueAudit skips spawning when issue.md is clean or missing", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-audit-skip-"));
+    try {
+      const project = path.join(root, "project");
+      const proposal = path.join(project, "openspec", "changes", "demo");
+      await mkdir(proposal, { recursive: true });
+      const state = {
+        proposalName: "demo",
+        proposalDir: proposal,
+        projectDir: project,
+        branch: "openspec/demo",
+        loopCounters: {},
+        steps: [],
+        log: [],
+        caps: { ...DEFAULT_CAPS },
+        implementerSessions: [],
+        baselineUntracked: [],
+      } as never;
+      const config = await __test__.loadFlowConfig(path.join(root, "flow.jsonc")).catch(() => undefined);
+      const phase = phaseFor("test");
+
+      // No issue.md at all: audit must return without pushing a step.
+      await __test__.runIssueAudit(state, phase, { issueAudit: __test__.DEFAULT_MODEL } as never);
+      expect(state.steps).toHaveLength(0);
+
+      // Clean issue.md (zero unchecked) must also skip the audit.
+      await writeFile(path.join(proposal, "issue.md"), "- [x] already resolved\n");
+      await __test__.runIssueAudit(state, phase, { issueAudit: __test__.DEFAULT_MODEL } as never);
+      expect(state.steps).toHaveLength(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("renders a step-based timeline with sub-steps grouped under their phase", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-steps-ui-"));
+    try {
+      const project = path.join(root, "project");
+      const openspec = path.join(project, "openspec");
+      await mkdir(openspec, { recursive: true });
+      const startedAt = new Date().toISOString();
+      const steps = [
+        { skill: "openspec-test", phaseId: "test", runIdx: 1, kind: "implementer", status: "completed", startedAt, completedAt: startedAt, summary: "3 issues" },
+        { skill: "openspec-issue-audit", phaseId: "test", runIdx: 1, kind: "issue-audit", status: "completed", startedAt, completedAt: startedAt, summary: "1 cleared, 2 enriched" },
+        { skill: "openspec-fix", phaseId: "test", runIdx: 1, kind: "fix", status: "completed", startedAt, completedAt: startedAt, summary: "2 resolved" },
+        { skill: "openspec-test", phaseId: "test", runIdx: 2, kind: "implementer", status: "running", startedAt },
+      ];
+      await writeFile(
+        path.join(openspec, ".opsx-flow-state.json"),
+        JSON.stringify({
+          proposalName: "demo",
+          proposalDir: path.join(openspec, "changes", "demo"),
+          projectDir: project,
+          configPath: "",
+          branch: "openspec/demo",
+          baseBranch: "main",
+          paused: false,
+          pauseReason: null,
+          caps: { ...DEFAULT_CAPS },
+          loopCounters: {},
+          currentPhaseIdx: 3,
+          workflowStatus: "running",
+          startedAt,
+          completedAt: null,
+          lastUpdated: startedAt,
+          pendingQuestion: null,
+          baselineUntracked: [],
+          implementerSessions: [],
+          steps,
+          log: [],
+        }),
+      );
+      const server = __test__.createUiServer(project, 0);
+      try {
+        const state = await (await fetch(`http://127.0.0.1:${server.port}/api/state`)).json();
+        // The steps array flows through apiState automatically.
+        expect(state.steps).toHaveLength(4);
+        expect(state.steps.map((step: { skill: string }) => step.skill)).toEqual([
+          "openspec-test",
+          "openspec-issue-audit",
+          "openspec-fix",
+          "openspec-test",
+        ]);
+        const page = await (await fetch(`http://127.0.0.1:${server.port}/`)).text();
+        // The static HTML ships the step-rendering logic and styles; the actual
+        // sub-step DOM is built client-side from /api/state (verified above).
+        expect(page).toContain("phase-steps");
+        expect(page).toContain("stepsByPhase");
+        expect(page).toContain(".step.running");
+      } finally {
+        server.stop(true);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

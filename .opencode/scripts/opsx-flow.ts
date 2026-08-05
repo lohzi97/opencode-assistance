@@ -109,6 +109,12 @@ export type FlowConfig = {
     model: string;
     variant: string;
   };
+  issueAudit: {
+    agent: string;
+    provider: string;
+    model: string;
+    variant: string;
+  };
 };
 
 export type PauseReason = "question" | "cap-hit" | "merge-conflict" | "error" | null;
@@ -124,12 +130,30 @@ export type PendingQuestionState = {
 export type SessionRecord = {
   sessionId: string;
   phaseId: string;
-  kind: "implementer" | "fix" | "merge-committer";
+  kind: "implementer" | "fix" | "issue-audit" | "merge-committer";
   runIdx: number;
   startedAt: string;
   completedAt?: string;
   status: "running" | "completed" | "error";
   report?: string;
+};
+
+// A Step is a UI-facing record of one skill invocation within a phase loop
+// (implementer run, issue-audit run, or fix run).  It is intentionally
+// separate from SessionRecord so the timeline can be reconstructed purely
+// from state without dereferencing implementer session metadata.
+export type StepKind = "implementer" | "issue-audit" | "fix";
+export type StepStatus = "running" | "completed" | "error";
+
+export type Step = {
+  skill: string;
+  phaseId: string;
+  runIdx: number;
+  kind: StepKind;
+  status: StepStatus;
+  startedAt: string;
+  completedAt?: string;
+  summary?: string;
 };
 
 export type LogEntry = { ts: string; event: string; detail?: string };
@@ -156,6 +180,7 @@ export type FlowState = {
   pendingQuestion: PendingQuestionState | null;
   baselineUntracked: string[];
   implementerSessions: SessionRecord[];
+  steps: Step[];
   log: LogEntry[];
 };
 
@@ -281,6 +306,7 @@ export async function loadState(file: string): Promise<FlowState> {
   state.completedAt ??= null;
   state.pendingQuestion ??= null;
   state.implementerSessions ??= [];
+  state.steps ??= [];
   state.baselineUntracked ??= [];
   state.caps = { ...DEFAULT_CAPS, ...(state.caps ?? {}) };
   state.log ??= [];
@@ -384,7 +410,7 @@ export async function loadFlowConfig(configFile: string): Promise<FlowConfig> {
     throw new Error(`could not parse config ${configPath}: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (!record(parsed)) throw new Error(`config ${configPath} must contain a JSON object`);
-  rejectObjectKeys(parsed, ["projectDir", "proposal", "baseBranch", "branch", "fromStage", "caps", "phases", "mergeCommitter"], "config");
+  rejectObjectKeys(parsed, ["projectDir", "proposal", "baseBranch", "branch", "fromStage", "caps", "phases", "mergeCommitter", "issueAudit"], "config");
 
   const projectDir = path.resolve(path.dirname(configPath), stringValue(parsed.projectDir, "projectDir"));
   const proposalName = stringValue(parsed.proposal, "proposal");
@@ -401,7 +427,10 @@ export async function loadFlowConfig(configFile: string): Promise<FlowConfig> {
   if (!record(rawPhases)) throw new Error("phases must be an object");
   const phases: Record<string, RawModelConfig> = {};
   for (const [phaseId, value] of Object.entries(rawPhases)) {
-    if (!PHASES.some((phase) => phase.id === phaseId)) throw new Error(`unknown phase override: ${phaseId}`);
+    // `issue-audit` is the only non-PHASES id accepted here; it configures the
+    // issue-audit sub-step that runs inside every finding-phase loop.  All
+    // other ids must match a real entry in the 8-phase graph.
+    if (phaseId !== "issue-audit" && !PHASES.some((phase) => phase.id === phaseId)) throw new Error(`unknown phase override: ${phaseId}`);
     phases[phaseId] = normalizeModelConfig(value, `phases.${phaseId}`);
   }
 
@@ -411,6 +440,26 @@ export async function loadFlowConfig(configFile: string): Promise<FlowConfig> {
     provider: typeof rawMerge.provider === "string" ? rawMerge.provider : DEFAULT_MERGE_COMMITTER.provider,
     model: typeof rawMerge.model === "string" ? rawMerge.model : DEFAULT_MERGE_COMMITTER.model,
     variant: typeof rawMerge.variant === "string" ? rawMerge.variant : DEFAULT_MERGE_COMMITTER.variant,
+  };
+
+  // Issue-audit model resolution mirrors mergeCommitter: defaults flow from
+  // DEFAULT_MODEL, the top-level `issueAudit` block overrides them, and a
+  // more specific `phases["issue-audit"]` block overrides the top-level.
+  const rawIssueAuditTop = normalizeModelConfig(parsed.issueAudit, "issueAudit", false);
+  const rawIssueAuditPhase = phases["issue-audit"] ?? {};
+  const issueAudit = {
+    agent: typeof rawIssueAuditPhase.agent === "string"
+      ? rawIssueAuditPhase.agent
+      : typeof rawIssueAuditTop.agent === "string" ? rawIssueAuditTop.agent : DEFAULT_MODEL.agent,
+    provider: typeof rawIssueAuditPhase.provider === "string"
+      ? rawIssueAuditPhase.provider
+      : typeof rawIssueAuditTop.provider === "string" ? rawIssueAuditTop.provider : DEFAULT_MODEL.provider,
+    model: typeof rawIssueAuditPhase.model === "string"
+      ? rawIssueAuditPhase.model
+      : typeof rawIssueAuditTop.model === "string" ? rawIssueAuditTop.model : DEFAULT_MODEL.model,
+    variant: typeof rawIssueAuditPhase.variant === "string"
+      ? rawIssueAuditPhase.variant
+      : typeof rawIssueAuditTop.variant === "string" ? rawIssueAuditTop.variant : DEFAULT_MODEL.variant,
   };
 
   return {
@@ -425,6 +474,7 @@ export async function loadFlowConfig(configFile: string): Promise<FlowConfig> {
     caps: parseCaps(parsed.caps),
     phases,
     mergeCommitter,
+    issueAudit,
   };
 }
 
@@ -826,6 +876,47 @@ function fixPrompt(state: FlowState, phase: PhaseDef, runIdx: number): string {
   ].join("\n");
 }
 
+function issueAuditPrompt(state: FlowState, phase: PhaseDef, runIdx: number): string {
+  return [
+    "Load the `openspec-issue-audit` skill and follow its instructions to audit the issues for this OpenSpec change.",
+    "",
+    `Proposal: ${state.proposalName} (${state.proposalDir}).`,
+    `The ${phase.id} finding phase left issues in ${path.join(state.proposalDir, "issue.md")} that must be re-evaluated before fixing.`,
+    `This is issue-audit run ${runIdx}. Work in ${state.projectDir} on branch ${state.branch}.`,
+    "",
+    "You may freely edit issue.md: append Re-evaluation/Enrichment notes and toggle false-positive checkboxes from [ ] to [x].",
+    "Preserve every line of the original issue content verbatim; only append audit notes after the original details.",
+    "Do not modify implementation code, tests, proposal artifacts, or task files.",
+    "Do not commit changes; the workflow driver commits deterministic checkpoints.",
+    "If blocked, use OpenCode's question tool. Finish with a concise report of cleared/enriched issue counts.",
+  ].join("\n");
+}
+
+// Count `**Re-evaluation N:**` and `**Enrichment N:**` audit-trail markers so
+// the issue-audit step summary can report how many issues the auditor touched.
+export function auditNoteCount(file: string): number {
+  if (!existsSync(file)) return 0;
+  const content = readFileSync(file, "utf8");
+  const reeval = content.match(/\*\*Re-evaluation\s+\d+/gi)?.length ?? 0;
+  const enrich = content.match(/\*\*Enrichment\s+\d+/gi)?.length ?? 0;
+  return reeval + enrich;
+}
+
+function resolveIssueAuditSettings(config: FlowConfig): { agent: string; provider: string; model: string; variant: string } {
+  return config.issueAudit;
+}
+
+function pushStep(state: FlowState, step: Step): Step {
+  state.steps.push(step);
+  return step;
+}
+
+function completeStep(step: Step, status: Exclude<StepStatus, "running">, summary?: string): void {
+  step.status = status;
+  step.completedAt = nowIso();
+  if (summary !== undefined) step.summary = summary;
+}
+
 function mergeCommitterPrompt(state: FlowState, diff: string, proposal: string): string {
   return [
     "You are the final merge-commit message writer for an OpenSpec workflow.",
@@ -1142,29 +1233,115 @@ async function runFixLoop(state: FlowState, phase: PhaseDef): Promise<void> {
     const beforeLock = snapshotLockedFile(state, "fix");
     const beforeChanges = workingTreePorcelain(state.projectDir);
     const beforeHead = requireGit(state.projectDir, ["rev-parse", "HEAD"]).trim();
+    const step = pushStep(state, {
+      skill: "openspec-fix",
+      phaseId: phase.id,
+      runIdx,
+      kind: "fix",
+      status: "running",
+      startedAt: nowIso(),
+    });
+    await saveState(state);
     await spawnAndWaitFix(state, phase, runIdx);
     state.loopCounters[counterKey] = runIdx;
     await waitForExternalContinue(state);
     assertSessionPreservedBranch(state, beforeHead, `fix session for ${phase.id}`);
 
     if (enforceLock(state, "fix", beforeLock, beforeChanges)) {
+      completeStep(step, "completed", "locked-file revert");
       logEvent(state, "enforcement_revert", `fix for ${phase.id} changed issue.md content; retrying without commit`);
       await saveState(state);
       continue;
     }
     const afterUnchecked = uncheckedCount(issueFile);
     if (afterUnchecked >= beforeUnchecked) {
+      completeStep(step, "completed", "no progress");
       logEvent(state, "fix_no_progress", `fix for ${phase.id} resolved no issue boxes; retrying without commit`);
       await saveState(state);
       continue;
     }
+    const resolved = beforeUnchecked - afterUnchecked;
+    completeStep(step, "completed", `${resolved} resolved${afterUnchecked === 0 ? "" : `, ${afterUnchecked} remaining`}`);
     await commitPhaseCheckpoint(state, `fix-${phase.id}`, runIdx, afterUnchecked === 0);
   }
   state.loopCounters[counterKey] = 0;
   await saveState(state);
 }
 
-async function runPhaseLoop(state: FlowState, phase: PhaseDef): Promise<void> {
+// Computes the UI step summary for a completed implementer run from the
+// post-run deterministic clean check.  Keeping this centralized ensures every
+// family has a consistent summary shape across phases.
+function implementerSummary(state: FlowState, phase: PhaseDef, clean: boolean): string {
+  switch (phase.family) {
+    case "finding": {
+      const issueFile = path.join(state.proposalDir, "issue.md");
+      const issues = uncheckedCount(issueFile);
+      return issues === 0 ? "clean" : `${issues} issue${issues === 1 ? "" : "s"}`;
+    }
+    case "apply": {
+      const tasksFile = path.join(state.proposalDir, "tasks.md");
+      if (clean) return "all tasks checked";
+      const unchecked = uncheckedCount(tasksFile);
+      return unchecked === 0 ? "tasks checked" : `${unchecked} task${unchecked === 1 ? "" : "s"} unchecked`;
+    }
+    case "self-heal":
+      return clean ? "clean" : "edits made";
+    case "archive":
+      return clean ? "archived" : "looped";
+  }
+}
+
+// Re-evaluates issue.md before fixing.  The auditor freely edits issue.md
+// (appends Re-evaluation/Enrichment notes, toggles false-positive checkboxes),
+// so this step is intentionally NOT registered in LOCKED_FILE_RULES and
+// enforceLock is never called here.  This runs once per finding-phase loop
+// iteration, between the finder and the fixer.
+async function runIssueAudit(state: FlowState, phase: PhaseDef, config: FlowConfig): Promise<void> {
+  const issueFile = path.join(state.proposalDir, "issue.md");
+  // Nothing to audit if issue.md is absent or already clean.
+  if (!existsSync(issueFile) || uncheckedCount(issueFile) === 0) return;
+
+  const counterKey = `${phase.id}:audit`;
+  state.loopCounters[counterKey] ??= 0;
+  const runIdx = (state.loopCounters[counterKey] ?? 0) + 1;
+  const settings = resolveIssueAuditSettings(config);
+  const beforeHead = requireGit(state.projectDir, ["rev-parse", "HEAD"]).trim();
+  const beforeUnchecked = uncheckedCount(issueFile);
+  const beforeNotes = auditNoteCount(issueFile);
+
+  const step = pushStep(state, {
+    skill: "openspec-issue-audit",
+    phaseId: phase.id,
+    runIdx,
+    kind: "issue-audit",
+    status: "running",
+    startedAt: nowIso(),
+  });
+  logEvent(state, "issue_audit_run", `${phase.id} run ${runIdx}`);
+  await saveState(state);
+
+  const session = await spawnSession(
+    state,
+    `issue-audit-${phase.id}`,
+    "issue-audit",
+    runIdx,
+    settings,
+    issueAuditPrompt(state, phase, runIdx),
+  );
+  await waitForSessionCompletion(state, `issue-audit-${phase.id}`, session);
+  state.loopCounters[counterKey] = runIdx;
+  await waitForExternalContinue(state);
+  assertSessionPreservedBranch(state, beforeHead, `issue-audit session for ${phase.id}`);
+
+  const afterUnchecked = uncheckedCount(issueFile);
+  const afterNotes = auditNoteCount(issueFile);
+  const cleared = Math.max(0, beforeUnchecked - afterUnchecked);
+  const enriched = Math.max(0, afterNotes - beforeNotes);
+  completeStep(step, "completed", `${cleared} cleared${enriched ? `, ${enriched} enriched` : ""}`);
+  await commitPhaseCheckpoint(state, `issue-audit-${phase.id}`, runIdx, afterUnchecked === 0);
+}
+
+async function runPhaseLoop(state: FlowState, phase: PhaseDef, config: FlowConfig): Promise<void> {
   state.loopCounters[phase.id] ??= 0;
   for (;;) {
     await waitForExternalContinue(state);
@@ -1174,6 +1351,14 @@ async function runPhaseLoop(state: FlowState, phase: PhaseDef): Promise<void> {
     const beforeChanges = workingTreePorcelain(state.projectDir);
     const beforeHead = requireGit(state.projectDir, ["rev-parse", "HEAD"]).trim();
     logEvent(state, "phase_run", `${phase.id} run ${runIdx}`);
+    const step = pushStep(state, {
+      skill: phase.skill,
+      phaseId: phase.id,
+      runIdx,
+      kind: "implementer",
+      status: "running",
+      startedAt: nowIso(),
+    });
     await saveState(state);
     await spawnAndWaitImplementer(state, phase, runIdx);
     await waitForExternalContinue(state);
@@ -1181,17 +1366,20 @@ async function runPhaseLoop(state: FlowState, phase: PhaseDef): Promise<void> {
 
     if (enforceLock(state, phase.id, beforeLock, beforeChanges)) {
       state.loopCounters[phase.id] = runIdx;
+      completeStep(step, "completed", "locked-file revert");
       logEvent(state, "enforcement_revert", `${phase.id} modified locked-file content; retrying without commit`);
       await saveState(state);
       continue;
     }
 
     const clean = isPhaseClean(state, phase);
+    completeStep(step, "completed", implementerSummary(state, phase, clean));
     await commitPhaseCheckpoint(state, phase.id, runIdx, clean);
 
     if (phase.family === "finding" && !clean) {
       state.loopCounters[phase.id] = runIdx;
       await saveState(state);
+      await runIssueAudit(state, phase, config);
       await runFixLoop(state, phase);
       continue;
     }
@@ -1263,7 +1451,7 @@ async function driverLoop(state: FlowState, config: FlowConfig): Promise<void> {
     const phase = resolvePhase(config, PHASES[index]!);
     logEvent(state, "phase_start", phase.id);
     await saveState(state);
-    await runPhaseLoop(state, phase);
+    await runPhaseLoop(state, phase, config);
     state.currentPhaseIdx = index + 1;
     await saveState(state);
   }
@@ -1383,6 +1571,7 @@ function createInitialState(config: FlowConfig): FlowState {
     pendingQuestion: null,
     baselineUntracked: [],
     implementerSessions: [],
+    steps: [],
     log: [],
   };
 }
@@ -1876,11 +2065,19 @@ function uiHtml(projectDir: string, port: number): string {
     .status { display: inline-block; border-radius: 999px; padding: 4px 9px; font-size: 12px; background: #26364d; }
     .status.paused, .status.awaiting-question { background: #6a4b1f; }
     .status.completed { background: #245c42; }
-    .timeline { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
-    .phase { padding: 10px; border: 1px solid #2c3543; border-radius: 6px; opacity: .72; }
+    .timeline { display: flex; flex-direction: column; gap: 4px; }
+    .phase { padding: 8px 10px; border: 1px solid #2c3543; border-radius: 6px; opacity: .72; }
     .phase.current { border-color: #80a9ff; opacity: 1; box-shadow: 0 0 0 1px #80a9ff44; }
     .phase.complete { border-color: #397354; opacity: 1; }
-    .phase-name { font-weight: 600; font-size: 13px; } .phase-meta { margin-top: 4px; font-size: 12px; color: #9ba6b7; }
+    .phase-name { font-weight: 600; font-size: 13px; } .phase-meta { margin-top: 2px; font-size: 12px; color: #9ba6b7; }
+    .phase-steps { list-style: none; margin: 6px 0 0 0; padding: 0 0 0 18px; border-left: 1px solid #2c3543; }
+    .step { font: 12px ui-monospace, monospace; padding: 2px 0 2px 6px; color: #c2cdd9; position: relative; }
+    .step::before { content: '├─'; position: absolute; left: -16px; color: #4a5666; }
+    .step:last-child::before { content: '└─'; }
+    .step.running { color: #ffd58a; }
+    .step.running::after { content: ' ●'; color: #80a9ff; }
+    .step.error { color: #ff9e9e; }
+    .step .summary { color: #9ba6b7; }
     .question { border-left: 3px solid #e0a544; padding: 10px 12px; margin: 8px 0; background: #20242d; }
     .question h3 { font-size: 14px; margin: 0 0 6px; } .question p { white-space: pre-wrap; }
     code, pre { font-family: ui-monospace, monospace; } pre { overflow: auto; white-space: pre-wrap; background: #0c0f13; padding: 12px; border-radius: 5px; max-height: 360px; }
@@ -1932,7 +2129,23 @@ async function refreshState() {
     $('proposal').textContent = state.proposal + ' · ' + state.branch + ' · daemon ' + (state.daemonAlive ? 'alive' : 'stopped');
     $('status').textContent = state.workflowStatus + (state.pauseReason ? ' · ' + state.pauseReason : '');
     $('status').className = 'status ' + state.workflowStatus;
-    $('timeline').innerHTML = (state.phases || []).map((phase) => '<div class="phase ' + (phase.current ? 'current ' : '') + (phase.complete ? 'complete' : '') + '"><div class="phase-name">' + esc(phase.id) + '</div><div class="phase-meta">' + esc(phase.family) + ' · loop ' + phase.loopCounter + '/' + phase.cap + '</div></div>').join('');
+    // Group steps by their parent phase so each phase card can show its
+    // sub-step history (finder / issue-audit / fix runs) as an indented list.
+    const stepsByPhase = {};
+    for (const step of (state.steps || [])) {
+      if (!stepsByPhase[step.phaseId]) stepsByPhase[step.phaseId] = [];
+      stepsByPhase[step.phaseId].push(step);
+    }
+    $('timeline').innerHTML = (state.phases || []).map((phase) => {
+      const marker = phase.complete ? '✓' : (phase.current ? '▶' : '□');
+      const phaseSteps = stepsByPhase[phase.id] || [];
+      const stepsHtml = phaseSteps.length ? '<ul class="phase-steps">' + phaseSteps.map((step) => {
+        const cls = 'step ' + step.status;
+        const summary = step.summary ? ' — <span class="summary">' + esc(step.summary) + '</span>' : '';
+        return '<li class="' + cls + '">' + esc(step.skill) + ' run ' + step.runIdx + summary + '</li>';
+      }).join('') + '</ul>' : '';
+      return '<div class="phase ' + (phase.current ? 'current ' : '') + (phase.complete ? 'complete' : '') + '"><div class="phase-name">' + marker + ' ' + esc(phase.id) + '</div><div class="phase-meta">' + esc(phase.family) + ' · loop ' + phase.loopCounter + '/' + phase.cap + '</div>' + stepsHtml + '</div>';
+    }).join('');
     const select = $('next-phase'); const selected = select.value; select.innerHTML = '<option value="">current phase</option>' + (state.phases || []).filter((phase, index) => index >= state.currentPhaseIdx).map((phase) => '<option value="' + esc(phase.id) + '">' + esc(phase.id) + '</option>').join(''); select.value = selected;
     const sessionSelect = $('session-select'); const old = sessionSelect.value; sessionSelect.innerHTML = '<option value="">Select a session</option>' + (state.implementerSessions || []).slice().reverse().map((session) => '<option value="' + esc(session.sessionId) + '">' + esc(session.phaseId + ' · ' + session.kind + ' · ' + session.status) + '</option>').join(''); sessionSelect.value = old;
     if ($('message').className === 'error') showMessage('');
@@ -2061,6 +2274,7 @@ The workflow state lives at <projectDir>/openspec/.opsx-flow-state.json.
 export const __test__ = {
   PHASES,
   DEFAULT_CAPS,
+  DEFAULT_MODEL,
   parseStartArgs,
   loadFlowConfig,
   resolvePhase,
@@ -2084,6 +2298,9 @@ export const __test__ = {
   opencodeServerUrl,
   uiHtml,
   createUiServer,
+  auditNoteCount,
+  implementerSummary,
+  runIssueAudit,
 };
 
 async function main(): Promise<number> {
