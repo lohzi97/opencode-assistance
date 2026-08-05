@@ -59,14 +59,14 @@ type PhaseDef = {
 // The canonical phase graph. test-regression is a second run of openspec-test
 // after the code-review loop converges, to catch regressions from quality fixes.
 const PHASES: PhaseDef[] = [
-  { id: "review-proposal", skill: "openspec-review-proposal", aliasBase: "reviewer-proposal", family: "self-heal", capKey: "selfHeal", provider: "deepseek", model: "deepseek-v4-pro", variant: "max" },
-  { id: "apply", skill: "openspec-apply-change", aliasBase: "implementer", family: "apply", capKey: "apply", provider: "deepseek", model: "deepseek-v4-pro", variant: "max" },
-  { id: "apply-resume", skill: "openspec-apply-resume", aliasBase: "reviewer-impl", family: "self-heal", capKey: "selfHeal", provider: "deepseek", model: "deepseek-v4-pro", variant: "max" },
-  { id: "test", skill: "openspec-test", aliasBase: "tester", family: "finding", capKey: "testFix", provider: "deepseek", model: "deepseek-v4-pro", variant: "max" },
-  { id: "code-review", skill: "openspec-code-review", aliasBase: "reviewer-code", family: "finding", capKey: "codeReviewFix", provider: "openai", model: "gpt-5.5", variant: "medium" },
-  { id: "test-regression", skill: "openspec-test", aliasBase: "tester-regress", family: "finding", capKey: "testFix", provider: "deepseek", model: "deepseek-v4-pro", variant: "max" },
+  { id: "review-proposal", skill: "openspec-review-proposal", aliasBase: "reviewer-proposal", family: "self-heal", capKey: "selfHeal", provider: "deepseek", model: "deepseek-v4-flash", variant: "max" },
+  { id: "apply", skill: "openspec-apply-change", aliasBase: "implementer", family: "apply", capKey: "apply", provider: "deepseek", model: "deepseek-v4-flash", variant: "max" },
+  { id: "apply-resume", skill: "openspec-apply-resume", aliasBase: "reviewer-impl", family: "self-heal", capKey: "selfHeal", provider: "deepseek", model: "deepseek-v4-flash", variant: "max" },
+  { id: "test", skill: "openspec-test", aliasBase: "tester", family: "finding", capKey: "testFix", provider: "deepseek", model: "deepseek-v4-flash", variant: "max" },
+  { id: "code-review", skill: "openspec-code-review", aliasBase: "reviewer-code", family: "finding", capKey: "codeReviewFix", provider: "openai", model: "gpt-5.6-sol", variant: "medium" },
+  { id: "test-regression", skill: "openspec-test", aliasBase: "tester-regress", family: "finding", capKey: "testFix", provider: "deepseek", model: "deepseek-v4-flash", variant: "max" },
   { id: "align", skill: "openspec-align", aliasBase: "aligner", family: "self-heal", capKey: "selfHeal", provider: "deepseek", model: "deepseek-v4-flash", variant: "max" },
-  { id: "archive", skill: "openspec-archive-change", aliasBase: "archiver", family: "archive", capKey: "selfHeal", provider: "deepseek", model: "deepseek-v4-pro", variant: "max" },
+  { id: "archive", skill: "openspec-archive-change", aliasBase: "archiver", family: "archive", capKey: "selfHeal", provider: "deepseek", model: "deepseek-v4-flash", variant: "max" },
 ];
 
 // Phases whose implementers may only toggle checkboxes on the locked file.
@@ -518,7 +518,7 @@ function acSpawnFix(state: State, findingPhase: PhaseDef, alias: string, runIdx:
     "--role", "implementer",
     "--agent", "levi",
     "--provider", "deepseek",
-    "--model", "deepseek-v4-pro",
+    "--model", "deepseek-v4-flash",
     "--variant", "max",
     "--dir", state.projectDir,
     "--initial-prompt", prompt,
