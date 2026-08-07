@@ -65,7 +65,7 @@ export const PHASES: BasePhase[] = [
   { id: "archive", skill: "openspec-archive-change", family: "archive", capKey: "selfHeal" },
 ];
 
-const DEFAULT_MODEL = {
+export const DEFAULT_MODEL = {
   agent: "levi",
   provider: "deepseek",
   model: "deepseek-v4-flash",
@@ -194,6 +194,17 @@ class FlowPaused extends Error {
   }
 }
 
+// Raised by stopFlow when implementer sessions are still active.  The web UI
+// maps this to HTTP 409; the CLI reports it as a plain refusal without killing.
+export class BusySessionsError extends Error {
+  constructor(sessionIds: string[]) {
+    super(
+      `cannot stop while implementer sessions are active: ${sessionIds.join(", ")}; pause instead, or wait for them to finish`,
+    );
+    this.name = "BusySessionsError";
+  }
+}
+
 function positiveEnvInt(name: string): number | undefined {
   const value = process.env[name];
   if (!value) return undefined;
@@ -213,12 +224,12 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function stringValue(value: unknown, field: string): string {
+export function stringValue(value: unknown, field: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${field} must be a non-empty string`);
   return value.trim();
 }
 
-function positiveInt(value: unknown, field: string): number {
+export function positiveInt(value: unknown, field: string): number {
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${field} must be a positive integer`);
   return parsed;
@@ -254,11 +265,11 @@ export function daemonPidPath(projectDir: string): string {
   return path.join(projectDir, "openspec", ".opsx-flow.pid");
 }
 
-function pauseMarkerExists(projectDir: string): boolean {
+export function pauseMarkerExists(projectDir: string): boolean {
   return existsSync(pauseMarkerPath(projectDir));
 }
 
-function writePauseMarker(projectDir: string, paused: boolean): void {
+export function writePauseMarker(projectDir: string, paused: boolean): void {
   const marker = pauseMarkerPath(projectDir);
   if (paused) {
     writeFileSync(marker, `${nowIso()}\n`, "utf8");
@@ -280,15 +291,15 @@ function readPid(file: string): number | undefined {
   }
 }
 
-function readDaemonPid(projectDir: string): number | undefined {
+export function readDaemonPid(projectDir: string): number | undefined {
   return readPid(daemonPidPath(projectDir));
 }
 
-function writeDaemonPid(projectDir: string, pid: number): void {
+export function writeDaemonPid(projectDir: string, pid: number): void {
   writeFileSync(daemonPidPath(projectDir), `${pid}\n`, "utf8");
 }
 
-function removeDaemonPid(projectDir: string, expectedPid?: number): void {
+export function removeDaemonPid(projectDir: string, expectedPid?: number): void {
   const current = readDaemonPid(projectDir);
   if (expectedPid && current && current !== expectedPid) return;
   try {
@@ -496,7 +507,7 @@ export function phaseIndex(phaseId: string): number {
   return index;
 }
 
-function displayedPhase(currentPhaseIdx: number, workflowStatus: WorkflowStatus): string {
+export function displayedPhase(currentPhaseIdx: number, workflowStatus: WorkflowStatus): string {
   if (workflowStatus === "completed") return "completed";
   if (currentPhaseIdx >= PHASES.length) return "merge";
   return PHASES[currentPhaseIdx]?.id ?? "?";
@@ -563,7 +574,7 @@ function newUntrackedFiles(state: FlowState): string[] {
   return currentUntrackedFiles(state.projectDir).filter((file) => !baseline.has(file));
 }
 
-function isProcessAlive(pid?: number): boolean {
+export function isProcessAlive(pid?: number): boolean {
   if (!pid || !Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
@@ -770,7 +781,11 @@ export function isPhaseClean(state: FlowState, phase: PhaseDef): boolean {
 // OpenCode raw-API lifecycle
 // ---------------------------------------------------------------------------
 
-const client = new OpenCodeClient();
+// Testable seam: tests replace `client` with a fake to exercise lifecycle
+// guards (busy-session reconciliation, daemon refusal) without a live server.
+// The dashboard module imports the same live binding, so a test-set client
+// also affects dashboard API calls.
+export let client: OpenCodeClient = new OpenCodeClient();
 
 function modelRef(provider: string, model: string): ModelRef {
   return { providerID: provider, modelID: model };
@@ -806,7 +821,7 @@ function assistantFailed(messages: MessageWithParts[]): string | undefined {
   return detail ? ` (${detail})` : "";
 }
 
-async function getSessionReport(sessionId: string, projectDir: string): Promise<SessionReport> {
+export async function getSessionReport(sessionId: string, projectDir: string): Promise<SessionReport> {
   const messages = await client.sessionMessages(sessionId, { directory: projectDir });
   const last = lastAssistant(messages);
   return {
@@ -946,8 +961,13 @@ async function spawnSession(
   settings: { agent: string; provider: string; model: string; variant: string },
   prompt: string,
 ): Promise<SessionRecord> {
+  // Global monotonic session sequence (1-based) so each OpenCode session title
+  // uniquely maps to one entry in the UI Implementer-report dropdown, even when
+  // runIdx repeats across phase loops.  Derived from the appended-sessions
+  // length, which is stable across daemon resume/reloads.
+  const seq = state.implementerSessions.length + 1;
   const session = await client.createSpawnSession({
-    title: `opsx-flow: ${state.proposalName}/${phaseId}`,
+    title: `opsx-flow: ${state.proposalName} #${seq} ${phaseId} run ${runIdx}`,
     directory: state.projectDir,
   });
   const record: SessionRecord = {
@@ -1590,15 +1610,6 @@ function launchDaemon(projectDir: string, stateFile: string): number {
   return child.pid;
 }
 
-function launchUi(projectDir: string, port: number): number {
-  const child = Bun.spawn(["bun", import.meta.path, "ui", "--project-dir", projectDir, "--port", String(port)], {
-    detached: true,
-    stdio: ["ignore", "ignore", "ignore"],
-  });
-  child.unref();
-  return child.pid;
-}
-
 async function runDriverProcess(state: FlowState): Promise<WorkflowStatus> {
   const existingPid = readDaemonPid(state.projectDir);
   if (existingPid && existingPid !== process.pid && isProcessAlive(existingPid)) {
@@ -1643,7 +1654,7 @@ function parseBooleanFlag(args: string[], flag: string): boolean {
   return args.includes(flag) || args.some((arg) => arg === `${flag}=true`);
 }
 
-function valueFlag(args: string[], flag: string): string | undefined {
+export function valueFlag(args: string[], flag: string): string | undefined {
   const prefix = `${flag}=`;
   const inline = args.find((arg) => arg.startsWith(prefix));
   if (inline) return inline.slice(prefix.length);
@@ -1651,11 +1662,11 @@ function valueFlag(args: string[], flag: string): string | undefined {
   return index >= 0 ? args[index + 1] : undefined;
 }
 
-function hasFlag(args: string[], flag: string): boolean {
+export function hasFlag(args: string[], flag: string): boolean {
   return args.includes(flag) || args.some((arg) => arg.startsWith(`${flag}=`));
 }
 
-function rejectUnknownFlags(args: string[], allowed: Set<string>): void {
+export function rejectUnknownFlags(args: string[], allowed: Set<string>): void {
   for (const arg of args) {
     if (!arg.startsWith("--")) continue;
     const flag = arg.includes("=") ? arg.slice(0, arg.indexOf("=")) : arg;
@@ -1665,6 +1676,10 @@ function rejectUnknownFlags(args: string[], allowed: Set<string>): void {
 
 type StartOptions = { configPath: string; noUi: boolean; foreground: boolean; uiPort: number };
 
+// `--no-ui` / `--ui-port` are still parsed (and returned) for backward
+// compatibility with callers and tests that pass them, but they are IGNORED:
+// the driver no longer manages a web UI.  Launch the dashboard separately
+// with the `dashboard` / `ui` command.
 function parseStartArgs(args: string[]): StartOptions {
   rejectUnknownFlags(args, new Set(["--no-ui", "--foreground", "--ui-port"]));
   const positionals: string[] = [];
@@ -1690,7 +1705,7 @@ function parseStartArgs(args: string[]): StartOptions {
   };
 }
 
-function resolveProjectDir(args: string[]): string {
+export function resolveProjectDir(args: string[]): string {
   if (hasFlag(args, "--project-dir")) {
     const value = valueFlag(args, "--project-dir");
     if (!value || value.startsWith("--")) throw new Error("--project-dir requires a value");
@@ -1713,7 +1728,6 @@ async function cmdStart(args: string[]): Promise<number> {
   validateProposal(config);
   const configuredProjectDir = gitTopLevel(config.projectDir);
   const stateFile = statePath(configuredProjectDir);
-  let previousCompletedState: FlowState | undefined;
   if (existsSync(stateFile)) {
     const existing = await loadState(stateFile);
     const running = isProcessAlive(readDaemonPid(configuredProjectDir) ?? existing.daemonPid);
@@ -1724,26 +1738,17 @@ async function cmdStart(args: string[]): Promise<number> {
         "resume it or remove the stale state deliberately",
       );
     }
-    previousCompletedState = existing;
   }
   const projectDir = prepareGit(config);
 
   await ensureGitignore(projectDir);
   commitGitignoreGuard(projectDir);
   const state = createInitialState({ ...config, projectDir, proposalDir: path.join(projectDir, "openspec", "changes", config.proposalName) });
-  if (!options.noUi) state.uiPort = options.uiPort;
   state.baselineUntracked = currentUntrackedFiles(projectDir);
   writePauseMarker(projectDir, false);
   logEvent(state, "workflow_start", `${state.proposalName} on ${state.branch} from ${state.baseBranch}`);
   await saveState(state);
 
-  if (!options.noUi) {
-    const reusableUi = previousCompletedState
-      && previousCompletedState.uiPort === options.uiPort
-      && isProcessAlive(previousCompletedState.uiPid);
-    state.uiPid = reusableUi ? previousCompletedState.uiPid : launchUi(projectDir, options.uiPort);
-    await saveState(state);
-  }
   if (options.foreground) {
     const status = await runDriverProcess(state);
     return status === "error" ? 1 : 0;
@@ -1752,7 +1757,7 @@ async function cmdStart(args: string[]): Promise<number> {
   console.log(`opsx-flow started: proposal=${state.proposalName} branch=${state.branch} pid=${daemonPid}`);
   console.log(`state: ${stateFile}`);
   console.log(`log:   ${path.join(projectDir, "openspec", ".opsx-flow.log")}`);
-  if (!options.noUi) console.log(`ui:    http://127.0.0.1:${options.uiPort}/`);
+  console.log('dashboard: bun .opencode/scripts/opsx-flow-dashboard.ts [--port <port>] to launch the web UI');
   return 0;
 }
 
@@ -1783,6 +1788,14 @@ async function cmdContinue(args: string[]): Promise<number> {
   return 0;
 }
 
+async function cmdStop(args: string[]): Promise<number> {
+  rejectUnknownFlags(args, new Set(["--project-dir"]));
+  const projectDir = resolveProjectDir(args);
+  await stopFlow(projectDir);
+  console.log("opsx-flow stopped; run resume to restart the driver");
+  return 0;
+}
+
 async function flushResumeWorktree(projectDir: string): Promise<void> {
   const dirty = workingTreePorcelain(projectDir);
   if (dirty.length === 0) return;
@@ -1790,7 +1803,7 @@ async function flushResumeWorktree(projectDir: string): Promise<void> {
   console.log(`flushed ${dirty.length} manual change(s) before resume`);
 }
 
-async function clearManualPause(projectDir: string, state: FlowState): Promise<void> {
+export async function clearManualPause(projectDir: string, state: FlowState): Promise<void> {
   writePauseMarker(projectDir, false);
   // A running daemon will reconcile this on its next poll, but persist the
   // transition now so status and the UI do not report a stale paused state.
@@ -1806,7 +1819,66 @@ async function clearManualPause(projectDir: string, state: FlowState): Promise<v
   }
 }
 
-async function resumeFlow(projectDir: string, nextPhaseId?: string): Promise<{ state: FlowState; pid: number }> {
+// Pure decision helper for stopFlow: keeps the guard/kill/noop branches unit
+// testable without real processes.  `activeSessions` comes from the caller's
+// busy-session reconciliation; a live `pid` wins over the noop path.
+export type StopAction = { action: "refuse"; sessionIds: string[] } | { action: "noop" } | { action: "kill"; pid: number };
+
+export function computeStopAction(state: FlowState, pid: number | undefined, activeSessions: string[]): StopAction {
+  if (activeSessions.length > 0) return { action: "refuse", sessionIds: activeSessions };
+  if (!isProcessAlive(pid)) return { action: "noop" };
+  return { action: "kill", pid: pid! };
+}
+
+export async function stopFlow(projectDir: string): Promise<void> {
+  const stateFile = statePath(projectDir);
+  if (!existsSync(stateFile)) throw new Error("no existing opsx-flow state; nothing to stop");
+  const state = await loadState(stateFile);
+  if (state.workflowStatus === "completed") throw new Error(`workflow is already completed: ${state.proposalName}`);
+  const pid = readDaemonPid(projectDir) ?? state.daemonPid;
+
+  // Never kill while an implementer session is still working: the sessions
+  // would be orphaned.  Refuse and let the operator pause instead.
+  const activeSessions = await reconcileRunningSessions(state);
+  const action = computeStopAction(state, pid, activeSessions);
+  if (action.action === "refuse") {
+    throw new BusySessionsError(action.sessionIds);
+  }
+
+  if (action.action === "kill") {
+    try {
+      process.kill(action.pid);
+    } catch {
+      // The process exited between the liveness check and the signal; the
+      // polling loop below confirms it and we proceed with cleanup.
+    }
+    for (let attempt = 0; attempt < 10 && isProcessAlive(action.pid); attempt++) {
+      await sleep(500);
+    }
+    if (isProcessAlive(action.pid)) {
+      try {
+        process.kill(action.pid, 9);
+      } catch {
+        // Exited concurrently; treat as killed.
+      }
+    }
+    logEvent(state, "workflow_stopped", `manual stop; pid ${action.pid}`);
+  } else {
+    logEvent(state, "workflow_stop_noop", "daemon not running");
+  }
+  removeDaemonPid(projectDir);
+  state.daemonPid = undefined;
+  if (state.workflowStatus !== "completed" && state.workflowStatus !== "error") {
+    // A manual stop looks like a cap-hit from the UI's perspective: the driver
+    // is dead and resume is required to continue.
+    state.workflowStatus = "paused";
+    state.paused = true;
+    writePauseMarker(projectDir, true);
+  }
+  await saveState(state);
+}
+
+export async function resumeFlow(projectDir: string, nextPhaseId?: string): Promise<{ state: FlowState; pid: number }> {
   const stateFile = statePath(projectDir);
   if (!existsSync(stateFile)) throw new Error("no existing opsx-flow state; use start for a new workflow");
   const state = await loadState(stateFile);
@@ -1846,9 +1918,6 @@ async function resumeFlow(projectDir: string, nextPhaseId?: string): Promise<{ s
   state.workflowStatus = "running";
   state.paused = false;
   writePauseMarker(projectDir, false);
-  if (state.uiPort && !isProcessAlive(state.uiPid)) {
-    state.uiPid = launchUi(projectDir, state.uiPort);
-  }
   await saveState(state);
   const pid = launchDaemon(projectDir, stateFile);
   return { state, pid };
@@ -1908,118 +1977,10 @@ async function cmdLog(args: string[]): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
-// Local web UI
+// Known project dirs (shared with the dashboard module)
 // ---------------------------------------------------------------------------
 
-function jsonResponse(value: unknown, status = 200): Response {
-  return new Response(JSON.stringify(value), {
-    status,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
-  });
-}
-
-async function requestJson(request: Request): Promise<Record<string, unknown>> {
-  const body = await request.text();
-  if (!body.trim()) return {};
-  const parsed: unknown = JSON.parse(body);
-  if (!record(parsed)) throw new Error("request body must be a JSON object");
-  return parsed;
-}
-
-function htmlEscape(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;",
-  })[character]!);
-}
-
-function resolveUiProject(defaultProjectDir: string, url: URL): string {
-  const requested = url.searchParams.get("projectDir");
-  if (!requested) return defaultProjectDir;
-  const projectDir = path.resolve(requested);
-  if (!existsSync(statePath(projectDir))) {
-    throw new Error(`no opsx-flow state for ${projectDir}`);
-  }
-  return projectDir;
-}
-
-function shellArg(value: string): string {
-  return /^[A-Za-z0-9_./:@%+=,-]+$/.test(value)
-    ? value
-    : `'${value.replace(/'/g, "'\\''")}'`;
-}
-
-function opencodeServerUrl(): string {
-  const configured = process.env.OPENCODE_SERVER_URL?.trim().replace(/\/+$/, "");
-  if (configured) return configured;
-  return `http://${process.env.OPENCODE_ASSISTANT_HOST ?? "127.0.0.1"}:${process.env.OPENCODE_ASSISTANT_PORT ?? "4096"}`;
-}
-
-async function apiState(projectDir: string): Promise<Record<string, unknown>> {
-  const file = statePath(projectDir);
-  if (!existsSync(file)) throw new Error(`no opsx-flow state for ${projectDir}`);
-  const state = await loadState(file);
-  const config = await loadFlowConfig(state.configPath).catch(() => undefined);
-  const paused = pauseMarkerExists(projectDir);
-  const phases = PHASES.map((base, index) => {
-    const phase = config ? resolvePhase(config, base) : { ...base, ...DEFAULT_MODEL, cap: state.caps[base.capKey] };
-    return {
-      id: phase.id,
-      skill: phase.skill,
-      family: phase.family,
-      cap: phase.cap,
-      loopCounter: state.loopCounters[phase.id] ?? 0,
-      current: index === state.currentPhaseIdx,
-      complete: index < state.currentPhaseIdx || state.workflowStatus === "completed",
-    };
-  });
-  return {
-    ...state,
-    proposal: state.proposalName,
-    phase: displayedPhase(state.currentPhaseIdx, state.workflowStatus),
-    phases,
-    paused,
-    workflowStatus: paused && state.workflowStatus !== "completed" && state.workflowStatus !== "error"
-      ? (state.workflowStatus === "awaiting-question" ? "awaiting-question" : "paused")
-      : state.workflowStatus,
-    implementerSessions: state.implementerSessions.map(({ report: _report, ...session }) => session),
-    daemonAlive: isProcessAlive(readDaemonPid(projectDir) ?? state.daemonPid),
-    uiAlive: isProcessAlive(state.uiPid),
-  };
-}
-
-async function apiLog(projectDir: string, since?: string): Promise<{ entries: LogEntry[]; text: string }> {
-  const file = path.join(projectDir, "openspec", ".opsx-flow.log");
-  let lines: string[] = [];
-  if (existsSync(file)) lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
-  if (since) lines = lines.filter((line) => line.slice(0, 24) >= since);
-  lines = lines.slice(-500);
-  const entries: LogEntry[] = lines.map((line) => {
-    const match = line.match(/^(\S+)\s{2}(\S+)(?::\s(.*))?$/);
-    return match ? { ts: match[1]!, event: match[2]!, ...(match[3] ? { detail: match[3] } : {}) } : { ts: "", event: line };
-  });
-  return { entries, text: lines.join("\n") };
-}
-
-async function apiQuestions(projectDir: string): Promise<unknown[]> {
-  const stateFile = statePath(projectDir);
-  if (!existsSync(stateFile)) return [];
-  const state = await loadState(stateFile);
-  const sessionIds = new Set(state.implementerSessions.map((session) => session.sessionId));
-  const requests = await client.pendingQuestions({ directory: projectDir });
-  return requests
-    .filter((request) => sessionIds.has(request.sessionID))
-    .map((request) => ({
-      ...request,
-      phaseId: state.implementerSessions.find((session) => session.sessionId === request.sessionID)?.phaseId,
-      openCommand: `opencode attach ${shellArg(opencodeServerUrl())} --dir ${shellArg(projectDir)} --session ${shellArg(request.sessionID)}`,
-    }));
-}
-
-function knownProjectDirs(projectDir: string): string[] {
+export function knownProjectDirs(projectDir: string): string[] {
   const projects = new Set([projectDir]);
   const parent = path.dirname(projectDir);
   try {
@@ -2034,222 +1995,6 @@ function knownProjectDirs(projectDir: string): string[] {
   return [...projects].sort();
 }
 
-async function apiReport(projectDir: string, sessionId: string): Promise<{ sessionId: string; text: string }> {
-  const state = await loadState(statePath(projectDir));
-  if (!state.implementerSessions.some((session) => session.sessionId === sessionId)) {
-    throw new Error("session is not part of this workflow");
-  }
-  const report = await getSessionReport(sessionId, projectDir);
-  return { sessionId, text: report.text };
-}
-
-function uiHtml(projectDir: string, port: number): string {
-  const projectJson = JSON.stringify(projectDir).replace(/</g, "\\u003c");
-  const projectValue = htmlEscape(projectDir);
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>opsx-flow</title>
-  <style>
-    :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background: #101318; color: #e8edf5; }
-    body { margin: 0; padding: 24px; max-width: 1280px; margin-inline: auto; }
-    h1 { margin: 0 0 4px; font-size: 24px; }
-    h2 { font-size: 16px; margin: 0 0 10px; }
-    .muted { color: #9ba6b7; font-size: 13px; }
-    .panel { border: 1px solid #2c3543; border-radius: 9px; padding: 16px; margin: 14px 0; background: #171c24; }
-    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-    button, select, input { border: 1px solid #3d4a5d; border-radius: 5px; background: #202938; color: inherit; padding: 7px 9px; }
-    button { cursor: pointer; } button:hover { border-color: #86aef8; }
-    .status { display: inline-block; border-radius: 999px; padding: 4px 9px; font-size: 12px; background: #26364d; }
-    .status.paused, .status.awaiting-question { background: #6a4b1f; }
-    .status.completed { background: #245c42; }
-    .timeline { display: flex; flex-direction: column; gap: 4px; }
-    .phase { padding: 8px 10px; border: 1px solid #2c3543; border-radius: 6px; opacity: .72; }
-    .phase.current { border-color: #80a9ff; opacity: 1; box-shadow: 0 0 0 1px #80a9ff44; }
-    .phase.complete { border-color: #397354; opacity: 1; }
-    .phase-name { font-weight: 600; font-size: 13px; } .phase-meta { margin-top: 2px; font-size: 12px; color: #9ba6b7; }
-    .phase-steps { list-style: none; margin: 6px 0 0 0; padding: 0 0 0 18px; border-left: 1px solid #2c3543; }
-    .step { font: 12px ui-monospace, monospace; padding: 2px 0 2px 6px; color: #c2cdd9; position: relative; }
-    .step::before { content: '├─'; position: absolute; left: -16px; color: #4a5666; }
-    .step:last-child::before { content: '└─'; }
-    .step.running { color: #ffd58a; }
-    .step.running::after { content: ' ●'; color: #80a9ff; }
-    .step.error { color: #ff9e9e; }
-    .step .summary { color: #9ba6b7; }
-    .question { border-left: 3px solid #e0a544; padding: 10px 12px; margin: 8px 0; background: #20242d; }
-    .question h3 { font-size: 14px; margin: 0 0 6px; } .question p { white-space: pre-wrap; }
-    code, pre { font-family: ui-monospace, monospace; } pre { overflow: auto; white-space: pre-wrap; background: #0c0f13; padding: 12px; border-radius: 5px; max-height: 360px; }
-    .error { color: #ff9e9e; } .success { color: #9ae6b4; }
-    #events { max-height: 300px; overflow: auto; }
-    .event { font: 12px ui-monospace, monospace; padding: 3px 0; border-bottom: 1px solid #232a35; }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>opsx-flow</h1>
-    <div class="muted">Planner-free OpenSpec workflow · UI port ${port}</div>
-  </header>
-  <section class="panel">
-    <div class="toolbar">
-      <label for="project-picker">Project</label>
-      <input id="project-picker" list="known-projects" size="60" value="${projectValue}">
-      <datalist id="known-projects"></datalist>
-      <span id="proposal" class="muted"></span>
-      <span id="status" class="status">loading</span>
-    </div>
-    <div class="toolbar" style="margin-top:10px">
-      <button id="pause">Pause</button><button id="continue">Continue</button>
-      <label for="next-phase">Resume at</label>
-      <select id="next-phase"><option value="">current phase</option></select>
-      <button id="resume">Resume daemon</button>
-      <span id="message" class="muted"></span>
-    </div>
-  </section>
-  <section class="panel"><h2>Phase timeline</h2><div id="timeline" class="timeline"></div></section>
-  <section class="panel"><h2>Pending questions</h2><div id="questions"><span class="muted">None</span></div></section>
-  <section class="panel"><h2>Implementer report</h2><select id="session-select"><option value="">Select a session</option></select><pre id="report">Select a session to view its last assistant report.</pre></section>
-  <section class="panel"><h2>Event stream</h2><div id="events"></div></section>
-<script>
-const attachedProject = ${projectJson};
-const queryProject = new URLSearchParams(window.location.search).get('projectDir');
-const selectedProject = queryProject || attachedProject;
-const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const $ = (id) => document.getElementById(id);
-let seenQuestions = new Set();
-let seenLogEntries = new Set();
-let lastLog = '';
-function apiUrl(url) { const target = new URL(url, window.location.href); if (!target.searchParams.has('projectDir')) target.searchParams.set('projectDir', selectedProject); return target.pathname + target.search; }
-async function getJson(url, options) { const response = await fetch(apiUrl(url), options); const data = await response.json(); if (!response.ok) throw new Error(data.error || response.statusText); return data; }
-function showMessage(text, error = false) { $('message').textContent = text; $('message').className = error ? 'error' : 'success'; }
-async function refreshState() {
-  try {
-    const state = await getJson('/api/state');
-    $('proposal').textContent = state.proposal + ' · ' + state.branch + ' · daemon ' + (state.daemonAlive ? 'alive' : 'stopped');
-    $('status').textContent = state.workflowStatus + (state.pauseReason ? ' · ' + state.pauseReason : '');
-    $('status').className = 'status ' + state.workflowStatus;
-    // Group steps by their parent phase so each phase card can show its
-    // sub-step history (finder / issue-audit / fix runs) as an indented list.
-    const stepsByPhase = {};
-    for (const step of (state.steps || [])) {
-      if (!stepsByPhase[step.phaseId]) stepsByPhase[step.phaseId] = [];
-      stepsByPhase[step.phaseId].push(step);
-    }
-    $('timeline').innerHTML = (state.phases || []).map((phase) => {
-      const marker = phase.complete ? '✓' : (phase.current ? '▶' : '□');
-      const phaseSteps = stepsByPhase[phase.id] || [];
-      const stepsHtml = phaseSteps.length ? '<ul class="phase-steps">' + phaseSteps.map((step) => {
-        const cls = 'step ' + step.status;
-        const summary = step.summary ? ' — <span class="summary">' + esc(step.summary) + '</span>' : '';
-        return '<li class="' + cls + '">' + esc(step.skill) + ' run ' + step.runIdx + summary + '</li>';
-      }).join('') + '</ul>' : '';
-      return '<div class="phase ' + (phase.current ? 'current ' : '') + (phase.complete ? 'complete' : '') + '"><div class="phase-name">' + marker + ' ' + esc(phase.id) + '</div><div class="phase-meta">' + esc(phase.family) + ' · loop ' + phase.loopCounter + '/' + phase.cap + '</div>' + stepsHtml + '</div>';
-    }).join('');
-    const select = $('next-phase'); const selected = select.value; select.innerHTML = '<option value="">current phase</option>' + (state.phases || []).filter((phase, index) => index >= state.currentPhaseIdx).map((phase) => '<option value="' + esc(phase.id) + '">' + esc(phase.id) + '</option>').join(''); select.value = selected;
-    const sessionSelect = $('session-select'); const old = sessionSelect.value; sessionSelect.innerHTML = '<option value="">Select a session</option>' + (state.implementerSessions || []).slice().reverse().map((session) => '<option value="' + esc(session.sessionId) + '">' + esc(session.phaseId + ' · ' + session.kind + ' · ' + session.status) + '</option>').join(''); sessionSelect.value = old;
-    if ($('message').className === 'error') showMessage('');
-  } catch (error) { showMessage(error.message, true); }
-}
-async function refreshQuestions() {
-  try {
-    const questions = await getJson('/api/questions');
-    const current = new Set(questions.map((question) => question.id));
-    if (questions.some((question) => !seenQuestions.has(question.id)) && 'Notification' in window && Notification.permission === 'granted') new Notification('opsx-flow question pending');
-    seenQuestions = current;
-    $('questions').innerHTML = questions.length ? questions.map((request) => '<article class="question"><h3>' + esc((request.questions[0] && request.questions[0].header) || request.phaseId || 'Question') + '</h3>' + request.questions.map((question) => '<p>' + esc(question.question) + '</p>' + (question.options && question.options.length ? '<ul>' + question.options.map((option) => '<li><strong>' + esc(option.label) + '</strong> — ' + esc(option.description) + '</li>').join('') + '</ul>' : '') + (question.custom ? '<div class="muted">Custom answer allowed</div>' : '')).join('') + '<div class="muted">Session: ' + esc(request.sessionID) + '</div><button onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy open command</button><pre>' + esc(request.openCommand) + '</pre></article>').join('') : '<span class="muted">None</span>';
-  } catch (error) { $('questions').innerHTML = '<span class="error">' + esc(error.message) + '</span>'; }
-}
-async function refreshLog() {
-  try {
-    const data = await getJson('/api/log' + (lastLog ? '?since=' + encodeURIComponent(lastLog) : ''));
-    if (data.entries.length) {
-      const fresh = data.entries.filter((entry) => {
-        const key = entry.ts + '\\u0000' + entry.event + '\\u0000' + (entry.detail || '');
-        if (seenLogEntries.has(key)) return false;
-        seenLogEntries.add(key);
-        return true;
-      });
-      $('events').innerHTML += fresh.map((entry) => '<div class="event">' + esc(entry.ts + '  ' + entry.event + (entry.detail ? ': ' + entry.detail : '')) + '</div>').join('');
-      lastLog = data.entries[data.entries.length - 1].ts;
-      if (seenLogEntries.size > 1000) seenLogEntries = new Set([...seenLogEntries].slice(-500));
-    }
-    while ($('events').children.length > 500) $('events').firstElementChild.remove();
-  } catch (error) { showMessage(error.message, true); }
-}
-async function refreshProjects() { try { const data = await getJson('/api/projects'); $('known-projects').innerHTML = data.projects.map((project) => '<option value="' + esc(project) + '"></option>').join(''); } catch (_) {} }
-async function refresh() { await Promise.all([refreshState(), refreshQuestions(), refreshLog()]); }
-$('project-picker').onchange = () => { const project = $('project-picker').value.trim(); if (project) window.location.href = '/?projectDir=' + encodeURIComponent(project); };
-$('pause').onclick = async () => { try { await getJson('/api/pause', {method:'POST'}); showMessage('Pause requested'); await refresh(); } catch (error) { showMessage(error.message, true); } };
-$('continue').onclick = async () => { try { await getJson('/api/continue', {method:'POST'}); showMessage('Continue requested'); await refresh(); } catch (error) { showMessage(error.message, true); } };
-$('resume').onclick = async () => { try { const nextPhase = $('next-phase').value; await getJson('/api/resume', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(nextPhase ? {nextPhase} : {})}); showMessage('Daemon resumed'); await refresh(); } catch (error) { showMessage(error.message, true); } };
-$('session-select').onchange = async () => { if (!$('session-select').value) { $('report').textContent = 'Select a session to view its last assistant report.'; return; } try { const data = await getJson('/api/report?sessionId=' + encodeURIComponent($('session-select').value)); $('report').textContent = data.text || '(no assistant text)'; } catch (error) { $('report').textContent = error.message; } };
-if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(() => {});
-refreshProjects(); refresh(); setInterval(refresh, 3000);
-</script>
-</body>
-</html>`;
-}
-
-function createUiServer(projectDir: string, port: number): ReturnType<typeof Bun.serve> {
-  return Bun.serve({
-    hostname: "127.0.0.1",
-    port,
-    fetch: async (request) => {
-      const url = new URL(request.url);
-      try {
-        const attachedProjectDir = resolveUiProject(projectDir, url);
-        if (request.method === "GET" && url.pathname === "/") return new Response(uiHtml(attachedProjectDir, port), { headers: { "content-type": "text/html; charset=utf-8" } });
-        if (request.method === "GET" && url.pathname === "/api/state") return jsonResponse(await apiState(attachedProjectDir));
-        if (request.method === "GET" && url.pathname === "/api/log") return jsonResponse(await apiLog(attachedProjectDir, url.searchParams.get("since") ?? undefined));
-        if (request.method === "GET" && url.pathname === "/api/questions") return jsonResponse(await apiQuestions(attachedProjectDir));
-        if (request.method === "GET" && url.pathname === "/api/projects") return jsonResponse({ projects: knownProjectDirs(attachedProjectDir) });
-        if (request.method === "GET" && url.pathname === "/api/report") {
-          const sessionId = url.searchParams.get("sessionId");
-          if (!sessionId) return jsonResponse({ error: "sessionId is required" }, 400);
-          return jsonResponse(await apiReport(attachedProjectDir, sessionId));
-        }
-        if (request.method === "POST" && url.pathname === "/api/pause") {
-          const state = await loadState(statePath(attachedProjectDir));
-          if (state.workflowStatus === "completed") return jsonResponse({ error: "workflow is already completed" }, 409);
-          writePauseMarker(attachedProjectDir, true);
-          return jsonResponse(await apiState(attachedProjectDir));
-        }
-        if (request.method === "POST" && url.pathname === "/api/continue") {
-          const state = await loadState(statePath(attachedProjectDir));
-          if (state.workflowStatus === "completed") return jsonResponse({ error: "workflow is already completed" }, 409);
-          await clearManualPause(attachedProjectDir, state);
-          return jsonResponse(await apiState(attachedProjectDir));
-        }
-        if (request.method === "POST" && url.pathname === "/api/resume") {
-          const body = await requestJson(request);
-          const nextPhase = body.nextPhase === undefined ? undefined : stringValue(body.nextPhase, "nextPhase");
-          const result = await resumeFlow(attachedProjectDir, nextPhase);
-          return jsonResponse({ ...(await apiState(attachedProjectDir)), resumedPid: result.pid });
-        }
-        return jsonResponse({ error: "not found" }, 404);
-      } catch (error) {
-        return jsonResponse({ error: error instanceof Error ? error.message : String(error) }, 500);
-      }
-    },
-  });
-}
-
-async function cmdUi(args: string[]): Promise<number> {
-  rejectUnknownFlags(args, new Set(["--project-dir", "--port"]));
-  const projectDir = resolveProjectDir(args);
-  if (hasFlag(args, "--port") && (!valueFlag(args, "--port") || valueFlag(args, "--port")!.startsWith("--"))) {
-    throw new Error("--port requires a value");
-  }
-  const portRaw = valueFlag(args, "--port");
-  const port = portRaw === undefined ? 4321 : positiveInt(portRaw, "--port");
-  if (port > 65535) throw new Error("--port must be between 1 and 65535");
-  const server = createUiServer(projectDir, port);
-  console.log(`opsx-flow UI listening at http://127.0.0.1:${server.port}/ (project ${projectDir})`);
-  await new Promise<void>(() => undefined);
-  return 0;
-}
-
 // ---------------------------------------------------------------------------
 // CLI entry point
 // ---------------------------------------------------------------------------
@@ -2258,13 +2003,15 @@ function printHelp(): void {
   console.log(`opsx-flow -- planner-free OpenSpec workflow driver
 
 Usage:
-  bun .opencode/scripts/opsx-flow.ts start <config.jsonc> [--no-ui] [--foreground] [--ui-port <port>]
-  bun .opencode/scripts/opsx-flow.ts ui [--project-dir <path>] [--port <port>]
+  bun .opencode/scripts/opsx-flow.ts start <config.jsonc> [--foreground]
   bun .opencode/scripts/opsx-flow.ts status [--project-dir <path>]
   bun .opencode/scripts/opsx-flow.ts log [--project-dir <path>]
   bun .opencode/scripts/opsx-flow.ts pause [--project-dir <path>]
   bun .opencode/scripts/opsx-flow.ts continue [--project-dir <path>]
+  bun .opencode/scripts/opsx-flow.ts stop [--project-dir <path>]
   bun .opencode/scripts/opsx-flow.ts resume [--project-dir <path>] [--next-phase <phase-id>]
+
+Dashboard: bun .opencode/scripts/opsx-flow-dashboard.ts [--port <port>]
 
 The start command requires projectDir, proposal, and baseBranch in JSONC config.
 The workflow state lives at <projectDir>/openspec/.opsx-flow-state.json.
@@ -2293,29 +2040,24 @@ export const __test__ = {
   changedFiles,
   statePath,
   pauseMarkerPath,
-  shellArg,
   clearManualPause,
-  opencodeServerUrl,
-  uiHtml,
-  createUiServer,
   auditNoteCount,
   implementerSummary,
   runIssueAudit,
+  computeStopAction,
+  stopFlow,
+  cmdStop,
+  cmdStart,
+  dispatchCommand,
+  setClient(next: OpenCodeClient): void {
+    client = next;
+  },
 };
 
-async function main(): Promise<number> {
-  const argv = process.argv.slice(2);
-  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
-    printHelp();
-    return 0;
-  }
-  const command = argv[0]!;
-  const args = argv.slice(1);
+export async function dispatchCommand(command: string, args: string[]): Promise<number> {
   switch (command) {
     case "start":
       return cmdStart(args);
-    case "ui":
-      return cmdUi(args);
     case "status":
       return cmdStatus(args);
     case "log":
@@ -2324,6 +2066,8 @@ async function main(): Promise<number> {
       return cmdPause(args);
     case "continue":
       return cmdContinue(args);
+    case "stop":
+      return cmdStop(args);
     case "resume":
       return cmdResume(args);
     case "--daemon":
@@ -2334,6 +2078,15 @@ async function main(): Promise<number> {
       printHelp();
       return 1;
   }
+}
+
+async function main(): Promise<number> {
+  const argv = process.argv.slice(2);
+  if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") {
+    printHelp();
+    return 0;
+  }
+  return dispatchCommand(argv[0]!, argv.slice(1));
 }
 
 const isMain = (() => {

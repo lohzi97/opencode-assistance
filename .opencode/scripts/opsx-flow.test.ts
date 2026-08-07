@@ -3,7 +3,10 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import net from "node:net";
 import { __test__, DEFAULT_CAPS, loadState, PHASES } from "./opsx-flow.ts";
+import { __test__ as dashboardTest } from "./opsx-flow-dashboard.ts";
+import { OpenCodeClient } from "../server/shared.ts";
 
 function runGit(directory: string, args: string[]): string {
   const result = spawnSync("git", args, { cwd: directory, encoding: "utf8" });
@@ -367,7 +370,7 @@ describe("opsx-flow web UI", () => {
     try {
       const first = await makeProject("first");
       const second = await makeProject("second");
-      const server = __test__.createUiServer(first, 0);
+      const server = dashboardTest.createUiServer(first, 0);
       try {
         const firstPage = await fetch(`http://127.0.0.1:${server.port}/`);
         expect(firstPage.status).toBe(200);
@@ -607,7 +610,7 @@ describe("opsx-flow step recording", () => {
           log: [],
         }),
       );
-      const server = __test__.createUiServer(project, 0);
+      const server = dashboardTest.createUiServer(project, 0);
       try {
         const state = await (await fetch(`http://127.0.0.1:${server.port}/api/state`)).json();
         // The steps array flows through apiState automatically.
@@ -630,5 +633,329 @@ describe("opsx-flow step recording", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("opsx-flow stop lifecycle", () => {
+  const script = path.join(import.meta.dir, "opsx-flow.ts");
+
+  async function writeState(project: string, overrides: Record<string, unknown> = {}): Promise<string> {
+    const openspec = path.join(project, "openspec");
+    await mkdir(openspec, { recursive: true });
+    const startedAt = new Date().toISOString();
+    const state = {
+      proposalName: "demo",
+      proposalDir: path.join(openspec, "changes", "demo"),
+      projectDir: project,
+      configPath: "",
+      branch: "openspec/demo",
+      baseBranch: "main",
+      paused: false,
+      pauseReason: null,
+      caps: { ...DEFAULT_CAPS },
+      loopCounters: {},
+      currentPhaseIdx: 0,
+      workflowStatus: "running",
+      startedAt,
+      completedAt: null,
+      lastUpdated: startedAt,
+      pendingQuestion: null,
+      baselineUntracked: [],
+      implementerSessions: [],
+      steps: [],
+      log: [],
+      ...overrides,
+    };
+    const file = path.join(openspec, ".opsx-flow-state.json");
+    await writeFile(file, JSON.stringify(state));
+    return file;
+  }
+
+  function busyClient(): OpenCodeClient {
+    return {
+      sessionStatus: async () => ({ s1: { type: "busy" } as never }),
+      pendingQuestions: async () => [],
+    } as unknown as OpenCodeClient;
+  }
+
+  it("computeStopAction decides refuse/noop/kill from liveness and active sessions", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-stop-action-"));
+    try {
+      const state = { projectDir: root } as never;
+      expect(__test__.computeStopAction(state, 12345, ["s1", "s2"])).toEqual({ action: "refuse", sessionIds: ["s1", "s2"] });
+      expect(__test__.computeStopAction(state, 999_999_999, [])).toEqual({ action: "noop" });
+      const dummy = Bun.spawn(["sleep", "60"]);
+      try {
+        expect(__test__.computeStopAction(state, dummy.pid, [])).toEqual({ action: "kill", pid: dummy.pid });
+      } finally {
+        dummy.kill();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("stopFlow refuses (and does not kill) while an implementer session is busy", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-stop-busy-"));
+    try {
+      const project = path.join(root, "project");
+      const dummy = Bun.spawn(["sleep", "60"]);
+      try {
+        await writeState(project, {
+          daemonPid: dummy.pid,
+          implementerSessions: [{ sessionId: "s1", phaseId: "test", kind: "implementer", runIdx: 1, startedAt: new Date().toISOString(), status: "running" }],
+        });
+        __test__.setClient(busyClient());
+        await expect(__test__.stopFlow(project)).rejects.toThrow(
+          "cannot stop while implementer sessions are active: s1; pause instead, or wait for them to finish",
+        );
+        // The dummy daemon process must still be alive: refusal never kills.
+        expect(() => process.kill(dummy.pid, 0)).not.toThrow();
+      } finally {
+        dummy.kill();
+        __test__.setClient(new OpenCodeClient());
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("/api/stop returns 409 with the busy-session refusal and does not kill", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-stop-409-"));
+    try {
+      const project = path.join(root, "project");
+      const dummy = Bun.spawn(["sleep", "60"]);
+      try {
+        await writeState(project, {
+          daemonPid: dummy.pid,
+          implementerSessions: [{ sessionId: "s1", phaseId: "test", kind: "implementer", runIdx: 1, startedAt: new Date().toISOString(), status: "running" }],
+        });
+        __test__.setClient(busyClient());
+        const server = dashboardTest.createUiServer(project, 0);
+        try {
+          const response = await fetch(`http://127.0.0.1:${server.port}/api/stop`, { method: "POST" });
+          expect(response.status).toBe(409);
+          const body = (await response.json()) as { error: string };
+          expect(body.error).toContain("cannot stop while implementer sessions are active: s1");
+          expect(() => process.kill(dummy.pid, 0)).not.toThrow();
+        } finally {
+          server.stop(true);
+        }
+      } finally {
+        dummy.kill();
+        __test__.setClient(new OpenCodeClient());
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("stopFlow kills a live daemon pid and leaves the workflow paused with the marker set", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-stop-kill-"));
+    try {
+      const project = path.join(root, "project");
+      const dummy = Bun.spawn(["sleep", "60"]);
+      try {
+        await writeState(project, { daemonPid: dummy.pid });
+        await __test__.stopFlow(project);
+        const exited = await Promise.race([dummy.exited.then(() => true), Bun.sleep(8_000).then(() => false)]);
+        expect(exited).toBe(true);
+        const state = await loadState(path.join(project, "openspec", ".opsx-flow-state.json"));
+        expect(state.workflowStatus).toBe("paused");
+        expect(state.paused).toBe(true);
+        expect(state.daemonPid).toBeUndefined();
+        expect(state.log.some((entry) => entry.event === "workflow_stopped")).toBe(true);
+        expect(await Bun.file(path.join(project, "openspec", ".opsx-flow-paused")).exists()).toBe(true);
+      } finally {
+        dummy.kill();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("stopFlow is idempotent when no daemon is alive and still tidies state", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-stop-noop-"));
+    try {
+      const project = path.join(root, "project");
+      await writeState(project, { daemonPid: 999_999_999 });
+      await expect(__test__.stopFlow(project)).resolves.toBeUndefined();
+      const state = await loadState(path.join(project, "openspec", ".opsx-flow-state.json"));
+      expect(state.workflowStatus).toBe("paused");
+      expect(state.paused).toBe(true);
+      expect(state.daemonPid).toBeUndefined();
+      expect(state.log.some((entry) => entry.event === "workflow_stop_noop")).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("stopFlow refuses to stop an already completed workflow", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-stop-done-"));
+    try {
+      const project = path.join(root, "project");
+      await writeState(project, { workflowStatus: "completed", completedAt: new Date().toISOString() });
+      await expect(__test__.stopFlow(project)).rejects.toThrow("workflow is already completed: demo");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("the CLI stop command fails gracefully without state", () => {
+    const missing = path.join(tmpdir(), `opsx-flow-stop-missing-${process.pid}`);
+    const result = spawnSync("bun", [script, "stop", "--project-dir", missing], { encoding: "utf8", timeout: 30_000 });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("no existing opsx-flow state");
+  });
+
+  it("cmdStop rejects unknown flags", async () => {
+    await expect(__test__.cmdStop(["--bogus"])).rejects.toThrow("unknown option: --bogus");
+  });
+});
+
+describe("opsx-flow decoupled UI lifecycle", () => {
+  const script = path.join(import.meta.dir, "opsx-flow.ts");
+
+  it("cmdStart launches the driver only and never sets uiPid/uiPort", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-start-noui-"));
+    try {
+      const project = path.join(root, "project");
+      await mkdir(project, { recursive: true });
+      runGit(project, ["init", "-b", "main"]);
+      runGit(project, ["config", "user.email", "opsx-flow-test@example.invalid"]);
+      runGit(project, ["config", "user.name", "opsx-flow test"]);
+      await mkdir(path.join(project, "openspec", "changes", "demo"), { recursive: true });
+      await writeFile(path.join(project, "openspec", "changes", "demo", "proposal.md"), "# Demo\n");
+      await writeFile(path.join(project, "openspec", "changes", "demo", "tasks.md"), "- [ ] one\n");
+      await writeFile(path.join(project, "README.md"), "demo\n");
+      runGit(project, ["add", "."]);
+      runGit(project, ["commit", "-m", "initial"]);
+
+      const configFile = path.join(root, "flow.jsonc");
+      await writeFile(configFile, JSON.stringify({ projectDir: project, proposal: "demo", baseBranch: "main" }));
+      __test__.setClient({ createSpawnSession: async () => { throw new Error("no server"); } } as unknown as OpenCodeClient);
+      try {
+        // --foreground runs the driver in-process; the session spawn fails
+        // against the injected fake, so start returns the driver error code.
+        const code = await __test__.cmdStart([configFile, "--foreground"]);
+        expect(code).toBe(1);
+        const state = await loadState(path.join(project, "openspec", ".opsx-flow-state.json"));
+        expect(state.uiPid).toBeUndefined();
+        expect(state.uiPort).toBeUndefined();
+        expect(state.workflowStatus).toBe("error");
+      } finally {
+        __test__.setClient(new OpenCodeClient());
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("still parses legacy --no-ui/--ui-port flags for backward compatibility", () => {
+    expect(__test__.parseStartArgs(["flow.jsonc", "--no-ui", "--foreground", "--ui-port", "4555"])).toEqual({
+      configPath: path.resolve("flow.jsonc"),
+      noUi: true,
+      foreground: true,
+      uiPort: 4555,
+    });
+  });
+
+  it("rejects the dashboard subcommand now that it is a separate entry", () => {
+    // The driver no longer owns the web UI; `dashboard`/`ui` fall through as
+    // unknown commands.  The dashboard lives in opsx-flow-dashboard.ts.
+    const result = spawnSync("bun", [script, "dashboard", "--bogus"], { encoding: "utf8", timeout: 30_000 });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("unknown command: dashboard");
+  });
+
+  it("starts a real UI server as a standalone dashboard process", async () => {
+    const dashboardScript = path.join(import.meta.dir, "opsx-flow-dashboard.ts");
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-dashboard-"));
+    const port = await new Promise<number>((resolve, reject) => {
+      const server = net.createServer();
+      server.unref();
+      server.on("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address() as net.AddressInfo;
+        server.close(() => resolve(address.port));
+      });
+    });
+    try {
+      const proc = Bun.spawn(["bun", dashboardScript, "--project-dir", root, "--port", String(port)], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const reader = proc.stdout.getReader();
+      let output = "";
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline && !output.includes("opsx-flow dashboard listening")) {
+        const chunk = await Promise.race([
+          reader.read().then(({ value, done }) => ({ value, done })),
+          Bun.sleep(500).then(() => null),
+        ]);
+        if (chunk === null) continue;
+        if (chunk.done) break;
+        output += new TextDecoder().decode(chunk.value);
+      }
+      try { proc.kill(); } catch { /* already exited */ }
+      expect(output).toContain("opsx-flow dashboard listening");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("the CLI help lists stop and the decoupled dashboard note", () => {
+    const result = spawnSync("bun", [script, "--help"], { encoding: "utf8", timeout: 30_000 });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("start <config.jsonc> [--foreground]");
+    expect(result.stdout).toContain("stop [--project-dir <path>]");
+    expect(result.stdout).toContain("Dashboard: bun .opencode/scripts/opsx-flow-dashboard.ts [--port <port>]");
+    expect(result.stdout).not.toContain("dashboard [--project-dir");
+    expect(result.stdout).not.toContain("ui [--project-dir");
+    expect(result.stdout).not.toContain("--no-ui");
+  });
+
+  it("the dashboard HTML ships the Stop button, style, and handler", () => {
+    const html = dashboardTest.uiHtml("/tmp/demo", 4321);
+    expect(html).toContain('<button id="stop">Stop</button>');
+    expect(html).toContain("button#stop:hover { border-color: #e57171; }");
+    expect(html).toContain("$('stop').onclick");
+    expect(html).toContain("getJson('/api/stop', {method:'POST'})");
+  });
+});
+
+describe("opsx-flow dashboard entry", () => {
+  const script = path.join(import.meta.dir, "opsx-flow-dashboard.ts");
+
+  it("is independently loadable and serves the root HTML", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-dash-module-"));
+    try {
+      const server = dashboardTest.createUiServer(root, 0);
+      try {
+        const response = await fetch(`http://127.0.0.1:${server.port}/`);
+        expect(response.status).toBe(200);
+        const html = await response.text();
+        expect(html).toContain("opsx-flow");
+        expect(html).toContain(`value="${root}"`);
+      } finally {
+        server.stop(true);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("prints dashboard help and exits cleanly via --help", () => {
+    const result = spawnSync("bun", [script, "--help"], { encoding: "utf8", timeout: 30_000 });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("opsx-flow dashboard");
+    expect(result.stdout).toContain("--port <port>");
+    expect(result.stdout).toContain("--project-dir <path>");
+  });
+
+  it("rejects unknown dashboard flags", () => {
+    const result = spawnSync("bun", [script, "--bogus"], { encoding: "utf8", timeout: 30_000 });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("unknown option: --bogus");
   });
 });
