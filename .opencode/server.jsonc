@@ -185,6 +185,78 @@
         }
       },
 
+      // --- Master daily/weekly/monthly prioritization cadence ---
+      // Proposed + confirmed with Master 2026-08-11. Workflows live in the
+      // prioritize-tasks skill and the daily-focus / weekly-focus /
+      // monthly-recalibrate commands.
+      {
+        "id": "daily-focus",
+        "name": "Daily Focus Proposal",
+        "enabled": true,
+        "purpose": "Every morning at 6am MYT, propose 1-3 tasks sized to Master's real time window; on Master's pickup, block them on Google Calendar (lohzi97@gmail.com).",
+        "trigger": {
+          "kind": "cron",
+          "expr": "0 6 * * *" // 06:00 MYT daily
+        },
+        "mode": "isolated-session",
+        "instructions": "/daily-focus",
+        "agent": "sebastian",
+        "priority": 4,
+        "policy": {
+          "no_overlap": true,
+          "silence_ok": false,
+          "max_runtime_ms": 300000
+        }
+      },
+
+      {
+        "id": "weekly-focus",
+        "name": "Weekly Focus Review",
+        "enabled": true,
+        "purpose": "Every Sunday at 2pm MYT, review the past week and set Focus This Week for the upcoming week in the Todo Ledger.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "0 14 * * 0" // Sunday 14:00 MYT
+        },
+        "mode": "isolated-session",
+        "instructions": "/weekly-focus",
+        "agent": "sebastian",
+        "priority": 4,
+        "policy": {
+          "no_overlap": true,
+          "silence_ok": false,
+          "max_runtime_ms": 1800000
+        }
+      },
+
+      {
+        "id": "monthly-recalibrate",
+        "name": "Monthly Ledger Recalibration",
+        "enabled": true,
+        "purpose": "Last Sunday of the month at 3pm MYT, run a full Todo Ledger tune-up and check for life/financial-goals drift.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "0 15 * * 0" // every Sunday 15:00 MYT; precheck keeps only the last Sunday
+        },
+        "mode": "isolated-session",
+        "instructions": "/monthly-recalibrate",
+        "agent": "sebastian",
+        "priority": 4,
+        "precheck": {
+          "kind": "exec",
+          "cmd": [
+            "bash",
+            "-c",
+            "this_m=$(date +%m); next_m=$(date -d '+7 days' +%m); if [ \"$this_m\" != \"$next_m\" ]; then printf '{\"decision\":\"proceed\",\"reason\":\"last Sunday of month\",\"context\":{}}\\n'; else printf '{\"decision\":\"skip\",\"reason\":\"not last Sunday\",\"context\":{}}\\n'; fi"
+          ]
+        },
+        "policy": {
+          "no_overlap": true,
+          "silence_ok": false,
+          "max_runtime_ms": 1800000
+        }
+      },
+
       {
         "id": "anchor-smoke-test",
         "name": "Sebastian's Personal Reflection",
