@@ -24,7 +24,7 @@ The operating system for deciding what Master works on day to day. Three workflo
 
 1. **Trading edge is THE #1 priority.** The EURUSD forex MT5 strategy revival + martingale tail-risk overlay get the prime deep-work blocks first, every time.
 2. **Subtraction is first-class.** Finishing/sunsetting work buys back hours; treat it as real progress.
-3. **Few goals, sharply sequenced.** Never stack more than one P2 into a single weekday evening.
+3. **Few goals, sharply sequenced.** Never stack more than one P2 into a single weekday evening — except for a short deadline-driven sprint (a hard external deadline within the week). Then stacking is allowed: flag it explicitly in the proposal and cap total hours to the window.
 4. **Every task must map to a roadmap goal** — or it is a candidate for subtraction.
 5. **Weekends = deep work; weekday evenings = chunked/admin.** Match task type to slot energy.
 
@@ -50,6 +50,7 @@ parity=$(( weeks % 2 ))   # 0 = strength week, 1 = cardio week
 
 - **Work day:** window = work-end (+ gym if a gym day) → ~20:30-21:30 drive-home. Light dinner (no time loss). Location = cafe → coding/writing/planning fit; hardware/building = weekend only.
 - **Weekend / PH:** full day. Prime deep-work ~11:00-18:00, **peak sharpness 12:00-17:00.** Target 4-6 productive hrs. Naps possible.
+- **Order tasks by energy within the window.** Harder/deeper work goes in the freshest (earliest) slot; light/admin after. Don't claim a task needs "freshest/peak energy" unless it genuinely does — keep the blocking order consistent with that claim.
 
 ### Public-holiday check
 
@@ -57,9 +58,13 @@ Query Google Calendar `en.malaysia#holiday@group.v.calendar.google.com` (via `ge
 
 ## Calendar integration
 
-- **Master's calendar ID:** `lohzi97@gmail.com` (shared with sebastian.lohzi97@gmail.com).
-- Use the `google-workspace` MCP `manage_event` (action: `create`) to block a chosen task. Sensible duration from the proposed window; title = the task; add a default reminder.
+- **ALWAYS use `user_google_email=sebastian.lohzi97@gmail.com`** for every `google-workspace` MCP call (Sebastian's authenticated account). For Master's calendar, set `calendar_id=lohzi97@gmail.com`. **Never** pass `lohzi97@gmail.com` as `user_google_email` — that triggers an interactive browser OAuth prompt on Master's machine and violates the anti-bot OAuth preference (`memory/canonical/working-preferences.md`). The same rule applies to the public-holiday calendar query.
+- Use `manage_event` (action: `create`) to block a chosen task. Sensible duration from the proposed window; title = the task; set an **explicit reminder** (e.g., 15 min before) — don't rely solely on default reminders.
 - If Master has blocked a rest/nap slot, respect it and don't propose work over it.
+
+## Ledger hygiene
+
+- When Master gives a concrete task breakdown (sub-items + deadline + end-state), write it to `~/obsidian/Todo Ledger.md` under the relevant project as part of the flow — don't leave it only on the calendar. The ledger is the source of truth.
 
 ## Daily proposal output format
 
