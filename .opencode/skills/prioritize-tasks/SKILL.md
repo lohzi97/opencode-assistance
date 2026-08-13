@@ -20,6 +20,16 @@ The operating system for deciding what Master works on day to day. Three workflo
 5. `notes/master/banking-and-finance.md` — for financial-impact judgement + trading risk tolerance.
 6. If a financial commitment is in play, also load the `financial-decision` skill.
 
+## Detect live redirects before trusting Focus This Week
+
+`Focus This Week` is re-calibrated on Sundays, but reality shifts mid-week. Before treating it as ground truth, run this scan on every daily run:
+
+1. **This-week deadline scan.** Grep the ledger for any item with a deadline in the current week. A hard external deadline within the week is an active deadline-driven sprint — it preempts standing Focus items per axiom 3.
+2. **Today's recurring-sync scan.** Check `notes/master/time-budget.md` and the ledger for any recurring sync landing today (e.g. the Thu 20:30 Kimhwa sync). A sync today means that workstream is live today.
+3. **Yesterday's journal fallback.** Skim the most recent `journals/daily/YYYYMMDD.md` for a redirect line ("Master redirected the proposal…") — the surest signal the week's focus moved since Sunday.
+
+If any of these surfaces an active sprint/redirect that `Focus This Week` doesn't reflect, **that sprint is the live #1** — surface it first in the proposal, even if Focus This Week still lists different P1s. Then update `Focus This Week` (see Ledger hygiene) so the next run isn't fooled.
+
 ## Prioritization axioms (from goal-roadmap — non-negotiable)
 
 1. **Trading edge is THE #1 priority.** The EURUSD forex MT5 strategy revival + martingale tail-risk overlay get the prime deep-work blocks first, every time.
@@ -65,6 +75,7 @@ Query Google Calendar `en.malaysia#holiday@group.v.calendar.google.com` (via `ge
 ## Ledger hygiene
 
 - When Master gives a concrete task breakdown (sub-items + deadline + end-state), write it to `~/obsidian/Todo Ledger.md` under the relevant project as part of the flow — don't leave it only on the calendar. The ledger is the source of truth.
+- **`Focus This Week` is live, not weekly-only.** It carries a `last-updated/redirected: YYYY-MM-DD` line. Whenever Master redirects mid-week ("sprint X first", "drop Y for now"), update `Focus This Week` *immediately* to reflect the new live #1 — not just the project entry's sub-items. A stale Focus This Week is the #1 cause of a wrong daily proposal.
 
 ## Daily proposal output format
 
