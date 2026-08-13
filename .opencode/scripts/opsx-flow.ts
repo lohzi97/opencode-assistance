@@ -1043,11 +1043,30 @@ async function waitForSessionCompletionLoop(state: FlowState, phaseId: string, s
       continue;
     }
 
-    // A question request takes precedence over idle status: OpenCode can report
-    // a question-blocked session as absent from /session/status.
+    // A pending question usually means the session is blocked waiting for
+    // the Master's answer.  But the question can become stale: if the
+    // conversation continued without formally answering the question tool
+    // (e.g. an interrupted question re-asked and answered via plain text),
+    // the session may have already produced a terminal assistant message
+    // while the original pending question lingers in OpenCode's database.
+    // hasCompletedAssistant is the discriminator — a live question leaves
+    // the last assistant message with finish:"tool-calls", while a finished
+    // session has a terminal finish.  When stale, clear the pause and fall
+    // through to normal completion instead of blocking forever.
     if (request) {
-      await markQuestionPaused(state, phaseId, request);
-      continue;
+      let sessionCompleted = false;
+      try {
+        const report = await getSessionReport(session.sessionId, state.projectDir);
+        sessionCompleted = hasCompletedAssistant(report.messages);
+      } catch {
+        // Messages not yet available; treat as not completed.
+      }
+      if (!sessionCompleted) {
+        await markQuestionPaused(state, phaseId, request);
+        continue;
+      }
+      logEvent(state, "question_stale", `${phaseId}: ${request.id} from ${request.sessionID} — session completed without formal answer`);
+      if (state.pauseReason === "question") writePauseMarker(state.projectDir, false);
     }
     await clearQuestionPause(state);
 
@@ -1178,15 +1197,15 @@ async function reconcileRunningSessions(state: FlowState): Promise<string[]> {
   const running = state.implementerSessions.filter((session) => session.status === "running");
   if (running.length === 0) return [];
 
-  const [statuses, questions] = await Promise.all([
-    client.sessionStatus({ directory: state.projectDir }),
-    client.pendingQuestions({ directory: state.projectDir }),
-  ]);
-  const questionSessions = new Set(questions.map((request) => request.sessionID));
+  const statuses = await client.sessionStatus({ directory: state.projectDir });
   const active: string[] = [];
   for (const session of running) {
     const status = statuses[session.sessionId]?.type;
-    if (questionSessions.has(session.sessionId) || status === "busy" || status === "retry") {
+    // Busy/retry sessions are actively processing — always active.
+    // Idle or unknown sessions (including question-blocked ones) fall
+    // through to the completion check below; a stale pending question
+    // leaves a terminal assistant message that reconcile can detect.
+    if (status === "busy" || status === "retry") {
       active.push(session.sessionId);
       continue;
     }

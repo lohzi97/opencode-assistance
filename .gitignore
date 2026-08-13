@@ -9,6 +9,7 @@ notes/*
 input/**
 !input/**/
 !input/**/.gitkeep
+output/**
 .chrome/
 .antigravitycli/*
 temp.md
