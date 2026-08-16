@@ -90,7 +90,7 @@ Use this skill for anything related to the Master's finances: recording spending
 - `Equity:OwnerDrawings` - owner's drawings bridge account; tracks money withdrawn from freelance business for personal use. Opened in `combined.beancount` only. Appears in both scopes with opposite signs; nets to zero in combined view.
 
 ### Expenses (Personal)
-Food, Transport, Rent, Utilities, Subscriptions, Insurance, Medical, Education, Discretionary, Mortgage, Housing, Household
+Food, Transport, Rent, Utilities, Subscriptions, Insurance, Medical, Education, Discretionary, Mortgage, Housing, Household, Banking
 
 ### Expenses (Freelance)
 Domain, Hosting, Software, Marketing, Subcontractors, Equipment, Travel, Banking
