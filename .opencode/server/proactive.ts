@@ -121,6 +121,9 @@ type RunFinishInput = {
 
 const DEFAULT_SESSION_TIMEOUT_MS = 12 * 60 * 60 * 1000;
 const CONFIG_RELOAD_DEBOUNCE_MS = 250;
+// Lands each tick a few hundred ms inside the interval boundary so clock
+// jitter can never make a tick compute the previous minute.
+const TICK_BOUNDARY_GUARD_MS = 300;
 const ANCHOR_END_PRIORITY_BOOST = 2000;
 const ANCHOR_ROLLOVER_PRIORITY_BOOST = 1000;
 
@@ -479,14 +482,50 @@ export class ProactiveService {
   }
 
   private loop() {
+    const intervalMs = this.config?.dispatcher.poll_interval_ms ?? 60_000;
+    const now = Date.now();
+    // Boundary-anchored scheduling: fire at the next interval boundary plus a
+    // small guard instead of now+intervalMs. A now+interval loop always drifts
+    // forward by the tick duration, which eventually leaves a wall-clock
+    // minute with no tick at all — silently skipping any cron due in it.
+    const nextBoundary = (Math.floor((now - TICK_BOUNDARY_GUARD_MS) / intervalMs) + 1) * intervalMs + TICK_BOUNDARY_GUARD_MS;
     this.timer = setTimeout(async () => {
+      const firedAt = Date.now();
+      let tickError: string | undefined;
       try {
         await this.runTick();
       } catch (err) {
         console.error("proactive tick failed", err);
+        tickError = errorMessage(err);
       }
+      const endedAt = Date.now();
+      this.logTickOutcome(intervalMs, firedAt, endedAt, tickError);
       this.loop();
-    }, this.config?.dispatcher.poll_interval_ms ?? 60_000);
+    }, nextBoundary - now);
+  }
+
+  private logTickOutcome(intervalMs: number, firedAt: number, endedAt: number, tickError?: string) {
+    const durationMs = endedAt - firedAt;
+    const minute = minuteStamp(new Date(firedAt), this.timezone());
+    // Boundaries whose fire point passed while the tick was still running.
+    // The re-arm in loop() then jumps to the following boundary; skipped
+    // minutes are intentionally not caught up.
+    const skipped = Math.max(
+      0,
+      Math.floor((endedAt - TICK_BOUNDARY_GUARD_MS) / intervalMs) - Math.floor((firedAt - TICK_BOUNDARY_GUARD_MS) / intervalMs),
+    );
+    const extra = { minute, duration_ms: durationMs, skipped_boundaries: skipped };
+    if (skipped > 0) {
+      const message = `proactive tick overran poll interval (duration ${durationMs}ms > ${intervalMs}ms); skipped ${skipped} boundary tick(s) after minute ${minute}`;
+      console.warn(`[proactive] ${message}`);
+      void this.client.log("warn", message, extra);
+      return;
+    }
+    if (tickError) {
+      void this.client.log("error", "proactive tick failed", { ...extra, error: tickError });
+      return;
+    }
+    void this.client.log("info", "proactive-tick", extra);
   }
 
   private async runTick() {
