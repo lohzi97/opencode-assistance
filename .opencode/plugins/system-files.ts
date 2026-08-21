@@ -391,13 +391,20 @@ export const SystemFilesPlugin: Plugin = async ({ client, directory, project, wo
         return;
       }
 
-      output.system.push(
-        [
-          "Additional project context from configured files.",
-          "Read the following files in the listed order.",
-          ...parts,
-        ].join("\n\n"),
-      );
+      const extra = [
+        "Additional project context from configured files.",
+        "Read the following files in the listed order.",
+        ...parts,
+      ].join("\n\n");
+
+      // Merge into the last system entry instead of pushing a new one.
+      // Some backends (e.g. vLLM behind OpenAI-compatible gateways) reject
+      // requests with more than one system message.
+      if (output.system.length > 0) {
+        output.system[output.system.length - 1] += `\n\n${extra}`;
+      } else {
+        output.system.push(extra);
+      }
 
       if (DEBUG) {
         await Bun.write(
