@@ -109,12 +109,6 @@ export type FlowConfig = {
     model: string;
     variant: string;
   };
-  issueAudit: {
-    agent: string;
-    provider: string;
-    model: string;
-    variant: string;
-  };
 };
 
 export type PauseReason = "question" | "cap-hit" | "merge-conflict" | "error" | null;
@@ -412,6 +406,24 @@ function parseCaps(value: unknown): Caps {
   };
 }
 
+const SUBSTEP_IDS = ["fix", "issue-audit"] as const;
+export type SubstepId = (typeof SUBSTEP_IDS)[number];
+
+// Classifies a `phases` config key as a sub-step override: the global "fix" /
+// "issue-audit" defaults, or a per-phase "<finding-phase>.fix" /
+// "<finding-phase>.issue-audit" override.  Returns undefined for real phase
+// ids (handled separately by the caller) and for anything invalid.
+function classifySubstepKey(key: string): SubstepId | undefined {
+  if ((SUBSTEP_IDS as readonly string[]).includes(key)) return key as SubstepId;
+  const dot = key.indexOf(".");
+  if (dot < 0) return undefined;
+  const parent = key.slice(0, dot);
+  const sub = key.slice(dot + 1);
+  if (!(SUBSTEP_IDS as readonly string[]).includes(sub)) return undefined;
+  const parentIsFinding = PHASES.some((phase) => phase.id === parent && phase.family === "finding");
+  return parentIsFinding ? (sub as SubstepId) : undefined;
+}
+
 export async function loadFlowConfig(configFile: string): Promise<FlowConfig> {
   const configPath = path.resolve(configFile);
   let parsed: unknown;
@@ -421,7 +433,7 @@ export async function loadFlowConfig(configFile: string): Promise<FlowConfig> {
     throw new Error(`could not parse config ${configPath}: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (!record(parsed)) throw new Error(`config ${configPath} must contain a JSON object`);
-  rejectObjectKeys(parsed, ["projectDir", "proposal", "baseBranch", "branch", "fromStage", "caps", "phases", "mergeCommitter", "issueAudit"], "config");
+  rejectObjectKeys(parsed, ["projectDir", "proposal", "baseBranch", "branch", "fromStage", "caps", "phases", "mergeCommitter"], "config");
 
   const projectDir = path.resolve(path.dirname(configPath), stringValue(parsed.projectDir, "projectDir"));
   const proposalName = stringValue(parsed.proposal, "proposal");
@@ -438,11 +450,15 @@ export async function loadFlowConfig(configFile: string): Promise<FlowConfig> {
   if (!record(rawPhases)) throw new Error("phases must be an object");
   const phases: Record<string, RawModelConfig> = {};
   for (const [phaseId, value] of Object.entries(rawPhases)) {
-    // `issue-audit` is the only non-PHASES id accepted here; it configures the
-    // issue-audit sub-step that runs inside every finding-phase loop.  All
-    // other ids must match a real entry in the 8-phase graph.
-    if (phaseId !== "issue-audit" && !PHASES.some((phase) => phase.id === phaseId)) throw new Error(`unknown phase override: ${phaseId}`);
-    phases[phaseId] = normalizeModelConfig(value, `phases.${phaseId}`);
+    // Accepted keys: real phase ids, the global sub-step defaults ("fix" /
+    // "issue-audit"), and per-phase sub-step overrides
+    // ("<finding-phase>.fix" / "<finding-phase>.issue-audit").  Issue-audit
+    // entries reject `cap`: the audit runs once per finder iteration and has
+    // no loop to cap.
+    const isPhase = PHASES.some((phase) => phase.id === phaseId);
+    const substep = isPhase ? undefined : classifySubstepKey(phaseId);
+    if (!isPhase && substep === undefined) throw new Error(`unknown phase override: ${phaseId}`);
+    phases[phaseId] = normalizeModelConfig(value, `phases.${phaseId}`, substep !== "issue-audit");
   }
 
   const rawMerge = normalizeModelConfig(parsed.mergeCommitter, "mergeCommitter", false);
@@ -451,26 +467,6 @@ export async function loadFlowConfig(configFile: string): Promise<FlowConfig> {
     provider: typeof rawMerge.provider === "string" ? rawMerge.provider : DEFAULT_MERGE_COMMITTER.provider,
     model: typeof rawMerge.model === "string" ? rawMerge.model : DEFAULT_MERGE_COMMITTER.model,
     variant: typeof rawMerge.variant === "string" ? rawMerge.variant : DEFAULT_MERGE_COMMITTER.variant,
-  };
-
-  // Issue-audit model resolution mirrors mergeCommitter: defaults flow from
-  // DEFAULT_MODEL, the top-level `issueAudit` block overrides them, and a
-  // more specific `phases["issue-audit"]` block overrides the top-level.
-  const rawIssueAuditTop = normalizeModelConfig(parsed.issueAudit, "issueAudit", false);
-  const rawIssueAuditPhase = phases["issue-audit"] ?? {};
-  const issueAudit = {
-    agent: typeof rawIssueAuditPhase.agent === "string"
-      ? rawIssueAuditPhase.agent
-      : typeof rawIssueAuditTop.agent === "string" ? rawIssueAuditTop.agent : DEFAULT_MODEL.agent,
-    provider: typeof rawIssueAuditPhase.provider === "string"
-      ? rawIssueAuditPhase.provider
-      : typeof rawIssueAuditTop.provider === "string" ? rawIssueAuditTop.provider : DEFAULT_MODEL.provider,
-    model: typeof rawIssueAuditPhase.model === "string"
-      ? rawIssueAuditPhase.model
-      : typeof rawIssueAuditTop.model === "string" ? rawIssueAuditTop.model : DEFAULT_MODEL.model,
-    variant: typeof rawIssueAuditPhase.variant === "string"
-      ? rawIssueAuditPhase.variant
-      : typeof rawIssueAuditTop.variant === "string" ? rawIssueAuditTop.variant : DEFAULT_MODEL.variant,
   };
 
   return {
@@ -485,7 +481,6 @@ export async function loadFlowConfig(configFile: string): Promise<FlowConfig> {
     caps: parseCaps(parsed.caps),
     phases,
     mergeCommitter,
-    issueAudit,
   };
 }
 
@@ -498,6 +493,49 @@ export function resolvePhase(config: FlowConfig, phase: BasePhase): PhaseDef {
     model: typeof override.model === "string" ? override.model : DEFAULT_MODEL.model,
     variant: typeof override.variant === "string" ? override.variant : DEFAULT_MODEL.variant,
     cap: typeof override.cap === "number" ? override.cap : config.caps[phase.capKey],
+  };
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  for (const value of values) if (typeof value === "string") return value;
+  return undefined;
+}
+
+// Resolves the settings for a fix run inside a finding phase.  Precedence,
+// field by field: phases["<phase>.fix"], then the global phases["fix"], then
+// the enclosing phase's own settings, so an unconfigured fix loop keeps using
+// the phase model (the pre-substep behavior).  cap follows the same chain and
+// decouples the fix-loop cap from the finder-loop cap.
+export function resolveFixPhase(config: FlowConfig, phase: PhaseDef): PhaseDef {
+  const specific = config.phases[`${phase.id}.fix`] ?? {};
+  const global = config.phases["fix"] ?? {};
+  return {
+    ...phase,
+    agent: firstString(specific.agent, global.agent) ?? phase.agent,
+    provider: firstString(specific.provider, global.provider) ?? phase.provider,
+    model: firstString(specific.model, global.model) ?? phase.model,
+    variant: firstString(specific.variant, global.variant) ?? phase.variant,
+    cap: specific.cap ?? global.cap ?? phase.cap,
+  };
+}
+
+// Resolves the settings for an issue-audit run inside a finding phase.
+// Precedence: phases["<phase>.issue-audit"], then the global
+// phases["issue-audit"], then DEFAULT_MODEL.  Unlike fix, the audit never
+// inherits the enclosing phase's model.
+export function resolveIssueAuditSettings(config: FlowConfig, phase: Pick<PhaseDef, "id">): {
+  agent: string;
+  provider: string;
+  model: string;
+  variant: string;
+} {
+  const specific = config.phases[`${phase.id}.issue-audit`] ?? {};
+  const global = config.phases["issue-audit"] ?? {};
+  return {
+    agent: firstString(specific.agent, global.agent) ?? DEFAULT_MODEL.agent,
+    provider: firstString(specific.provider, global.provider) ?? DEFAULT_MODEL.provider,
+    model: firstString(specific.model, global.model) ?? DEFAULT_MODEL.model,
+    variant: firstString(specific.variant, global.variant) ?? DEFAULT_MODEL.variant,
   };
 }
 
@@ -917,10 +955,6 @@ export function auditNoteCount(file: string): number {
   return reeval + enrich;
 }
 
-function resolveIssueAuditSettings(config: FlowConfig): { agent: string; provider: string; model: string; variant: string } {
-  return config.issueAudit;
-}
-
 function pushStep(state: FlowState, step: Step): Step {
   state.steps.push(step);
   return step;
@@ -1261,12 +1295,15 @@ async function commitPhaseCheckpoint(state: FlowState, phaseId: string, runIdx: 
   await saveState(state);
 }
 
-async function runFixLoop(state: FlowState, phase: PhaseDef): Promise<void> {
+async function runFixLoop(state: FlowState, phase: PhaseDef, config: FlowConfig): Promise<void> {
+  // Fix sessions use their own resolved settings (phases["<phase>.fix"] /
+  // phases["fix"] / phase fallback), including a dedicated fix-loop cap.
+  const fixPhase = resolveFixPhase(config, phase);
   const issueFile = path.join(state.proposalDir, "issue.md");
   const counterKey = `${phase.id}:fix`;
   state.loopCounters[counterKey] ??= 0;
   while (uncheckedCount(issueFile) > 0) {
-    await enforceCap(state, phase, counterKey, `fix for ${phase.id}`);
+    await enforceCap(state, fixPhase, counterKey, `fix for ${phase.id}`);
     const beforeUnchecked = uncheckedCount(issueFile);
     const runIdx = (state.loopCounters[counterKey] ?? 0) + 1;
     const beforeLock = snapshotLockedFile(state, "fix");
@@ -1281,7 +1318,7 @@ async function runFixLoop(state: FlowState, phase: PhaseDef): Promise<void> {
       startedAt: nowIso(),
     });
     await saveState(state);
-    await spawnAndWaitFix(state, phase, runIdx);
+    await spawnAndWaitFix(state, fixPhase, runIdx);
     state.loopCounters[counterKey] = runIdx;
     await waitForExternalContinue(state);
     assertSessionPreservedBranch(state, beforeHead, `fix session for ${phase.id}`);
@@ -1343,7 +1380,7 @@ async function runIssueAudit(state: FlowState, phase: PhaseDef, config: FlowConf
   const counterKey = `${phase.id}:audit`;
   state.loopCounters[counterKey] ??= 0;
   const runIdx = (state.loopCounters[counterKey] ?? 0) + 1;
-  const settings = resolveIssueAuditSettings(config);
+  const settings = resolveIssueAuditSettings(config, phase);
   const beforeHead = requireGit(state.projectDir, ["rev-parse", "HEAD"]).trim();
   const beforeUnchecked = uncheckedCount(issueFile);
   const beforeNotes = auditNoteCount(issueFile);
@@ -1419,7 +1456,7 @@ async function runPhaseLoop(state: FlowState, phase: PhaseDef, config: FlowConfi
       state.loopCounters[phase.id] = runIdx;
       await saveState(state);
       await runIssueAudit(state, phase, config);
-      await runFixLoop(state, phase);
+      await runFixLoop(state, phase, config);
       continue;
     }
     if (!clean) {
@@ -2044,6 +2081,8 @@ export const __test__ = {
   parseStartArgs,
   loadFlowConfig,
   resolvePhase,
+  resolveFixPhase,
+  resolveIssueAuditSettings,
   phaseIndex,
   displayedPhase,
   prepareGit,

@@ -392,69 +392,44 @@ describe("opsx-flow web UI", () => {
   });
 });
 
-describe("opsx-flow issue-audit config", () => {
-  it("resolves issueAudit from the top-level block with DEFAULT_MODEL fallbacks", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-audit-cfg-"));
-    try {
-      const project = path.join(root, "project");
-      const proposal = path.join(project, "openspec", "changes", "demo");
-      await mkdir(proposal, { recursive: true });
-      await writeFile(path.join(proposal, "proposal.md"), "# Demo\n");
-      await writeFile(path.join(proposal, "tasks.md"), "- [ ] one\n");
-      const configFile = path.join(root, "flow.jsonc");
-      await writeFile(configFile, JSON.stringify({
-        projectDir: project,
-        proposal: "demo",
-        baseBranch: "main",
-        issueAudit: { agent: "levi", provider: "openai", model: "gpt-5.6-sol", variant: "medium" },
-      }));
-      const config = await __test__.loadFlowConfig(configFile);
-      expect(config.issueAudit).toEqual({ agent: "levi", provider: "openai", model: "gpt-5.6-sol", variant: "medium" });
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
+describe("opsx-flow substep config", () => {
+  async function writeSubstepConfig(root: string, phases: Record<string, unknown>, extra: Record<string, unknown> = {}): Promise<string> {
+    const project = path.join(root, "project");
+    const proposal = path.join(project, "openspec", "changes", "demo");
+    await mkdir(proposal, { recursive: true });
+    await writeFile(path.join(proposal, "proposal.md"), "# Demo\n");
+    await writeFile(path.join(proposal, "tasks.md"), "- [ ] one\n");
+    const configFile = path.join(root, "flow.jsonc");
+    await writeFile(configFile, JSON.stringify({ projectDir: project, proposal: "demo", baseBranch: "main", phases, ...extra }));
+    return configFile;
+  }
 
-  it("falls back to DEFAULT_MODEL when issueAudit is omitted", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-audit-cfg-"));
-    try {
-      const project = path.join(root, "project");
-      const proposal = path.join(project, "openspec", "changes", "demo");
-      await mkdir(proposal, { recursive: true });
-      await writeFile(path.join(proposal, "proposal.md"), "# Demo\n");
-      await writeFile(path.join(proposal, "tasks.md"), "- [ ] one\n");
-      const configFile = path.join(root, "flow.jsonc");
-      await writeFile(configFile, JSON.stringify({ projectDir: project, proposal: "demo", baseBranch: "main" }));
-      const config = await __test__.loadFlowConfig(configFile);
-      expect(config.issueAudit).toEqual(__test__.DEFAULT_MODEL);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
+  function phaseById(id: string) {
+    return PHASES.find((candidate) => candidate.id === id)!;
+  }
 
-  it("accepts phases[issue-audit] override and lets it win over the top-level block", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-audit-cfg-"));
+  it("resolves issue-audit settings per-phase over the global substep block", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-substep-cfg-"));
     try {
-      const project = path.join(root, "project");
-      const proposal = path.join(project, "openspec", "changes", "demo");
-      await mkdir(proposal, { recursive: true });
-      await writeFile(path.join(proposal, "proposal.md"), "# Demo\n");
-      await writeFile(path.join(proposal, "tasks.md"), "- [ ] one\n");
-      const configFile = path.join(root, "flow.jsonc");
-      await writeFile(configFile, JSON.stringify({
-        projectDir: project,
-        proposal: "demo",
-        baseBranch: "main",
-        issueAudit: { provider: "openai", model: "gpt-5.6-sol" },
-        phases: { "issue-audit": { model: "gpt-5.6-luna", variant: "max" } },
-      }));
+      const configFile = await writeSubstepConfig(root, {
+        "issue-audit": { provider: "openai", model: "gpt-5.6-sol" },
+        "code-review.issue-audit": { model: "gpt-5.6-luna", variant: "max" },
+      });
       const config = await __test__.loadFlowConfig(configFile);
-      // Phase-level override takes precedence over the top-level block; fields
-      // not overridden by the phase block fall through to the top-level block.
-      expect(config.issueAudit).toEqual({
+      const cr = __test__.resolvePhase(config, phaseById("code-review"));
+      // Per-phase override wins field-by-field; unset fields fall through to
+      // the global block, then DEFAULT_MODEL.
+      expect(__test__.resolveIssueAuditSettings(config, cr)).toEqual({
         agent: "levi",
         provider: "openai",
         model: "gpt-5.6-luna",
+        variant: "max",
+      });
+      const test = __test__.resolvePhase(config, phaseById("test"));
+      expect(__test__.resolveIssueAuditSettings(config, test)).toEqual({
+        agent: "levi",
+        provider: "openai",
+        model: "gpt-5.6-sol",
         variant: "max",
       });
     } finally {
@@ -462,21 +437,89 @@ describe("opsx-flow issue-audit config", () => {
     }
   });
 
-  it("rejects an unknown phase override that is not issue-audit", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-audit-cfg-"));
+  it("resolves fix settings per-phase over global fix over the phase model, and decouples caps", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-substep-fix-"));
     try {
-      const project = path.join(root, "project");
-      const proposal = path.join(project, "openspec", "changes", "demo");
-      await mkdir(proposal, { recursive: true });
-      await writeFile(path.join(proposal, "proposal.md"), "# Demo\n");
-      await writeFile(path.join(proposal, "tasks.md"), "- [ ] one\n");
-      const configFile = path.join(root, "flow.jsonc");
-      await writeFile(configFile, JSON.stringify({
-        projectDir: project,
-        proposal: "demo",
-        baseBranch: "main",
-        phases: { "not-a-real-phase": { model: "x" } },
-      }));
+      const configFile = await writeSubstepConfig(root, {
+        "code-review": { provider: "openai", model: "gpt-5.6-sol", variant: "xhigh", cap: 15 },
+        "code-review.fix": { provider: "deepseek", model: "deepseek-v4-flash", variant: "max", cap: 10 },
+      });
+      const config = await __test__.loadFlowConfig(configFile);
+      const cr = __test__.resolvePhase(config, phaseById("code-review"));
+      expect(cr.cap).toBe(15);
+      const crFix = __test__.resolveFixPhase(config, cr);
+      expect(crFix.model).toBe("deepseek-v4-flash");
+      expect(crFix.provider).toBe("deepseek");
+      expect(crFix.variant).toBe("max");
+      expect(crFix.cap).toBe(10);
+
+      // No per-phase fix block: fields inherit from the phase itself and the
+      // fix loop keeps the phase cap (pre-substep behavior).
+      const test = __test__.resolvePhase(config, phaseById("test"));
+      const testFix = __test__.resolveFixPhase(config, test);
+      expect(testFix.model).toBe(__test__.DEFAULT_MODEL.model);
+      expect(testFix.variant).toBe(__test__.DEFAULT_MODEL.variant);
+      expect(testFix.cap).toBe(test.cap);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("lets a global fix block override phase settings for phases without a specific fix block", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-substep-globalfix-"));
+    try {
+      const configFile = await writeSubstepConfig(root, {
+        "code-review": { provider: "openai", model: "gpt-5.6-sol", variant: "xhigh", cap: 15 },
+        fix: { model: "deepseek-v4-flash", cap: 6 },
+      });
+      const config = await __test__.loadFlowConfig(configFile);
+      const cr = __test__.resolvePhase(config, phaseById("code-review"));
+      const crFix = __test__.resolveFixPhase(config, cr);
+      expect(crFix.model).toBe("deepseek-v4-flash");
+      // Unset global fields keep the phase's provider/variant.
+      expect(crFix.provider).toBe("openai");
+      expect(crFix.variant).toBe("xhigh");
+      expect(crFix.cap).toBe(6);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects the removed top-level issueAudit block", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-substep-reject-"));
+    try {
+      const configFile = await writeSubstepConfig(root, {}, {
+        issueAudit: { provider: "openai", model: "gpt-5.6-sol" },
+      });
+      await expect(__test__.loadFlowConfig(configFile)).rejects.toThrow("unknown config property: issueAudit");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects substep overrides on non-finding phases, unknown substeps, and issue-audit caps", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-substep-reject-"));
+    try {
+      const applyFix = await writeSubstepConfig(root, { "apply.fix": { model: "x" } });
+      await expect(__test__.loadFlowConfig(applyFix)).rejects.toThrow("unknown phase override: apply.fix");
+
+      const bogusSub = await writeSubstepConfig(root, { "test.bogus": { model: "x" } });
+      await expect(__test__.loadFlowConfig(bogusSub)).rejects.toThrow("unknown phase override: test.bogus");
+
+      const auditCap = await writeSubstepConfig(root, { "issue-audit": { cap: 2 } });
+      await expect(__test__.loadFlowConfig(auditCap)).rejects.toThrow("unknown phases.issue-audit property: cap");
+
+      const phaseAuditCap = await writeSubstepConfig(root, { "test.issue-audit": { cap: 2 } });
+      await expect(__test__.loadFlowConfig(phaseAuditCap)).rejects.toThrow("unknown phases.test.issue-audit property: cap");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an unknown phase override that is not a substep", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "opsx-flow-substep-reject-"));
+    try {
+      const configFile = await writeSubstepConfig(root, { "not-a-real-phase": { model: "x" } });
       await expect(__test__.loadFlowConfig(configFile)).rejects.toThrow("unknown phase override: not-a-real-phase");
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -560,12 +603,12 @@ describe("opsx-flow step recording", () => {
       const phase = phaseFor("test");
 
       // No issue.md at all: audit must return without pushing a step.
-      await __test__.runIssueAudit(state, phase, { issueAudit: __test__.DEFAULT_MODEL } as never);
+      await __test__.runIssueAudit(state, phase, { phases: {} } as never);
       expect(state.steps).toHaveLength(0);
 
       // Clean issue.md (zero unchecked) must also skip the audit.
       await writeFile(path.join(proposal, "issue.md"), "- [x] already resolved\n");
-      await __test__.runIssueAudit(state, phase, { issueAudit: __test__.DEFAULT_MODEL } as never);
+      await __test__.runIssueAudit(state, phase, { phases: {} } as never);
       expect(state.steps).toHaveLength(0);
     } finally {
       await rm(root, { recursive: true, force: true });
