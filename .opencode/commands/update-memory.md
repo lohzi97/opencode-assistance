@@ -1,73 +1,77 @@
 ---
-description: Review pending memory candidates, prepare a promotion plan, and apply approved updates
+description: Review pending memory candidates, triage them with the Master, and apply approved updates
 agent: sebastian
 subtask: false
 model: deepseek/deepseek-v4-flash
 ---
 
-Review all pending memory candidates, build a grouped promotion plan, and apply approved updates only after explicit confirmation in this conversation.
+Review all pending memory candidates, let the Master decide which to promote, drop, or ignore, then build a promotion proposal for the promoted entries and apply it only after explicit approval in this conversation.
 
 ## Goal
 
 - Process candidate files from `memory/candidates/` and `memory/private-candidates/`.
-- Present a grouped plan, rationale, confidence, note-routing, and patch-style diff before any write.
+- Triage every entry with the Master (promote / drop / ignore) before any deep analysis.
+- Build a grouped proposal (plan, rationale, confidence, note-routing, patch-style diff) for promoted entries only.
 - Apply changes only after explicit approval.
-- Delete fully processed candidate files after successful application.
+- Delete fully processed candidate files; retain only ignored entries.
 
 ## Inputs
 
 - No argument is required.
 - If `$ARGUMENTS` is present, treat it as a narrow filter for candidate filenames or target files.
 
-## Load Inputs
+## Phase 1: Load And Light Pre-Scan
 
 1. Read all files under `memory/candidates/` and `memory/private-candidates/`, excluding `.gitkeep`.
-2. Read `memory/canonical/master.md`.
-3. Read `memory/canonical/working-preferences.md`.
-4. Read `memory/canonical/environment.md`.
-5. Read `memory/canonical/projects.md`.
-6. Read `memory/private/private.md` if it exists.
-7. Read any note files directly referenced by candidate `note-path-suggestion` values if those files already exist.
+2. Read `memory/canonical/master.md`, `memory/canonical/working-preferences.md`, `memory/canonical/environment.md`, `memory/canonical/projects.md`, and `memory/private/private.md` if it exists.
+3. Do NOT deep-read referenced notes yet; that happens in Phase 3 for promoted entries only.
 
-## Normalize And Classify
-
-For each candidate entry:
+For each candidate entry, prepare the triage record:
 
 1. Parse the normalized fields.
 2. Determine whether the entry is explicit or inferred.
-3. Determine whether it should be treated as add, refine, remove, ignore, or note-routing.
-4. Determine whether project scoping applies.
-5. Determine whether the final destination is:
-   - `memory/canonical/master.md`
-   - `memory/canonical/working-preferences.md`
-   - `memory/canonical/environment.md`
-   - `memory/canonical/projects.md`
-   - `memory/private/private.md`
-   - a note under `notes/`
-6. Assign a confidence label in the review output only: `high`, `medium`, or `low`.
+3. Determine the suggested destination (a canonical file or a note under `notes/`) and whether project scoping applies.
+4. Flag red flags from the light pre-scan only:
+   - conflict with existing memory,
+   - ambiguity that needs clarification,
+   - size pressure (adding would push a canonical/private file over the 5000-byte cap, likely triggering reorganization).
+5. Assign a provisional confidence label (`high`, `medium`, `low`) for display in the triage table.
+
+## Phase 2: Triage With The Master
+
+Present a compact table, one row per entry: id, distilled statement, suggested destination, and red flags. Keep rows tight; do not paste candidate prose.
+
+Then ask with the `question` tool in a single call (one question per entry):
+
+- Promote: include in the proposal phase.
+- Drop: discard the entry permanently; it is not worth remembering.
+- Ignore: keep the candidate pending for a later review round.
+
+For entries flagged as conflicting or ambiguous, include a "Discuss" option; after triage, batch the clarifications with the `question` tool and fold the answers into the proposal.
+
+## Phase 3: Proposal For Promoted Entries Only
+
+Deep-read the canonical layer and the note files directly referenced by promoted entries, plus any notes needed for size-pressure reorganization. Do not mine journals or notes beyond those.
+
+Present, before any write:
+
+1. A grouped plan by target file.
+2. Proposed add, refine, remove, and note-routing decisions.
+3. Normalized distilled statements.
+4. Provenance.
+5. Confidence assessment.
+6. Note-routing decisions.
+7. A patch-style diff for each target file, including the byte budget (current size, projected size) so the 5000-byte cap is visible.
+8. Any clarification items.
+
+If clarification is needed, ask it with the `question` tool and then continue the review in the same conversation with the answers applied.
 
 ## Review Rules
 
 - Candidates are pending artifacts, not runtime truth.
 - Prefer distilled statements, not copied prose.
 - Keep project-specific operating rules out of canonical memory and route them to `notes/projects/<slug>.md`.
-- If a candidate conflicts with existing memory or is ambiguous, batch the clarifications and ask with the `question` tool before proposing promotion.
-- Do not mine journals or notes automatically in v1 beyond directly referenced note paths already named in candidates.
-
-## Present Review Output
-
-Before any write, show the Master:
-
-1. A grouped plan by target file.
-2. Proposed add, refine, remove, and ignore decisions.
-3. Normalized statements.
-4. Provenance.
-5. Confidence assessment.
-6. Note-routing decisions.
-7. A patch-style diff for each target file.
-8. Any clarification items.
-
-If clarification is needed, ask it with the `question` tool and then continue the review in the same conversation with the answers applied.
+- If a promoted candidate conflicts with existing memory or is ambiguous, batch the clarifications and ask with the `question` tool before proposing promotion.
 
 ## Approval Gate
 
@@ -106,10 +110,9 @@ On approval:
 
 1. Update the relevant canonical and private memory files.
 2. Create or update notes only when deeper detail is useful.
-3. Keep memory files concise and within validator rules.
+3. Keep memory files concise and within validator rules; validate every touched canonical/private file with `bun run .opencode/scripts/validate-memory-file.ts <file>`.
 4. Leave changes uncommitted.
-5. Delete fully processed candidate files.
-6. If any candidate file contains explicitly deferred unresolved items, keep only the unresolved remainder.
+5. Delete candidate files whose entries were all promoted or dropped; rewrite files that still contain ignored entries to keep only the unresolved remainder.
 
 ## Practical Editing Guidance
 
@@ -123,6 +126,6 @@ On approval:
 
 ## Final Report
 
-- State what was approved and applied.
+- State what was triaged (promoted / dropped / ignored), what was approved and applied.
 - State which candidate files were deleted or retained.
 - Mention that canonical memory is effectively prompt-frozen for the current session and will be reliably present in a fresh session.
