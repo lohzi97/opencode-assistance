@@ -6,6 +6,7 @@ import {
   hitRate,
   parseArgs,
   parseDateArg,
+  renderJson,
   toUsageRow,
   validateDateArg,
 } from "./usage-report";
@@ -107,5 +108,43 @@ describe("usage-report aggregation helpers", () => {
     expect(row.total).toBe(3703085);
     expect(row.cacheWrite).toBe(0);
     expect(row.hitRate).toBeCloseTo(0.859, 3);
+  });
+});
+
+describe("usage-report JSON summary shape", () => {
+  test("jsonSummary emits snake_case with hit-rate fraction and display", () => {
+    const summary = {
+      sessions: 1,
+      messages: 41,
+      cacheHit: 3163392,
+      cacheMiss: 518787,
+      output: 9619,
+      reasoning: 11287,
+      cacheWrite: 0,
+      cost: 0.167,
+      total: 3703085,
+      hitRate: 0.8591,
+    };
+    const json = JSON.parse(
+      renderJson({
+        meta: {
+          db: "/x",
+          generatedAt: "2026-08-25T10:00:00+08:00",
+          window: { from: null, to: null },
+          project: null,
+          session: null,
+          group: "by-provider",
+          sort: "tokens",
+          skippedMessages: 0,
+        },
+        rows: [],
+        summary,
+      }),
+    );
+    expect(json.summary.cache_hit).toBe(3163392);
+    expect(json.summary.cache_hit_rate).toBeCloseTo(0.8591, 3);
+    expect(json.summary.cache_hit_rate_display).toBe("85.9%");
+    expect(json.meta.generated_at).toBe("2026-08-25T10:00:00+08:00");
+    expect(json.meta.skipped_messages).toBe(0);
   });
 });

@@ -382,19 +382,15 @@ function computeWindow(args: Args, db: Database): Window {
   }
   if (toMs === null) toMs = nowMs;
 
-  const label =
-    args.from && args.to
-      ? `${formatDateMs(fromMs)} to ${formatDateMs(toMs)}`
-      : args.from
-        ? `since ${formatDateMs(fromMs)}`
-        : `until ${formatDateMs(toMs)}`;
+  const label = [args.from && `from ${args.from}`, args.to && `to ${args.to}`].filter(Boolean).join(" ");
+  const displayLabel = label || "all time";
 
   return {
     fromMs,
     toMs,
     fromISO: toISO(new Date(fromMs)),
     toISO: toISO(new Date(toMs)),
-    label,
+    label: displayLabel,
   };
 }
 
@@ -939,8 +935,42 @@ function renderCsv(report: Report): string {
   return lines.join("\n");
 }
 
-function renderJson(report: Report): string {
-  return JSON.stringify(report, null, 2);
+export function renderJson(report: Report): string {
+  const group = report.meta.group === "session" ? "by-model" : (report.meta.group as Group);
+  const rows = report.rows.map((r) => jsonRow(r, group));
+  const json = {
+    meta: {
+      db: report.meta.db,
+      generated_at: report.meta.generatedAt,
+      window: report.meta.window,
+      project: report.meta.project,
+      session: report.meta.session,
+      group: report.meta.group,
+      sort: report.meta.sort,
+      timezone: report.meta.timezone,
+      skipped_messages: report.meta.skippedMessages,
+      session_info: report.meta.sessionInfo,
+    },
+    rows,
+    summary: jsonSummary(report.summary),
+  };
+  return JSON.stringify(json, null, 2);
+}
+
+function jsonSummary(s: Summary): Record<string, unknown> {
+  return {
+    sessions: s.sessions,
+    messages: s.messages,
+    cache_hit: s.cacheHit,
+    cache_miss: s.cacheMiss,
+    output: s.output,
+    reasoning: s.reasoning,
+    cache_write: s.cacheWrite,
+    cost: s.cost,
+    total: s.total,
+    cache_hit_rate: s.hitRate,
+    cache_hit_rate_display: formatHitRate(s.hitRate),
+  };
 }
 
 function jsonRow(r: UsageRow, group: Group): Record<string, unknown> {
@@ -1054,9 +1084,7 @@ async function main() {
 
     let output = "";
     if (args.format === "json") {
-      const rows = report.rows.map((r) => jsonRow(r, meta.group === "session" ? "by-model" : (meta.group as Group)));
-      const json = { meta: report.meta, rows, summary: report.summary };
-      output = JSON.stringify(json, null, 2);
+      output = renderJson(report);
     } else if (args.format === "csv") {
       output = renderCsv(report);
     } else {
