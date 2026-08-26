@@ -13,7 +13,7 @@ Use this skill for anything related to the Master's finances: recording spending
 
 - Always run `./bin/validate` from `~/finance/` before committing ledger changes.
 - Never commit a ledger with errors.
-- All currency is MYR.
+- Primary operating currency is MYR; some accounts (e.g., Wise, IBKR) hold USD.
 - Double-entry must balance: every transaction needs at least two postings that sum to zero.
 - Personal accounts go in `ledgers/personal/`, freelance accounts go in `ledgers/freelance/`. Use `config/accounts.yaml` to look up an account's scope.
 - Opening balances and cross-scope transactions live in `ledgers/opening_balances.beancount` (included only by `combined.beancount`).
@@ -56,6 +56,7 @@ Use this skill for anything related to the Master's finances: recording spending
 - `Assets:Bank:PublicBank:PlusSavings` (6353774926) - main account, salary, daily use
 - `Assets:Bank:PublicBank:ShariahSavings` (4915764821) - home loan auto-deduction
 - `Assets:Bank:PublicBank:FixedDeposit` - PB fixed deposits (single account, multiple placements)
+- `Assets:Bank:Wise` - Wise multi-currency account (USD) for international payments
 - `Assets:Investment:VersaCash` - Versa money market fund, split into virtual envelopes (sub-accounts):
   - `VersaCash:Emergency`, `VersaCash:TradingCapital`, `VersaCash:GlenCourt:RoomADeposit`, `VersaCash:GlenCourt:RoomBDeposit`, `VersaCash:GlenCourt:Maintenance`, `VersaCash:AstrumRenovation`, `VersaCash:Spectacles`, `VersaCash:Dental`, `VersaCash:BodyCheckup`, `VersaCash:SkinHairCare`, `VersaCash:Pet`, `VersaCash:CarMaintenance`, `VersaCash:DigitalProduct`, `VersaCash:Entertainment`, `VersaCash:Unallocated` (catch-all for yield drift and free-form reserve)
 - `Assets:Investment:KDISave` - Kenanga KDI money market fund (designated as freelance tax provision reserve)
@@ -193,7 +194,7 @@ ledgers/documents/
 - **Cost basis lots:** `Assets:Investment:IBKR  10 AAPL {150.00 MYR}` tracks 10 shares bought at RM150 each. Used for unrealized gain/loss tracking.
 - **Price directives:** `2026-06-13 price AAPL 180.00 MYR` records market price for valuation.
 - **Balance assertions:** `2026-06-13 balance Assets:Wallet 30.20 MYR` verifies the balance matches. Use after reconciling.
-- **Multi-currency:** Ledger operates in MYR. IBKR positions are in USD with cost basis lots. Fava shows separate MYR/USD sections. Report script has a known limitation with commodity accounts (shows lot counts, not values) — use Fava for accurate investment valuations.
+- **Multi-currency:** Ledger operates in MYR as primary currency. Some accounts hold USD (e.g., `Assets:Bank:Wise`, `Assets:Investment:IBKR:*`). Record multi-currency transactions using `@` syntax for conversion rates. Fava shows separate MYR/USD sections. Report script has a known limitation with commodity accounts (shows lot counts, not values) — use Fava for accurate investment valuations.
 - **Investment lots tracked:** DBB, IAUM, ICOP, LIT, SIVR, COIN, PYPL (USD). ALSREIT, AXREIT, MAHSING, SENTRAL, SUNREIT, TENAGA (MYR).
 - **Price updates:** Record price directives when making new purchases, plus a monthly batch update (no daily/weekly cadence needed).
 - **Monthly revaluation:** At month-end, reconcile aggregate accounts to current market value and book the delta:
