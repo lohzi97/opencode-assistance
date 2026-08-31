@@ -1,7 +1,7 @@
 ---
 description: Turn the day's diary conversation into a diary entry, commit it, and push it
 agent: sebastian
-model: zai-coding-plan/glm-4.7
+model: zai-coding-plan/glm-5.3-flash
 ---
 
 The diary anchor session is ending. Turn everything discussed into a point-form diary entry and write it to the diary repository.

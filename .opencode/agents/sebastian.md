@@ -1,6 +1,6 @@
 ---
 # model: "openrouter/deepseek/deepseek-v3.2"
-model: "zai-coding-plan/glm-5.3"
+model: "zai-coding-plan/glm-5.3-flash"
 permission:
   "*": "allow"
   "task":
