@@ -8,9 +8,10 @@
 #   - telegram-ping: telegram bot token + chat id 
 
 # Setup to run this opencode assistance in ubuntu
-# 1. Intall bun 
-#    - required to install opencode and file-check plugin
-# 2. Install opencode with `bun add -g opencode-ai`
+# 1. Install opencode with the official installer
+#    - curl -fsSL https://opencode.ai/install | bash  (installs to ~/.opencode/bin)
+# 2. Install bun
+#    - required for qmd, agent-tui and openchamber (bun global packages)
 # 3. Grant opencode root level permission so that it can access the whole machine
 # 4. Install uv / uvx
 #    - required for computer-control mcp and forked Python MCP dependencies
@@ -42,7 +43,7 @@
 set -euo pipefail
 
 # Idempotent installer for Linux Mint / Ubuntu / WSL2 (apt-based) and macOS (Homebrew)
-# - Installs bun, opencode (global), qmd (global), uv/uvx, nvm + Node LTS, Google Chrome, Docker engine
+# - Installs opencode (official installer), bun, qmd (global), uv/uvx, nvm + Node LTS, Google Chrome, Docker engine
 # - Installs rclone and sqlite3 for Google Drive backups
 # - Creates sudoers entry to allow running opencode with NOPASSWD (Linux only)
 # Usage:
@@ -249,19 +250,14 @@ install_bun() {
 }
 
 install_opencode() {
-  if user_has_command opencode; then
-    INFO "opencode already installed at $(user_command_path opencode)"
-    return
-  fi
-  if ! user_has_command bun && [ ! -x "${HOME_DIR}/.bun/bin/bun" ]; then
-    ERR "bun is required to install opencode. Run the script again after bun is installed."
-  fi
-  INFO "Installing opencode (global) with bun"
-  run_as_user env HOME="$HOME_DIR" PATH="${HOME_DIR}/.bun/bin:${PATH}" bash -lc 'bun add -g opencode-ai'
+  INFO "Installing opencode via official installer (installs to \${HOME}/.opencode/bin)"
+  # The installer is idempotent: it exits early when the latest version is
+  # already present and upgrades in place when an older one is found.
+  run_as_user env HOME="$HOME_DIR" bash -lc 'curl -fsSL https://opencode.ai/install | bash'
   if user_has_command opencode; then
     INFO "opencode installed at $(user_command_path opencode)"
   else
-    WARN "opencode installation finished but binary not found in PATH. It may be at ${HOME_DIR}/.bun/bin/opencode"
+    WARN "opencode installation finished but binary not found in PATH. It may be at ${HOME_DIR}/.opencode/bin/opencode"
   fi
 }
 
@@ -349,9 +345,27 @@ install_uv() {
 
 setup_sudoers_for_opencode() {
   SUDOERS_FILE="/etc/sudoers.d/opencode-assistant"
-  if [ -f "$SUDOERS_FILE" ]; then
-    INFO "Sudoers file $SUDOERS_FILE already exists, skipping"
+
+  OPENCODE_PATH="$(user_command_path opencode)"
+  if [ -z "$OPENCODE_PATH" ]; then
+    OPENCODE_PATH="${HOME_DIR}/.opencode/bin/opencode"
+  fi
+  if [ ! -x "$OPENCODE_PATH" ]; then
+    WARN "opencode binary not found at '$OPENCODE_PATH'; skipping sudoers creation."
     return
+  fi
+
+  # Regenerate the drop-in when it points at a missing or moved binary
+  # (eg. after migrating from the bun global install to the official installer).
+  if [ -f "$SUDOERS_FILE" ]; then
+    CURRENT_OPENCODE_PATH="$(sudo awk '{print $NF}' "$SUDOERS_FILE" 2>/dev/null | head -n 1 || true)"
+    if [ "$CURRENT_OPENCODE_PATH" = "$OPENCODE_PATH" ]; then
+      INFO "Sudoers file $SUDOERS_FILE already up to date, skipping"
+      return
+    fi
+    INFO "Sudoers entry points at '${CURRENT_OPENCODE_PATH:-<unreadable>}'; rewriting with '$OPENCODE_PATH'"
+  else
+    INFO "Creating sudoers file to allow '$USER_NAME' to run opencode without a password"
   fi
 
   # macOS does not always include /etc/sudoers.d/ in /etc/sudoers by default.
@@ -364,15 +378,6 @@ setup_sudoers_for_opencode() {
     fi
   fi
 
-  OPENCODE_PATH="$(user_command_path opencode)"
-  if [ -z "$OPENCODE_PATH" ]; then
-    OPENCODE_PATH="${HOME_DIR}/.bun/bin/opencode"
-  fi
-  if [ ! -x "$OPENCODE_PATH" ]; then
-    WARN "opencode binary not found at '$OPENCODE_PATH'; skipping sudoers creation."
-    return
-  fi
-  INFO "Creating sudoers file to allow '$USER_NAME' to run opencode without a password"
   echo "$USER_NAME ALL=(ALL) NOPASSWD: $OPENCODE_PATH" | sudo tee "$SUDOERS_FILE" >/dev/null
   sudo chmod 0440 "$SUDOERS_FILE"
   INFO "Created $SUDOERS_FILE"

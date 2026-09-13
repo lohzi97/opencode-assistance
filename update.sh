@@ -4,8 +4,8 @@
 #
 # install.sh creates the environment; update.sh refreshes it:
 #   - system packages (apt/brew upgrade, incl. Docker, Chrome, tmux)
-#   - self-updating tools (bun, uv, Node LTS via nvm, Antigravity CLI)
-#   - bun global packages (opencode-ai, agent-tui, @openchamber/web)
+#   - self-updating tools (bun, uv, Node LTS via nvm, Antigravity CLI, opencode)
+#   - bun global packages (agent-tui, @openchamber/web)
 #   - git-cloned repos (MCP servers, camofox-browser, qmd fork)
 #
 # Usage:
@@ -73,7 +73,7 @@ if [ "$(id -u)" -eq 0 ]; then
 fi
 
 HOME_DIR="${HOME:?Cannot determine HOME directory}"
-export PATH="${HOME_DIR}/.bun/bin:${HOME_DIR}/.local/bin:${PATH}"
+export PATH="${HOME_DIR}/.opencode/bin:${HOME_DIR}/.bun/bin:${HOME_DIR}/.local/bin:${PATH}"
 
 # Make nvm-managed node/npm visible to non-login shells.
 NVM_DIR="${HOME_DIR}/.nvm"
@@ -92,7 +92,7 @@ ensure_sudo() {
 # Component registry
 # ---------------------------------------------------------------------------
 
-GLOBAL_PKGS=(opencode-ai agent-tui)
+GLOBAL_PKGS=(agent-tui)
 OPENCHAMBER_PKG="@openchamber/web"
 
 REPO_NAMES=(qmd computer-control-mcp vision-mcp google-workspace-mcp camofox-browser imap-mcp-server)
@@ -161,6 +161,13 @@ bun_latest() {
 uv_latest() {
   curl -fsS --max-time 10 https://pypi.org/pypi/uv/json 2>/dev/null \
     | grep -o '"version":"[^"]*"' | head -n 1 | sed 's/"version":"//; s/"//' \
+    || echo "?"
+}
+
+# Best-effort latest version for opencode from GitHub releases ("?" on failure).
+opencode_latest() {
+  curl -fsS --max-time 10 https://api.github.com/repos/anomalyco/opencode/releases/latest 2>/dev/null \
+    | grep -o '"tag_name": *"[^"]*"' | head -n 1 | sed 's/.*"tag_name": *"//; s/"$//; s/^v//' \
     || echo "?"
 }
 
@@ -251,6 +258,19 @@ print_status() {
   fi
   printf '  %-22s %-16s (nvm install --lts on update)\n' "node" "$(node --version 2>/dev/null || echo '?')"
   printf '  %-22s %-16s (agy update on update)\n' "agy" "$(agy --version 2>/dev/null || echo '?')"
+  cur="$(opencode --version 2>/dev/null || echo '?')"
+  latest="$(opencode_latest)"
+  if [ "$latest" != "?" ] && [ "$cur" != "$latest" ]; then
+    printf '  %-22s %-16s -> %-14s [UPDATE via official installer]\n' "opencode" "$cur" "$latest"
+    mark_update
+  else
+    printf '  %-22s %-16s\n' "opencode" "$cur"
+  fi
+  if command -v bun >/dev/null 2>&1 && [ -x "${HOME_DIR}/.opencode/bin/opencode" ] \
+     && bun pm ls -g 2>/dev/null | grep -Fq 'opencode-ai@'; then
+    printf '  %-22s %-16s\n' "legacy opencode-ai" "bun global (update removes it)"
+    mark_update
+  fi
 
   printf '\nSystem packages (apt, cached indexes - refresh happens on update)\n'
   for pkg_ver in "${APT_PKGS[@]}"; do
@@ -341,6 +361,22 @@ update_system() {
   sudo apt-get upgrade -y || record_failure "apt-get upgrade"
 }
 
+# Drop the legacy bun-managed opencode once the official installer's binary
+# exists, so the stale copy cannot shadow or confuse tooling. Skipped when the
+# installer placed no binary (eg. the bun copy already matches latest).
+remove_legacy_bun_opencode() {
+  [ -x "${HOME_DIR}/.opencode/bin/opencode" ] || return 0
+  command -v bun >/dev/null 2>&1 || return 0
+  bun pm ls -g 2>/dev/null | grep -Fq 'opencode-ai@' || return 0
+  INFO "Removing legacy bun global opencode-ai (superseded by official installer)"
+  bun remove -g opencode-ai || record_failure "bun remove -g opencode-ai"
+  local sudoers_entry
+  sudoers_entry="$(sudo -n awk '{print $NF}' /etc/sudoers.d/opencode-assistant 2>/dev/null | head -n 1 || true)"
+  if [ -n "$sudoers_entry" ] && [[ "$sudoers_entry" == *".bun/bin/opencode" ]]; then
+    WARN "Sudoers entry points at stale '$sudoers_entry'; rerun ./install.sh or update it manually"
+  fi
+}
+
 update_tools() {
   INFO "Upgrading bun"
   bun upgrade || record_failure "bun upgrade"
@@ -354,6 +390,9 @@ update_tools() {
   ') || record_failure "nvm node LTS"
   INFO "Upgrading Antigravity CLI"
   agy update || record_failure "agy update"
+  INFO "Updating opencode via official installer"
+  curl -fsSL https://opencode.ai/install | bash || record_failure "opencode installer"
+  remove_legacy_bun_opencode
 }
 
 update_globals() {
