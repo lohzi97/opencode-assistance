@@ -424,7 +424,7 @@ VOYAGE_RERANK_MODEL=rerank-2.5-lite
 
 # Query Expansion: DeepSeek
 QMD_GENERATE_PROVIDER=deepseek
-DEEPSEEK_GENERATE_MODEL=deepseek-v4-flash
+DEEPSEEK_GENERATE_MODEL=deepseek-flash
 ENVEOF
 
   echo "DEEPSEEK_API_KEY=$deepseek_api_key" >> "$qmd_env"

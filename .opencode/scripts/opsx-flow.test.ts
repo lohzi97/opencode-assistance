@@ -442,13 +442,13 @@ describe("opsx-flow substep config", () => {
     try {
       const configFile = await writeSubstepConfig(root, {
         "code-review": { provider: "openai", model: "gpt-5.6-sol", variant: "xhigh", cap: 15 },
-        "code-review.fix": { provider: "deepseek", model: "deepseek-v4-flash", variant: "max", cap: 10 },
+        "code-review.fix": { provider: "deepseek", model: "deepseek-flash", variant: "max", cap: 10 },
       });
       const config = await __test__.loadFlowConfig(configFile);
       const cr = __test__.resolvePhase(config, phaseById("code-review"));
       expect(cr.cap).toBe(15);
       const crFix = __test__.resolveFixPhase(config, cr);
-      expect(crFix.model).toBe("deepseek-v4-flash");
+      expect(crFix.model).toBe("deepseek-flash");
       expect(crFix.provider).toBe("deepseek");
       expect(crFix.variant).toBe("max");
       expect(crFix.cap).toBe(10);
@@ -470,12 +470,12 @@ describe("opsx-flow substep config", () => {
     try {
       const configFile = await writeSubstepConfig(root, {
         "code-review": { provider: "openai", model: "gpt-5.6-sol", variant: "xhigh", cap: 15 },
-        fix: { model: "deepseek-v4-flash", cap: 6 },
+        fix: { model: "deepseek-flash", cap: 6 },
       });
       const config = await __test__.loadFlowConfig(configFile);
       const cr = __test__.resolvePhase(config, phaseById("code-review"));
       const crFix = __test__.resolveFixPhase(config, cr);
-      expect(crFix.model).toBe("deepseek-v4-flash");
+      expect(crFix.model).toBe("deepseek-flash");
       // Unset global fields keep the phase's provider/variant.
       expect(crFix.provider).toBe("openai");
       expect(crFix.variant).toBe("xhigh");

@@ -1,7 +1,7 @@
 ---
 description: Summarize a single session markdown file into a session-summary
 agent: sebastian
-model: deepseek/deepseek-v4-flash
+model: deepseek/deepseek-flash
 ---
 
 You are given a session file path as input. Summarize it into a structured summary file.
