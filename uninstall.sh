@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Idempotent uninstaller for components installed by install.sh
 # - Stops and removes brave-search-mcp container + image
-# - Removes opencode (official installer, ~/.opencode/bin), qmd, agent-tui (installed by bun), bun runtime, uv/uvx, nvm, Node (nvm-managed)
+# - Removes opencode, qmd, agent-tui (installed by bun), bun runtime, uv/uvx, nvm, Node (nvm-managed)
 # - Removes Google Chrome, Docker engine packages and related apt sources
 # - Removes tmux, rclone, sqlite3, and sudoers entry created for opencode
 # - Removes Antigravity CLI (agy) binary and config directories
@@ -112,7 +112,7 @@ INFO "This script will attempt to undo changes made by install.sh for user '$USE
 cat <<EOF
 Planned actions:
 - Stop & remove 'brave-search-mcp' docker container (if present) and remove its image
-- Remove opencode (~/.opencode/bin, official installer) and related sudoers file /etc/sudoers.d/opencode-assistant
+- Remove opencode (bun package) and related sudoers file /etc/sudoers.d/opencode-assistant
 - Remove qmd (npm/bun global install) and qmd cache/config data under ~/.cache/qmd and ~/.config/qmd
 - Remove qmd fork repo at ~/qmd
 - Remove computer-control-mcp fork repo at ../computer-control-mcp
@@ -160,10 +160,17 @@ else
   INFO "Docker not found; skipping brave-search-mcp removal"
 fi
 
-# 2) Remove opencode binary if it's inside $HOME_DIR (official installer location)
+# 2) Remove opencode (bun global) and opencode binary if it's inside $HOME_DIR
+if user_has_command bun || [ -x "${HOME_DIR}/.bun/bin/bun" ]; then
+  INFO "Attempting to remove opencode via bun"
+  run_as_user env HOME="$HOME_DIR" PATH="$HOME_DIR/.bun/bin:$PATH" bash -lc 'bun remove -g opencode-ai >/dev/null 2>&1 || true'
+else
+  INFO "bun not available; looking for opencode binary"
+fi
+
 OPENCODE_BIN="$(user_command_path opencode)"
-if [ -z "$OPENCODE_BIN" ] && [ -x "${HOME_DIR}/.opencode/bin/opencode" ]; then
-  OPENCODE_BIN="${HOME_DIR}/.opencode/bin/opencode"
+if [ -z "$OPENCODE_BIN" ] && [ -x "${HOME_DIR}/.bun/bin/opencode" ]; then
+  OPENCODE_BIN="${HOME_DIR}/.bun/bin/opencode"
 fi
 if [ -n "$OPENCODE_BIN" ]; then
   if echo "$OPENCODE_BIN" | grep -q "$HOME_DIR"; then
@@ -175,29 +182,6 @@ if [ -n "$OPENCODE_BIN" ]; then
   fi
 else
   INFO "No opencode binary found in PATH"
-fi
-
-# Remove the installer directory if it is now empty. Keep the rest of
-# ~/.opencode, which holds user-installed global plugins/packages.
-if [ -d "${HOME_DIR}/.opencode/bin" ]; then
-  if rmdir "${HOME_DIR}/.opencode/bin" 2>/dev/null; then
-    INFO "Removed empty directory ${HOME_DIR}/.opencode/bin"
-  else
-    INFO "${HOME_DIR}/.opencode/bin not empty; leaving it in place"
-  fi
-fi
-
-# Legacy cleanup: machines provisioned before the official-installer migration
-# may still carry a bun-managed opencode; remove it so only one binary remains.
-if user_has_command bun || [ -x "${HOME_DIR}/.bun/bin/bun" ]; then
-  if run_as_user env HOME="$HOME_DIR" PATH="${HOME_DIR}/.bun/bin:${PATH}" bash -lc 'bun pm ls -g 2>/dev/null | grep -Fq "opencode-ai@"'; then
-    INFO "Removing legacy bun global opencode-ai"
-    run_as_user env HOME="$HOME_DIR" PATH="${HOME_DIR}/.bun/bin:${PATH}" bash -lc 'bun remove -g opencode-ai >/dev/null 2>&1' || true
-  fi
-fi
-if [ -e "${HOME_DIR}/.bun/bin/opencode" ]; then
-  INFO "Removing leftover opencode launcher at ${HOME_DIR}/.bun/bin/opencode"
-  sudo rm -f "${HOME_DIR}/.bun/bin/opencode" || true
 fi
 
 # 3) Remove sudoers entry created for opencode
@@ -334,7 +318,7 @@ safe_remove_user_dir "$HOME_DIR/.nvm"
 
 # 9) Remove installer lines from common shell files (leave backups *.bak)
 SHELL_FILES=("$HOME_DIR/.profile" "$HOME_DIR/.bashrc" "$HOME_DIR/.bash_profile" "$HOME_DIR/.zshrc")
-SED_SCRIPT=( -e '/BUN_INSTALL/d' -e '/\\.bun/d' -e '/NVM_DIR/d' -e '/nvm.sh/d' -e '/nvm/d' -e '/\\.local\/bin\/env/d' -e '/\\.local\/bin\/env\.fish/d' -e '/uv\.env\.fish/d' -e '/uv generate-shell-completion/d' -e '/uvx --generate-shell-completion/d' -e '/# opencode/d' -e '/\.opencode\/bin/d' )
+SED_SCRIPT=( -e '/BUN_INSTALL/d' -e '/\\.bun/d' -e '/NVM_DIR/d' -e '/nvm.sh/d' -e '/nvm/d' -e '/\\.local\/bin\/env/d' -e '/\\.local\/bin\/env\.fish/d' -e '/uv\.env\.fish/d' -e '/uv generate-shell-completion/d' -e '/uvx --generate-shell-completion/d' )
 for f in "${SHELL_FILES[@]}"; do
   if [ -f "$f" ]; then
     INFO "Cleaning installer lines from $f (backup -> ${f}.bak)"
