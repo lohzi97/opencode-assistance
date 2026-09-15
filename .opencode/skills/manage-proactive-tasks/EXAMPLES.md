@@ -54,7 +54,7 @@ printf '%s' '{
   "agent": "sebastian",
   "model": {
     "providerID": "deepseek",
-    "modelID": "deepseek-flash"
+    "modelID": "deepseek-v4-flash"
   },
   "context": {
     "task": "hello-testing",

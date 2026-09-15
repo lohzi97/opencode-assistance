@@ -2,7 +2,7 @@
 description: Inspect a local file and capture durable memory candidates without promoting them
 agent: sebastian
 subtask: false
-model: deepseek/deepseek-flash
+model: deepseek/deepseek-v4-flash
 ---
 
 Inspect the local text file at `$ARGUMENTS` and use the `memorize` skill to stage any durable memory candidates you can responsibly extract.

@@ -68,7 +68,7 @@ export const PHASES: BasePhase[] = [
 export const DEFAULT_MODEL = {
   agent: "levi",
   provider: "deepseek",
-  model: "deepseek-flash",
+  model: "deepseek-v4-flash",
   variant: "max",
 };
 

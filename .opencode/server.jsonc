@@ -23,7 +23,7 @@
     // Temp summarization sessions reuse the normal OpenCode model stack.
     "summarizer": {
       "providerID": "deepseek",
-      "modelID": "deepseek-flash"
+      "modelID": "deepseek-v4-flash"
     },
 
     // Rename the source session into `[base] [ctx-ab12] #1` after handoff.
@@ -154,7 +154,7 @@
         "agent": "sebastian",
         "model": {
           "providerID": "deepseek",
-          "modelID": "deepseek-flash"
+          "modelID": "deepseek-v4-flash"
         },
         "priority": 5,
         "precheck": {

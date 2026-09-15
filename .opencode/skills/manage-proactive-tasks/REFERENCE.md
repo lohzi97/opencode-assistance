@@ -135,7 +135,7 @@ default agent is used.
 Overrides the model for the dispatched session:
 
 - `providerID` (required with modelID): e.g. `deepseek`, `zai-coding-plan`
-- `modelID` (required with providerID): e.g. `deepseek-flash`, `glm-5.3`
+- `modelID` (required with providerID): e.g. `deepseek-v4-flash`, `glm-5.3`
 - `variant` (optional): reasoning effort — `low`, `medium`, `high`, `max`.
   Fully supported and threaded through to the API at dispatch time.
 

@@ -2,7 +2,7 @@
 description: Review pending memory candidates, triage them with the Master, and apply approved updates
 agent: sebastian
 subtask: false
-model: deepseek/deepseek-flash
+model: deepseek/deepseek-v4-flash
 ---
 
 Review all pending memory candidates, let the Master decide which to promote, drop, or ignore, then build a promotion proposal for the promoted entries and apply it only after explicit approval in this conversation.

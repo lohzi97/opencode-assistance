@@ -49,7 +49,7 @@ The repository already contains example tasks inside `.opencode/server.jsonc`. R
   "agent": "sebastian",
   "model": {
     "providerID": "deepseek",
-    "modelID": "deepseek-flash"
+    "modelID": "deepseek-v4-flash"
   },
   "priority": 2,
   "precheck": {

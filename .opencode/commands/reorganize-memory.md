@@ -2,7 +2,7 @@
 description: Weekly structural housekeeping of approved memory: dedup, refine-merge, stale flagging with journal cross-check, and note hygiene
 agent: sebastian
 subtask: false
-model: deepseek/deepseek-flash
+model: deepseek/deepseek-v4-flash
 ---
 
 Perform weekly structural housekeeping on already-approved canonical and private memory. This command does not process candidates (that is `/update-memory`'s job) and does not handle file size (that is `/update-memory`'s job). It focuses on dedup, refine-merge, stale flagging, and note hygiene.

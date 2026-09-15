@@ -202,7 +202,7 @@ Lifecycle notes:
 ```json
 {
   "providerID": "deepseek",
-  "modelID": "deepseek-flash",
+  "modelID": "deepseek-v4-flash",
   "variant": "optional"
 }
 ```
