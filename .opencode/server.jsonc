@@ -721,6 +721,26 @@
           "silence_ok": false,
           "ttl_ms": 86400000
         }
+      },
+
+      {
+        "id": "monthly-statement-wise",
+        "name": "Monthly Statement Reminder: Wise",
+        "enabled": true,
+        "purpose": "Remind the Master to reconcile the Wise USD account against last month's statement.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "0 12 7 * *" // 7th of each month at 12:00 PM MYT
+        },
+        "mode": "isolated-session",
+        "instructions": "Send the Master a brief monthly reminder (one or two sentences, formal but light) that it is time to reconcile the Wise USD account (Assets:Bank:Wise). Tell the Master: when this month's statement is ready, run `/master-finance-align Wise` and attach the statement export (CSV/PDF/screenshot) along with the current balance. This is only a reminder — do not perform any reconciliation or ledger edits yourself. The Master knows the drill.",
+        "agent": "sebastian",
+        "priority": 3,
+        "policy": {
+          "no_overlap": true,
+          "silence_ok": false,
+          "ttl_ms": 86400000
+        }
       }
 
     ]
