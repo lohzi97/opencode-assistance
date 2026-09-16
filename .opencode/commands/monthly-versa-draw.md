@@ -34,6 +34,7 @@ The Master pre-saves into Versa Cash envelopes each month but pays daily expense
    - Pet-related costs (vet, pet food) match `Pet` ("pet care"). Note: animal-shelter donations are charity, not pet care.
    - Dental treatment matches `Dental`. Eyewear matches `Spectacles`.
 4. Exclude routine spending that only loosely relates (e.g. daily vitamins are not a "body checkup", petrol is not "car maintenance", tolls are not "car maintenance").
+5. A transaction tagged `^versa-drawn-<YYYYMM>` has definitively been drawn in a prior review — exclude it. For transactions predating the tag convention (before 2026-08), fall back to reading prior draw-down narrations in the ledger and flag any residual ambiguity as "likely already drawn".
 
 ## Step 3: Present Candidates
 
@@ -52,12 +53,19 @@ Then ask the Master which transactions to draw down. Wait for their decision.
 For each transaction the Master approves, append a draw-down entry to `~/finance/ledgers/personal/<year>.beancount`. Date the entries as **today's date** (when the review happens). Use this format:
 
 ```
-<today> * "Versa Cash draw-down - <Envelope> (<Mon>: <original transaction summary>)"
+<today> * "Versa Cash draw-down - <Envelope> (<Mon>: <original transaction summary>)" ^versa-drawn-<YYYYMM>
   Assets:Bank:PublicBank:PlusSavings              <amount> MYR
   Assets:Investment:VersaCash:<Envelope>          -<amount> MYR
 ```
 
 Replace `<Envelope>` with the full sub-account name (e.g. `CarMaintenance`, `Astrum:Maintenance`). Replace `<Mon>` with the 3-letter review-month abbreviation. Keep the original transaction summary short.
+
+Then tag both sides with `^versa-drawn-<YYYYMM>` (the **review** month, not today's month):
+
+- Append the tag to each approved **original transaction** in place. Tag-only edit — never change its date, narration, amounts, or accounts.
+- The same tag goes on the draw-down entries (shown in the format above).
+
+This makes "already drawn" definitive for future reviews: a candidate is either tagged (drawn) or untagged (available), queryable in Fava and grep.
 
 Place new entries in chronological order. If today's date already has entries, append after the last same-date entry. Add a section comment header:
 
@@ -95,6 +103,6 @@ With a **Total** row. Then give the action instruction: withdraw the total amoun
 
 - Never draw down an envelope without the Master's explicit approval for that specific transaction.
 - Never draw the `Emergency` or `Unallocated` envelopes for routine envelope-matched spending without explicit instruction — they are reserves.
-- Never touch the original expense entries — they stay correctly recorded. The draw-down is purely an inter-account transfer (envelope to PlusSavings).
+- Never modify the original expense entries' date, narration, amounts, or accounts — the only permitted edit is appending the `^versa-drawn-*` tag at draw time. The draw-down is purely an inter-account transfer (envelope to PlusSavings).
 - Never commit a ledger that fails validation.
 - Keep communication concise. The Master knows the drill.

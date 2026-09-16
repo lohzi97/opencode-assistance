@@ -741,6 +741,29 @@
           "silence_ok": false,
           "ttl_ms": 86400000
         }
+      },
+
+      // Monthly Versa envelope draw-down reminder. Fires after all statement
+      // reconciliation reminders on the 7th and only reminds the Master to run
+      // /monthly-versa-draw. The Master performs the review manually.
+      {
+        "id": "monthly-versa-draw-reminder",
+        "name": "Monthly Reminder: Versa Envelope Draw-Down",
+        "enabled": true,
+        "purpose": "Remind the Master to review last month's envelope-eligible expenses and execute the monthly Versa Cash draw-down.",
+        "trigger": {
+          "kind": "cron",
+          "expr": "30 12 7 * *" // 7th of each month at 12:30 PM MYT, after the Wise statement reminder
+        },
+        "mode": "isolated-session",
+        "instructions": "Send the Master a brief monthly reminder (one or two sentences, formal but light) that it is time to review last month's envelope-eligible expenses and top up the spent Versa Cash envelopes from Unallocated. Tell the Master: run `/monthly-versa-draw` when ready and the review will proceed step by step. This is only a reminder — do not perform any draw-down or ledger edits yourself. The Master knows the drill.",
+        "agent": "sebastian",
+        "priority": 3,
+        "policy": {
+          "no_overlap": true,
+          "silence_ok": false,
+          "ttl_ms": 86400000
+        }
       }
 
     ]
