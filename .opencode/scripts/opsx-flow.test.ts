@@ -1002,3 +1002,102 @@ describe("opsx-flow dashboard entry", () => {
     expect(result.stderr).toContain("unknown option: --bogus");
   });
 });
+
+describe("opsx-flow comment-audit phase", () => {
+  function phaseDef(id: string) {
+    const base = PHASES.find((candidate) => candidate.id === id)!;
+    return {
+      ...base,
+      agent: "levi",
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      variant: "max",
+      cap: DEFAULT_CAPS.selfHeal,
+    };
+  }
+
+  async function makeProject(prefix: string) {
+    const root = await mkdtemp(path.join(tmpdir(), prefix));
+    const project = path.join(root, "project");
+    const proposal = path.join(project, "openspec", "changes", "demo");
+    await mkdir(proposal, { recursive: true });
+    runGit(project, ["init", "-b", "main"]);
+    runGit(project, ["config", "user.email", "opsx-flow-test@example.invalid"]);
+    runGit(project, ["config", "user.name", "opsx-flow test"]);
+    await writeFile(path.join(proposal, "proposal.md"), "# Demo\n");
+    await writeFile(path.join(proposal, "tasks.md"), "- [ ] one\n");
+    await writeFile(path.join(project, "README.md"), "demo\n");
+    runGit(project, ["add", "."]);
+    runGit(project, ["commit", "-m", "initial"]);
+    return { root, project, proposal };
+  }
+
+  it("runs last, after archive, as an optional self-heal phase riding the selfHeal cap", () => {
+    expect(PHASES.map((phase) => phase.id)).toEqual([
+      "review-proposal",
+      "apply",
+      "apply-resume",
+      "test",
+      "code-review",
+      "test-regression",
+      "align",
+      "archive",
+      "comment-audit",
+    ]);
+    const phase = PHASES[PHASES.length - 1]!;
+    expect(phase.optional).toBe(true);
+    expect(phase.family).toBe("self-heal");
+    expect(phase.capKey).toBe("selfHeal");
+    expect(phase.skill).toBe("openspec-comment-audit");
+    expect(__test__.phaseIndex("comment-audit")).toBe(PHASES.length - 1);
+  });
+
+  it("clean means zero tracked changes and zero new untracked files, like apply-resume", async () => {
+    const { root, project, proposal } = await makeProject("opsx-flow-audit-clean-");
+    try {
+      const state = {
+        projectDir: project,
+        proposalName: "demo",
+        proposalDir: proposal,
+        baselineUntracked: [] as string[],
+      };
+      const phase = phaseDef("comment-audit");
+      // An edit outside the proposal directory blocks the audit phase; under
+      // proposal-artifact scoping (review-proposal) this same tree is clean.
+      await writeFile(path.join(project, "README.md"), "edited\n");
+      expect(__test__.isPhaseClean(state as never, phase)).toBe(false);
+      runGit(project, ["checkout", "--", "README.md"]);
+      expect(__test__.isPhaseClean(state as never, phase)).toBe(true);
+      // A new untracked file blocks; one captured in baselineUntracked does not.
+      await writeFile(path.join(project, "scratch.txt"), "stray\n");
+      expect(__test__.isPhaseClean(state as never, phase)).toBe(false);
+      state.baselineUntracked = ["scratch.txt"];
+      expect(__test__.isPhaseClean(state as never, phase)).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("optionalPhaseSkillMissing is true only for optional phases whose skill is not installed", async () => {
+    const { root, project } = await makeProject("opsx-flow-audit-skip-");
+    try {
+      const audit = PHASES.find((candidate) => candidate.id === "comment-audit")!;
+      const archive = PHASES.find((candidate) => candidate.id === "archive")!;
+      expect(__test__.optionalPhaseSkillMissing(project, audit)).toBe(true);
+      expect(__test__.optionalPhaseSkillMissing(project, archive)).toBe(false);
+      const skillDir = path.join(project, ".opencode", "skills", "openspec-comment-audit");
+      await mkdir(skillDir, { recursive: true });
+      await writeFile(path.join(skillDir, "SKILL.md"), "# skill\n");
+      expect(__test__.optionalPhaseSkillMissing(project, audit)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("implementerSummary keeps the self-heal summary for comment-audit", () => {
+    const phase = phaseDef("comment-audit");
+    const state = { proposalDir: "/tmp/opsx-flow-none" } as never;
+    expect(__test__.implementerSummary(state, phase, true)).toBe("clean");
+    expect(__test__.implementerSummary(state, phase, false)).toBe("edits made");
+  });
+});

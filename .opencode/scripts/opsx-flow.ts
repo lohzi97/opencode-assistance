@@ -45,6 +45,9 @@ export type PhaseDef = {
   skill: string;
   family: Family;
   capKey: CapKey;
+  // Optional phases skip silently (with a visible step) when their skill is
+  // not installed in the target project; core phases have no presence check.
+  optional?: boolean;
   agent: string;
   provider: string;
   model: string;
@@ -63,6 +66,7 @@ export const PHASES: BasePhase[] = [
   { id: "test-regression", skill: "openspec-test", family: "finding", capKey: "testFix" },
   { id: "align", skill: "openspec-align", family: "self-heal", capKey: "selfHeal" },
   { id: "archive", skill: "openspec-archive-change", family: "archive", capKey: "selfHeal" },
+  { id: "comment-audit", skill: "openspec-comment-audit", family: "self-heal", capKey: "selfHeal", optional: true },
 ];
 
 export const DEFAULT_MODEL = {
@@ -551,6 +555,14 @@ export function displayedPhase(currentPhaseIdx: number, workflowStatus: Workflow
   return PHASES[currentPhaseIdx]?.id ?? "?";
 }
 
+// An optional phase runs only when its skill is installed project-locally
+// (<projectDir>/.opencode/skills/<skill>/SKILL.md, matching openext copy-mode
+// registration). Core phases are never skipped by this check; they fail loudly
+// in-session when their skill is absent.
+export function optionalPhaseSkillMissing(projectDir: string, phase: BasePhase): boolean {
+  return phase.optional === true && !existsSync(path.join(projectDir, ".opencode", "skills", phase.skill, "SKILL.md"));
+}
+
 // ---------------------------------------------------------------------------
 // Git helpers
 // ---------------------------------------------------------------------------
@@ -803,7 +815,7 @@ export function isPhaseClean(state: FlowState, phase: PhaseDef): boolean {
   const issue = path.join(state.proposalDir, "issue.md");
   switch (phase.family) {
     case "self-heal":
-      return phase.id === "apply-resume"
+      return phase.id === "apply-resume" || phase.id === "comment-audit"
         ? trackedChangedFiles(state.projectDir).length === 0 && newUntrackedFiles(state).length === 0
         : proposalArtifactFiles(state).length === 0;
     case "apply":
@@ -1525,6 +1537,21 @@ async function driverLoop(state: FlowState, config: FlowConfig): Promise<void> {
   for (let index = Math.max(0, state.currentPhaseIdx); index < PHASES.length; index++) {
     state.currentPhaseIdx = index;
     const phase = resolvePhase(config, PHASES[index]!);
+    if (optionalPhaseSkillMissing(state.projectDir, phase)) {
+      const step = pushStep(state, {
+        skill: phase.skill,
+        phaseId: phase.id,
+        runIdx: 1,
+        kind: "implementer",
+        status: "running",
+        startedAt: nowIso(),
+      });
+      completeStep(step, "completed", "skipped: skill not installed");
+      logEvent(state, "phase_skipped", `${phase.id}: ${phase.skill} not installed`);
+      state.currentPhaseIdx = index + 1;
+      await saveState(state);
+      continue;
+    }
     logEvent(state, "phase_start", phase.id);
     await saveState(state);
     await runPhaseLoop(state, phase, config);
@@ -2085,6 +2112,7 @@ export const __test__ = {
   resolveIssueAuditSettings,
   phaseIndex,
   displayedPhase,
+  optionalPhaseSkillMissing,
   prepareGit,
   uncheckedCount,
   checkboxCount,
