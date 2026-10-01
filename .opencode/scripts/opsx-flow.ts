@@ -926,6 +926,32 @@ function implementerPrompt(state: FlowState, phase: PhaseDef, runIdx: number): s
   ].join("\n");
 }
 
+// Comment-audit runs after archive, so the change lives under
+// openspec/changes/archive/<date>-<name> instead of state.proposalDir.  Per the
+// Master's policy the audit runs unattended: the battle-tested code is the
+// source of truth, comments follow code, and no decision is escalated through
+// the question tool.
+function commentAuditPrompt(state: FlowState, runIdx: number): string {
+  const archived = archivedProposalFile(state);
+  const changeLine = archived
+    ? `Archived change: ${path.dirname(archived)}.`
+    : `Archived change: locate the directory under openspec/changes/archive/ whose name ends with ${state.proposalName} and that contains proposal.md.`;
+  return [
+    `Load the \`openspec-comment-audit\` skill and follow its instructions to audit comments for the archived OpenSpec change.`,
+    "",
+    changeLine,
+    `Work in ${state.projectDir} on branch ${state.branch}.`,
+    `Scope the audit to the files changed by this branch relative to ${state.baseBranch} (git diff ${state.baseBranch}...HEAD); leave unrelated code untouched.`,
+    `This is run ${runIdx} of the comment-audit phase.`,
+    "",
+    "Run unattended: do not use the question tool and do not wait for the Master; resolve every decision yourself.",
+    "The code was battle-tested by the earlier phases and is the source of truth. When a comment, docstring, or prose disagrees with the code, update the comment to match the code. Never modify code, tests, or behavior to match a comment.",
+    "",
+    "Do not commit changes; the workflow driver commits deterministic phase checkpoints.",
+    "When finished, give a concise final report listing the comment edits made and any items left unresolved with a recommendation.",
+  ].join("\n");
+}
+
 function fixPrompt(state: FlowState, phase: PhaseDef, runIdx: number): string {
   return [
     "Load the `openspec-fix` skill and follow its instructions to resolve the unchecked issues for this OpenSpec change.",
@@ -1208,7 +1234,7 @@ async function spawnImplementer(state: FlowState, phase: PhaseDef, runIdx: numbe
     "implementer",
     runIdx,
     phase,
-    implementerPrompt(state, phase, runIdx),
+    phase.id === "comment-audit" ? commentAuditPrompt(state, runIdx) : implementerPrompt(state, phase, runIdx),
   );
 }
 
@@ -2122,6 +2148,7 @@ export const __test__ = {
   enforceLock,
   isPhaseClean,
   archivedProposalExists,
+  commentAuditPrompt,
   hasCompletedAssistant,
   changedFiles,
   statePath,

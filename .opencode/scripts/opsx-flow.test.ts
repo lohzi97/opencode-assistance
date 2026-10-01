@@ -1100,4 +1100,41 @@ describe("opsx-flow comment-audit phase", () => {
     expect(__test__.implementerSummary(state, phase, true)).toBe("clean");
     expect(__test__.implementerSummary(state, phase, false)).toBe("edits made");
   });
+
+  it("commentAuditPrompt points at the archived change and mandates unattended code-first operation", async () => {
+    const { root, project, proposal } = await makeProject("opsx-flow-audit-prompt-");
+    try {
+      const state = {
+        projectDir: project,
+        proposalName: "demo",
+        proposalDir: proposal,
+        branch: "feat/demo",
+        baseBranch: "main",
+      };
+      // Before archive the live proposal still exists; the prompt must prefer
+      // the archived copy, so archive the change first.
+      const archiveRoot = path.join(project, "openspec", "changes", "archive");
+      const archived = path.join(archiveRoot, "2026-10-01-demo");
+      await mkdir(archived, { recursive: true });
+      await writeFile(path.join(archived, "proposal.md"), "# Demo\n");
+      await rm(proposal, { recursive: true, force: true });
+
+      const prompt = __test__.commentAuditPrompt(state as never, 1);
+      expect(prompt).toContain("Load the `openspec-comment-audit` skill");
+      expect(prompt).toContain(`Archived change: ${archived}.`);
+      expect(prompt).toContain("git diff main...HEAD");
+      expect(prompt).toContain("do not use the question tool");
+      expect(prompt).toContain("update the comment to match the code");
+      expect(prompt).toContain("Never modify code, tests, or behavior to match a comment");
+      expect(prompt).toContain("This is run 1 of the comment-audit phase.");
+
+      // Fallback: with no archived proposal.md on disk the prompt instructs
+      // the agent to locate the archive entry instead of naming a stale path.
+      const missing = __test__.commentAuditPrompt({ ...state, proposalName: "ghost" } as never, 2);
+      expect(missing).toContain("locate the directory under openspec/changes/archive/");
+      expect(missing).toContain("This is run 2 of the comment-audit phase.");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
