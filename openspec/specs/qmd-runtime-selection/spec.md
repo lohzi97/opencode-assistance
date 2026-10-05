@@ -28,7 +28,7 @@ The system SHALL configure all three cloud providers (embedding, reranking, quer
 
 #### Scenario: config.sh writes provider defaults
 - **WHEN** `config.sh` writes `~/.config/qmd/.env`
-- **THEN** the file SHALL contain `QMD_EMBED_PROVIDER=voyage`, `VOYAGE_EMBED_MODEL=voyage-4-lite`, `QMD_RERANK_PROVIDER=voyage`, `VOYAGE_RERANK_MODEL=rerank-2.5-lite`, `QMD_GENERATE_PROVIDER=deepseek`, and `DEEPSEEK_GENERATE_MODEL=deepseek-v4-flash` alongside the API keys
+- **THEN** the file SHALL contain `QMD_EMBED_PROVIDER=voyage`, `VOYAGE_EMBED_MODEL=voyage-4-lite`, `QMD_RERANK_PROVIDER=voyage`, `VOYAGE_RERANK_MODEL=rerank-2.5-lite`, `QMD_GENERATE_PROVIDER=deepseek`, and `DEEPSEEK_GENERATE_MODEL=deepseek-flash` alongside the API keys
 
 #### Scenario: config.sh re-runs with existing values
 - **WHEN** `config.sh` is re-run and `~/.config/qmd/.env` already exists

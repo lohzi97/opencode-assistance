@@ -1,7 +1,7 @@
 ---
 description: Generate a daily journal diary from session summaries
 agent: sebastian
-model: deepseek/deepseek-v4-flash
+model: deepseek/deepseek-flash
 ---
 
 Generate a daily journal diary from session summary files. The diary serves as a factual database for LLM retrieval.
