@@ -425,6 +425,7 @@
         },
         "priority": 3,
         "policy": {
+          "no_overlap": false, // allow manual re-opens even while a window is still open
           "silence_ok": true,
           "ttl_ms": 1800000
         }
